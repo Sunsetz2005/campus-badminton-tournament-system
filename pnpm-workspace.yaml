@@ -1,0 +1,12 @@
+packages:
+  - "."
+
+nodeVersion: 24.21.0
+engineStrict: true
+runtimeOnFail: download
+
+allowBuilds:
+  "@prisma/engines": true
+  esbuild: true
+  prisma: true
+  unrs-resolver: true

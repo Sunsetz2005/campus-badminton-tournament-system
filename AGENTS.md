@@ -2,8 +2,9 @@
 
 ## 当前阶段
 
-- 当前只完成阶段 0：需求、架构规划、知识库和安全同步工具。
-- 不得把规划文档描述成已经实现的软件；应用、数据库结构和业务页面尚未创建。
+- 阶段 0 和阶段 1 已完成：需求/知识库、安全同步、可启动应用骨架、数据库迁移、真实登录和服务端权限基础。
+- 当前不得开始阶段 2。计分 reducer、抛币、双打发接发、撤销和完整裁判工作台仍未实现。
+- 页面骨架、模拟比赛和最小控制会话不能描述成完整赛事系统。
 - 一次只执行一个提示词阶段。进入下一阶段前，先读取本文件、`README.md`、知识库首页和当前进度。
 
 ## 沟通与证据
@@ -39,15 +40,34 @@
 6. 未收到服务器确认时不得显示成功；断网时禁止继续提交记分。
 7. 已确认结果的更正必须预览其对名次、晋级和后续比赛的影响。
 
-## 阶段 0 可执行命令
+## 当前可执行命令
 
 ```bash
+pnpm install --frozen-lockfile
+pnpm run db:migrate
+pnpm run db:seed
+pnpm dev
+pnpm run build
+pnpm run lint
+pnpm run typecheck
+pnpm test
+pnpm run test:e2e
 node --test tests/sync-knowledge-base.test.mjs
-node scripts/sync-knowledge-base.mjs --dry-run
+pnpm run docs:sync:dry-run
+pnpm run docs:sync
 node scripts/sync-knowledge-base.mjs --adopt-target
-node scripts/sync-knowledge-base.mjs --apply
 ```
 
 `--adopt-target` 只用于已经把 Vault 手工修改逐字合并回仓库后的清单基线更新；只要内容不同或还有其他待同步变更就会拒绝。
 
-当前没有可用的应用启动、构建或端到端测试命令。
+项目用 pnpm 的 `devEngines.runtime` 在仓库命令中固定 Node 24.21.0；不要替换用户全局 Node。开发和测试数据库必须分离，自动化测试只允许连接以 `_test` 结尾的数据库。
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

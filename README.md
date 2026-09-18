@@ -1,21 +1,21 @@
 # 校园羽毛球赛事编排与裁判管理系统 V1.0
 
-> 当前状态：阶段 0 已建立需求、技术规划、项目知识库和安全同步工具。应用代码、业务页面、数据库表和登录功能均尚未实现，因此现在不能启动系统。
+> 当前状态：阶段 1 已完成。应用骨架、PostgreSQL 迁移、Better Auth 登录、服务端赛事范围/裁判指派校验和匿名模拟比赛可以运行；计分规则引擎、完整编排和主裁判工作台尚未实现。
 
 本项目计划建设一套中文响应式网页应用，让电脑、平板和手机共享同一后端和权威比赛数据，覆盖报名、分组、赛程、主裁判执裁、成绩复核、名次、成绩册和公开查询。
 
-## 查看阶段 0 成果
+## 本机启动
 
-1. 从 [`docs/knowledge-base/00-首页.md`](docs/knowledge-base/00-首页.md) 进入项目知识库。
-2. 阅读 [`产品需求与范围`](docs/knowledge-base/01-项目规划/产品需求与范围.md) 和 [`需求验收追踪矩阵`](docs/knowledge-base/01-项目规划/需求验收追踪矩阵.md)。
-3. 阅读 [`赛事执行规则 v1.0`](docs/knowledge-base/03-竞赛规则/赛事执行规则-v1.0.md) 和 [`需求补充 v1.0 差异记录`](docs/knowledge-base/01-项目规划/需求补充-v1.0差异记录.md)。
-4. 查看 [`待老师确认的问题`](docs/knowledge-base/01-项目规划/待老师确认的问题.md)。
-5. 运行同步工具测试和 dry-run，确认不会越界写入。
+当前 Mac 已创建未提交的 `.env`、`.env.seed` 以及开发数据库。首次从干净检出启动时，先根据 `.env.example` 配置本机连接和随机密钥，再准备单独的 `.env.seed`。
 
 ```bash
-node --test tests/sync-knowledge-base.test.mjs
-node scripts/sync-knowledge-base.mjs --dry-run
+pnpm install --frozen-lockfile
+pnpm run db:migrate
+pnpm run db:seed
+pnpm dev
 ```
+
+浏览器访问 `http://127.0.0.1:3000`。本地示例账号和密码只保存在被 Git 忽略的 `.env.seed`；生产环境若发现示例账号配置会拒绝启动。详细步骤见 [`本地启动与手机访问`](docs/knowledge-base/07-使用部署/本地启动与手机访问.md)。
 
 ## V1 范围
 
@@ -26,11 +26,29 @@ node scripts/sync-knowledge-base.mjs --dry-run
 
 暂不开发原生 App、团体赛、支付、短信、直播、AI 视频判分、自动动作识别、多租户平台和离线合并记分。
 
-## 技术基线
+## 当前已实现边界
 
-阶段 1 计划采用 Node.js 24.21.0 LTS、pnpm 11.9.0、Next.js 16.3.5、React 19.3.0、TypeScript 5.9.3、Prisma 7.10.0、PostgreSQL 15、Vitest 5.0.1 和 Playwright 1.63.0。确切依赖会在阶段 1 写入锁文件；阶段 0 没有安装或升级软件。
+- Next.js 中文页面骨架：首页、赛事管理、我的执裁、公开查询、设置和登录。
+- PostgreSQL 15 的可追踪迁移；开发库与 `_test` 测试库分离。
+- Better Auth 数据库会话和密码哈希；公开注册关闭。
+- 服务端检查账号状态、赛事角色和具体裁判指派。
+- 单场唯一活动控制会话的最小基础，不含逐分记分或接管流程。
+- 传统 21 分演示配置的不可变 revision 和两场比赛快照。
+- 服务端公开字段白名单、健康检查、中文结构化错误和脱敏日志基础。
 
-本机检查结果和选择理由见 [`技术选型与决策`](docs/knowledge-base/02-架构设计/技术选型与决策.md)。
+未实现项以 [`需求验收追踪矩阵`](docs/knowledge-base/01-项目规划/需求验收追踪矩阵.md) 为准。
+
+## 质量命令
+
+```bash
+pnpm run lint
+pnpm run typecheck
+pnpm test
+pnpm run test:e2e
+pnpm run build
+```
+
+`pnpm test` 会先验证数据库名以 `_test` 结尾，再迁移并幂等写入测试种子。Playwright 浏览器由 `pnpm exec playwright install chromium` 安装，不进入 Git。
 
 ## 发布知识库到 Obsidian
 
@@ -54,8 +72,8 @@ node scripts/sync-knowledge-base.mjs --dry-run
 
 | 阶段 | 交付目标 | 当前状态 |
 |---|---|---|
-| 0 | 需求、规划、知识库、安全同步 | 已完成后以测试记录为准 |
-| 1 | 工程骨架、数据库、真实登录和权限 | 未实现 |
+| 0 | 需求、规划、知识库、安全同步 | 已完成 |
+| 1 | 工程骨架、数据库、真实登录和权限 | 已完成，以测试记录为准 |
 | 2 | 计分与双打规则引擎 | 未实现 |
 | 3 | 主裁判工作台和多设备权威记分 | 未实现 |
 | 4—8 | 报名编排、赛程、成绩、报表、可靠性 | 未实现 |

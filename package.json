@@ -1,0 +1,62 @@
+{
+  "name": "campus-badminton-tournament-system",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "校园羽毛球赛事编排与裁判管理系统",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=24.21.0 <25",
+    "pnpm": ">=11.9.0 <12"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.21.0",
+      "onFail": "download"
+    }
+  },
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0",
+    "build": "next build",
+    "start": "next start --hostname 0.0.0.0",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm db:test:prepare && dotenv -e .env.test -- vitest run",
+    "test:e2e": "pnpm db:test:prepare && dotenv -e .env.test -- playwright test",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:seed": "dotenv -e .env -e .env.seed -- tsx prisma/seed.ts",
+    "db:test:prepare": "dotenv -e .env.test -- tsx scripts/prepare-test-database.ts",
+    "docs:sync": "node scripts/sync-knowledge-base.mjs --apply",
+    "docs:sync:dry-run": "node scripts/sync-knowledge-base.mjs --dry-run"
+  },
+  "dependencies": {
+    "@better-auth/prisma-adapter": "1.7.5",
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "better-auth": "1.7.5",
+    "next": "16.3.5",
+    "pg": "8.23.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "26.6.1",
+    "@types/pg": "8.15.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "dotenv-cli": "11.0.0",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.5",
+    "prisma": "7.10.0",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "vite": "8.2.1",
+    "vite-tsconfig-paths": "6.1.1",
+    "vitest": "5.0.1"
+  }
+}

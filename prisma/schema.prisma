@@ -1,0 +1,486 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum TournamentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum CompetitionKind {
+  MS
+  WS
+  MD
+  WD
+  XD
+  CUSTOM
+}
+
+enum EntryType {
+  SINGLES
+  DOUBLES
+}
+
+enum StageType {
+  ROUND_ROBIN
+  KNOCKOUT
+}
+
+enum TournamentRole {
+  ADMIN
+  ORGANIZER
+  REFEREE
+  CHIEF_REFEREE
+}
+
+enum OfficialRole {
+  MAIN_REFEREE
+}
+
+enum MatchLifecycleStatus {
+  SCHEDULED
+  READY
+  IN_PROGRESS
+  SUSPENDED
+  ENDED_PENDING_SUBMISSION
+  SUBMITTED
+}
+
+enum MatchOutcomeType {
+  NORMAL
+  WO
+  RET
+  DSQ
+  ABANDONED
+  BYE
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  PENDING_REVIEW
+  LOCKED
+  DISPUTED
+  SUPERSEDED
+}
+
+enum ScoringSessionStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum ResultRevisionStatus {
+  PENDING
+  LOCKED
+  SUPERSEDED
+}
+
+model User {
+  id                  String               @id @default(uuid()) @db.Uuid
+  name                String
+  email               String               @unique
+  emailVerified       Boolean              @default(false)
+  image               String?
+  status              UserStatus           @default(ACTIVE)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  sessions            Session[]
+  accounts            Account[]
+  roleAssignments     RoleAssignment[]
+  officialAssignments OfficialAssignment[]
+  scoringSessions     ScoringSession[]
+  matchEvents         MatchEvent[]         @relation("MatchEventActor")
+  resultRevisions     ResultRevision[]     @relation("ResultRevisionActor")
+  auditLogs           AuditLog[]           @relation("AuditActor")
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid()) @db.Uuid
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Account {
+  id                    String    @id @default(uuid()) @db.Uuid
+  accountId             String
+  providerId            String
+  userId                String    @db.Uuid
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Verification {
+  id         String   @id @default(uuid()) @db.Uuid
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verifications")
+}
+
+model Tournament {
+  id                    String               @id @default(uuid()) @db.Uuid
+  slug                  String               @unique
+  name                  String
+  timezone              String               @default("Asia/Shanghai")
+  status                TournamentStatus     @default(DRAFT)
+  defaultRuleRevisionId String?              @db.Uuid
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  defaultRuleRevision   RuleProfileRevision? @relation("TournamentDefaultRule", fields: [defaultRuleRevisionId], references: [id], onDelete: SetNull)
+  competitions          Competition[]
+  courts                Court[]
+  ruleProfiles          RuleProfile[]
+  roleAssignments       RoleAssignment[]
+  auditLogs             AuditLog[]
+
+  @@map("tournaments")
+}
+
+model Competition {
+  id                    String               @id @default(uuid()) @db.Uuid
+  tournamentId          String               @db.Uuid
+  code                  String
+  name                  String
+  kind                  CompetitionKind
+  entryType             EntryType
+  ruleProfileRevisionId String?              @db.Uuid
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  tournament            Tournament           @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  ruleProfileRevision   RuleProfileRevision? @relation("CompetitionRule", fields: [ruleProfileRevisionId], references: [id], onDelete: SetNull)
+  stages                Stage[]
+  entries               Entry[]
+
+  @@unique([tournamentId, code])
+  @@index([tournamentId])
+  @@map("competitions")
+}
+
+model Participant {
+  id          String        @id @default(uuid()) @db.Uuid
+  publicCode  String        @unique
+  displayName String
+  teamName    String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  memberships EntryMember[]
+
+  @@map("participants")
+}
+
+model Entry {
+  id            String        @id @default(uuid()) @db.Uuid
+  competitionId String        @db.Uuid
+  code          String
+  displayName   String
+  entryType     EntryType
+  frozenAt      DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  competition   Competition   @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  members       EntryMember[]
+  matchesAsA    Match[]       @relation("MatchSideA")
+  matchesAsB    Match[]       @relation("MatchSideB")
+
+  @@unique([competitionId, code])
+  @@index([competitionId])
+  @@map("entries")
+}
+
+model EntryMember {
+  id            String      @id @default(uuid()) @db.Uuid
+  entryId       String      @db.Uuid
+  participantId String      @db.Uuid
+  slot          Int
+  entry         Entry       @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  participant   Participant @relation(fields: [participantId], references: [id], onDelete: Restrict)
+
+  @@unique([entryId, participantId])
+  @@unique([entryId, slot])
+  @@index([participantId])
+  @@map("entry_members")
+}
+
+model Stage {
+  id                    String               @id @default(uuid()) @db.Uuid
+  competitionId         String               @db.Uuid
+  code                  String
+  name                  String
+  type                  StageType
+  order                 Int
+  ruleProfileRevisionId String?              @db.Uuid
+  frozenAt              DateTime?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  competition           Competition          @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  ruleProfileRevision   RuleProfileRevision? @relation("StageRule", fields: [ruleProfileRevisionId], references: [id], onDelete: SetNull)
+  groups                Group[]
+  matches               Match[]
+
+  @@unique([competitionId, code])
+  @@map("stages")
+}
+
+model Group {
+  id        String   @id @default(uuid()) @db.Uuid
+  stageId   String   @db.Uuid
+  code      String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  stage     Stage    @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  matches   Match[]
+
+  @@unique([stageId, code])
+  @@map("competition_groups")
+}
+
+model Court {
+  id           String     @id @default(uuid()) @db.Uuid
+  tournamentId String     @db.Uuid
+  code         String
+  name         String
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  matches      Match[]
+
+  @@unique([tournamentId, code])
+  @@map("courts")
+}
+
+model RuleProfile {
+  id           String                @id @default(uuid()) @db.Uuid
+  tournamentId String                @db.Uuid
+  key          String
+  name         String
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  tournament   Tournament            @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  revisions    RuleProfileRevision[]
+
+  @@unique([tournamentId, key])
+  @@map("rule_profiles")
+}
+
+model RuleProfileRevision {
+  id                    String              @id @default(uuid()) @db.Uuid
+  ruleProfileId         String              @db.Uuid
+  revision              Int
+  sourceLabel           String
+  sourceVersion         String
+  config                Json
+  configHash            String
+  effectiveFrom         DateTime?
+  adoptedAt             DateTime?
+  frozenAt              DateTime?
+  createdAt             DateTime            @default(now())
+  ruleProfile           RuleProfile         @relation(fields: [ruleProfileId], references: [id], onDelete: Restrict)
+  defaultForTournaments Tournament[]        @relation("TournamentDefaultRule")
+  competitions          Competition[]       @relation("CompetitionRule")
+  stages                Stage[]             @relation("StageRule")
+  matchSnapshots        MatchRuleSnapshot[]
+
+  @@unique([ruleProfileId, revision])
+  @@map("rule_profile_revisions")
+}
+
+model Match {
+  id                  String               @id @default(uuid()) @db.Uuid
+  code                String               @unique
+  stageId             String               @db.Uuid
+  groupId             String?              @db.Uuid
+  courtId             String?              @db.Uuid
+  sideAEntryId        String?              @db.Uuid
+  sideBEntryId        String?              @db.Uuid
+  lifecycleStatus     MatchLifecycleStatus @default(SCHEDULED)
+  outcomeType         MatchOutcomeType?
+  verificationStatus  VerificationStatus   @default(UNVERIFIED)
+  scheduledAt         DateTime?
+  startedAt           DateTime?
+  endedAt             DateTime?
+  version             Int                  @default(0)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  stage               Stage                @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  group               Group?               @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  court               Court?               @relation(fields: [courtId], references: [id], onDelete: SetNull)
+  sideAEntry          Entry?               @relation("MatchSideA", fields: [sideAEntryId], references: [id], onDelete: Restrict)
+  sideBEntry          Entry?               @relation("MatchSideB", fields: [sideBEntryId], references: [id], onDelete: Restrict)
+  games               Game[]
+  ruleSnapshot        MatchRuleSnapshot?
+  events              MatchEvent[]
+  scoringSessions     ScoringSession[]
+  resultRevisions     ResultRevision[]
+  officialAssignments OfficialAssignment[]
+
+  @@index([stageId])
+  @@index([courtId, scheduledAt])
+  @@map("matches")
+}
+
+model MatchRuleSnapshot {
+  id                    String              @id @default(uuid()) @db.Uuid
+  matchId               String              @unique @db.Uuid
+  ruleProfileRevisionId String              @db.Uuid
+  config                Json
+  configHash            String
+  sourceChain           Json
+  createdAt             DateTime            @default(now())
+  match                 Match               @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  ruleProfileRevision   RuleProfileRevision @relation(fields: [ruleProfileRevisionId], references: [id], onDelete: Restrict)
+
+  @@map("match_rule_snapshots")
+}
+
+model Game {
+  id        String   @id @default(uuid()) @db.Uuid
+  matchId   String   @db.Uuid
+  number    Int
+  scoreA    Int      @default(0)
+  scoreB    Int      @default(0)
+  completed Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, number])
+  @@map("games")
+}
+
+model MatchEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  matchId     String   @db.Uuid
+  version     Int
+  commandId   String?  @unique @db.Uuid
+  type        String
+  payload     Json
+  actorUserId String?  @db.Uuid
+  occurredAt  DateTime @default(now())
+  match       Match    @relation(fields: [matchId], references: [id], onDelete: Restrict)
+  actor       User?    @relation("MatchEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@unique([matchId, version])
+  @@map("match_events")
+}
+
+model ScoringSession {
+  id                 String               @id @default(uuid()) @db.Uuid
+  matchId            String               @db.Uuid
+  userId             String               @db.Uuid
+  deviceSessionId    String
+  tokenHash          String               @unique
+  takeoverGeneration Int                  @default(1)
+  status             ScoringSessionStatus @default(ACTIVE)
+  expiresAt          DateTime
+  lastHeartbeatAt    DateTime             @default(now())
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  match              Match                @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([matchId, status])
+  @@map("scoring_sessions")
+}
+
+model ResultRevision {
+  id          String               @id @default(uuid()) @db.Uuid
+  matchId     String               @db.Uuid
+  revision    Int
+  status      ResultRevisionStatus @default(PENDING)
+  result      Json
+  reason      String?
+  actorUserId String?              @db.Uuid
+  createdAt   DateTime             @default(now())
+  match       Match                @relation(fields: [matchId], references: [id], onDelete: Restrict)
+  actor       User?                @relation("ResultRevisionActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@unique([matchId, revision])
+  @@map("result_revisions")
+}
+
+model RoleAssignment {
+  id           String         @id @default(uuid()) @db.Uuid
+  userId       String         @db.Uuid
+  tournamentId String         @db.Uuid
+  role         TournamentRole
+  createdAt    DateTime       @default(now())
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tournament   Tournament     @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tournamentId, role])
+  @@index([tournamentId, role])
+  @@map("role_assignments")
+}
+
+model OfficialAssignment {
+  id        String       @id @default(uuid()) @db.Uuid
+  matchId   String       @db.Uuid
+  userId    String       @db.Uuid
+  role      OfficialRole @default(MAIN_REFEREE)
+  active    Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  match     Match        @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, userId, role])
+  @@index([userId, active])
+  @@map("official_assignments")
+}
+
+model AuditLog {
+  id           String      @id @default(uuid()) @db.Uuid
+  tournamentId String?     @db.Uuid
+  actorUserId  String?     @db.Uuid
+  action       String
+  targetType   String
+  targetId     String
+  outcome      String
+  metadata     Json?
+  occurredAt   DateTime    @default(now())
+  tournament   Tournament? @relation(fields: [tournamentId], references: [id], onDelete: SetNull)
+  actor        User?       @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([tournamentId, occurredAt])
+  @@index([actorUserId, occurredAt])
+  @@map("audit_logs")
+}
