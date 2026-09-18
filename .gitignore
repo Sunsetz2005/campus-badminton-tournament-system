@@ -1,0 +1,26 @@
+# Dependencies and build output
+node_modules/
+.next/
+dist/
+build/
+
+# Test output
+.vitest/
+coverage/
+playwright-report/
+test-results/
+
+# Local runtime data and secrets
+.env
+.env.*
+!.env.example
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Local knowledge-base sync backups
+.local/
+
+# Operating-system metadata
+.DS_Store
