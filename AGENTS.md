@@ -44,7 +44,10 @@
 ```bash
 node --test tests/sync-knowledge-base.test.mjs
 node scripts/sync-knowledge-base.mjs --dry-run
+node scripts/sync-knowledge-base.mjs --adopt-target
 node scripts/sync-knowledge-base.mjs --apply
 ```
+
+`--adopt-target` 只用于已经把 Vault 手工修改逐字合并回仓库后的清单基线更新；只要内容不同或还有其他待同步变更就会拒绝。
 
 当前没有可用的应用启动、构建或端到端测试命令。

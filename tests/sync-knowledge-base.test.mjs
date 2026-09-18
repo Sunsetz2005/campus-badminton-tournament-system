@@ -71,6 +71,30 @@ test('人工修改已管理目标时整体停止且不覆盖', async (t) => {
   assert.equal(await readFile(join(data.targetRoot, '01-项目规划', '产品 需求.md'), 'utf8'), '# 产品需求\n');
 });
 
+test('仅在仓库已合并同一手工内容时采纳目标基线', async (t) => {
+  const data = await fixture();
+  t.after(() => rm(data.root, { recursive: true, force: true }));
+  await quietRun({ mode: 'apply', policy: data.policy });
+  await writeFile(join(data.targetRoot, '00-首页.md'), '# 手工排版\n', 'utf8');
+
+  let result = await quietRun({ mode: 'adopt-target', policy: data.policy });
+  assert.equal(result.exitCode, 2);
+  assert.equal(await readFile(join(data.targetRoot, '00-首页.md'), 'utf8'), '# 手工排版\n');
+
+  await writeFile(join(data.sourceRoot, '00-首页.md'), '# 手工排版\n', 'utf8');
+  result = await quietRun({
+    mode: 'adopt-target',
+    policy: data.policy,
+    now: () => new Date('2026-09-18T11:00:00.000Z'),
+  });
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(result.adopted, ['00-首页.md']);
+  assert.equal(await readFile(join(data.targetRoot, '00-首页.md'), 'utf8'), '# 手工排版\n');
+  const after = await quietRun({ mode: 'dry-run', policy: data.policy });
+  assert.equal(after.exitCode, 0);
+  assert.equal(after.actions.filter((item) => item.type === 'UNCHANGED').length, 2);
+});
+
 test('未知同名文件冲突，未知额外文件保持不变', async (t) => {
   const data = await fixture();
   t.after(() => rm(data.root, { recursive: true, force: true }));

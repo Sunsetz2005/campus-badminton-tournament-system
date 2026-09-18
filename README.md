@@ -8,8 +8,9 @@
 
 1. 从 [`docs/knowledge-base/00-首页.md`](docs/knowledge-base/00-首页.md) 进入项目知识库。
 2. 阅读 [`产品需求与范围`](docs/knowledge-base/01-项目规划/产品需求与范围.md) 和 [`需求验收追踪矩阵`](docs/knowledge-base/01-项目规划/需求验收追踪矩阵.md)。
-3. 查看 [`待老师确认的问题`](docs/knowledge-base/01-项目规划/待老师确认的问题.md)。
-4. 运行同步工具测试和 dry-run，确认不会越界写入。
+3. 阅读 [`赛事执行规则 v1.0`](docs/knowledge-base/03-竞赛规则/赛事执行规则-v1.0.md) 和 [`需求补充 v1.0 差异记录`](docs/knowledge-base/01-项目规划/需求补充-v1.0差异记录.md)。
+4. 查看 [`待老师确认的问题`](docs/knowledge-base/01-项目规划/待老师确认的问题.md)。
+5. 运行同步工具测试和 dry-run，确认不会越界写入。
 
 ```bash
 node --test tests/sync-knowledge-base.test.mjs
@@ -19,7 +20,7 @@ node scripts/sync-knowledge-base.mjs --dry-run
 ## V1 范围
 
 - 赛事管理员、组织/编排人员、临场主裁判员、裁判长/授权负责人、只读公众五类角色。
-- 个人和双打报名、审核、分组、循环赛/淘汰赛编排、场地与时间安排、裁判指派。
+- 男单、女单、男双、女双、混双由后台手工录入或 Excel/CSV 批量导入，保留跨项目人员冲突检查；再完成分组、循环赛/淘汰赛编排、场地与时间安排、裁判指派。
 - 可实际执裁的单双打主裁判端，包括抛硬币、逐分记分、发接发分配、左右调整、物理换边、撤销、更正、操作历史和结果确认。
 - 成绩复核、名次和晋级、成绩册导出、打印以及隐私受控的公开查询。
 
@@ -47,7 +48,7 @@ node scripts/sync-knowledge-base.mjs --apply
 node scripts/sync-knowledge-base.mjs --dry-run
 ```
 
-同步工具不会删除目标文件。未知同名文件、人工改动或符号链接会阻止写入；更新前的副本保存在未提交的 `.local/kb-sync-backups/`。完整策略见 [`备份恢复与部署`](docs/knowledge-base/07-使用部署/备份恢复与部署.md)。
+同步工具不会删除目标文件。未知同名文件、人工改动或符号链接会阻止写入；更新前的副本保存在未提交的 `.local/kb-sync-backups/`。若已把 Vault 手工改动逐字合并回仓库，可单独运行 `--adopt-target` 更新清单基线；内容不一致或同时存在其他更新时会拒绝。完整策略见 [`备份恢复与部署`](docs/knowledge-base/07-使用部署/备份恢复与部署.md)。
 
 ## 阶段路线
 

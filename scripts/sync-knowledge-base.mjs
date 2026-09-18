@@ -228,7 +228,14 @@ function createPlan(sourceFiles, targetFiles, manifest) {
       continue;
     }
     if (target.sha256 !== previous.sha256 || target.size !== previous.size) {
-      conflicts.push({ type: 'CONFLICT', path: pathname, reason: '已管理目标文件被人工修改' });
+      conflicts.push({
+        type: 'CONFLICT',
+        path: pathname,
+        reason: '已管理目标文件被人工修改',
+        source,
+        target,
+        previous,
+      });
       continue;
     }
     if (source.sha256 === target.sha256 && source.size === target.size) {
@@ -343,8 +350,88 @@ async function applyPlan(policy, sourceFiles, plan, manifest, now) {
   return { backupDirectory };
 }
 
+async function adoptTargetChanges(policy, plan, manifest, now, output) {
+  if (!manifest) {
+    output('ADOPT-REFUSED 目标没有可验证的同步清单。');
+    return { exitCode: 2, adopted: [], backupDirectory: null };
+  }
+
+  const hasPendingSync = plan.actions.some((action) => action.type !== 'UNCHANGED');
+  const adoptable = plan.conflicts.filter(
+    (conflict) =>
+      conflict.reason === '已管理目标文件被人工修改' &&
+      conflict.source?.sha256 === conflict.target?.sha256 &&
+      conflict.source?.size === conflict.target?.size,
+  );
+  if (hasPendingSync || adoptable.length !== plan.conflicts.length || adoptable.length === 0) {
+    output('ADOPT-REFUSED 只允许采纳已合并进仓库且逐字相同的目标手工修改；不得同时存在其他更新或冲突。');
+    return { exitCode: 2, adopted: [], backupDirectory: null };
+  }
+
+  for (const conflict of adoptable) {
+    const [sourceContent, targetContent] = await Promise.all([
+      readFile(conflict.source.absolutePath),
+      readFile(join(policy.targetRoot, conflict.path)),
+    ]);
+    const sourceDigest = sha256(sourceContent);
+    const targetDigest = sha256(targetContent);
+    if (
+      sourceContent.byteLength !== conflict.source.size ||
+      targetContent.byteLength !== conflict.target.size ||
+      sourceDigest !== conflict.source.sha256 ||
+      targetDigest !== conflict.target.sha256 ||
+      sourceDigest !== targetDigest
+    ) {
+      output(`ADOPT-REFUSED 采纳前内容发生变化：${conflict.path}`);
+      return { exitCode: 2, adopted: [], backupDirectory: null };
+    }
+  }
+
+  const backupDirectory = join(policy.backupRoot, timestampForPath(now()));
+  await mkdir(backupDirectory, { recursive: true });
+  await atomicCopy(join(policy.targetRoot, MANIFEST_NAME), join(backupDirectory, MANIFEST_NAME));
+
+  const nextManifest = JSON.parse(JSON.stringify(manifest));
+  for (const conflict of adoptable) {
+    nextManifest.files[conflict.path] = {
+      size: conflict.target.size,
+      sha256: conflict.target.sha256,
+    };
+  }
+  nextManifest.lastTargetAdoption = {
+    at: now().toISOString(),
+    files: adoptable.map((conflict) => conflict.path).sort((left, right) => left.localeCompare(right, 'zh-CN')),
+  };
+  await atomicWriteJson(join(policy.targetRoot, MANIFEST_NAME), nextManifest);
+
+  try {
+    for (const conflict of adoptable) {
+      const [sourceContent, targetContent] = await Promise.all([
+        readFile(conflict.source.absolutePath),
+        readFile(join(policy.targetRoot, conflict.path)),
+      ]);
+      if (
+        sourceContent.byteLength !== conflict.source.size ||
+        targetContent.byteLength !== conflict.target.size ||
+        sha256(sourceContent) !== conflict.source.sha256 ||
+        sha256(targetContent) !== conflict.target.sha256
+      ) {
+        throw new Error(`采纳期间内容发生变化：${conflict.path}`);
+      }
+      output(`ADOPTED   ${conflict.path}`);
+    }
+  } catch (error) {
+    await atomicCopy(join(backupDirectory, MANIFEST_NAME), join(policy.targetRoot, MANIFEST_NAME));
+    throw error;
+  }
+  output(`BACKUP    ${backupDirectory}`);
+  return { exitCode: 0, adopted: adoptable.map((conflict) => conflict.path), backupDirectory };
+}
+
 export async function runSync({ mode = 'dry-run', policy = DEFAULT_POLICY, output = console.log, now = () => new Date() } = {}) {
-  if (mode !== 'dry-run' && mode !== 'apply') throw new PolicyError(`未知模式：${mode}`);
+  if (mode !== 'dry-run' && mode !== 'apply' && mode !== 'adopt-target') {
+    throw new PolicyError(`未知模式：${mode}`);
+  }
   const validatedPolicy = await validatePolicy(policy);
   const sourceFiles = await collectMarkdownFiles(validatedPolicy.sourceRoot);
   const targetExists = await exists(validatedPolicy.targetRoot);
@@ -355,6 +442,10 @@ export async function runSync({ mode = 'dry-run', policy = DEFAULT_POLICY, outpu
   const plan = createPlan(sourceFiles, targetFiles, manifest);
 
   logPlan(plan.actions, plan.conflicts, output);
+  if (mode === 'adopt-target') {
+    const adopted = await adoptTargetChanges(validatedPolicy, plan, manifest, now, output);
+    return { ...adopted, mode, ...plan };
+  }
   if (plan.conflicts.length > 0) return { exitCode: 2, mode, ...plan };
   if (mode === 'dry-run') return { exitCode: 0, mode, ...plan };
 
@@ -368,7 +459,8 @@ function parseMode(argumentsList) {
   if (argumentsList.length === 0) return 'dry-run';
   if (argumentsList.length === 1 && argumentsList[0] === '--dry-run') return 'dry-run';
   if (argumentsList.length === 1 && argumentsList[0] === '--apply') return 'apply';
-  throw new PolicyError(`参数只允许 --dry-run 或 --apply，收到：${argumentsList.join(' ')}`);
+  if (argumentsList.length === 1 && argumentsList[0] === '--adopt-target') return 'adopt-target';
+  throw new PolicyError(`参数只允许 --dry-run、--apply 或 --adopt-target，收到：${argumentsList.join(' ')}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(scriptPath)) {
