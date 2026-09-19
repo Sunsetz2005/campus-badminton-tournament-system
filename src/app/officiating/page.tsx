@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { prisma } from "@/db/client";
-import { requireActiveUser } from "@/server/auth/authorization";
+import { requireActivePageUser } from "@/server/auth/page-authorization";
 import { getPageSession } from "@/server/auth/session";
 import { StatusBadge } from "@/ui/status-badge";
 
@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export default async function OfficiatingPage() {
   const session = await getPageSession();
   if (!session) redirect("/login?next=/officiating");
-  const user = await requireActiveUser(session);
+  const user = await requireActivePageUser(session);
   const assignments = await prisma.officialAssignment.findMany({
     where: { userId: user.id, active: true },
     select: {

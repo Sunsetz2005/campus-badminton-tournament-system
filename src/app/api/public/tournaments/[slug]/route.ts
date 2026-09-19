@@ -12,6 +12,6 @@ export async function GET(_request: Request, context: { params: Promise<{ slug: 
       headers: { "Cache-Control": "no-store" },
     });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, { route: "/api/public/tournaments/[slug]" });
   }
 }

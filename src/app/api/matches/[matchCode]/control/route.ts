@@ -11,15 +11,20 @@ const requestSchema = z.object({
 });
 
 export async function POST(request: Request, context: { params: Promise<{ matchCode: string }> }) {
+  let actorUserId: string | undefined;
   try {
     const session = await getSessionFromHeaders(request.headers);
     const user = await requireActiveUser(session);
+    actorUserId = user.id;
     const parsed = requestSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) throw new AppError(400, "invalid_request", "设备会话参数无效。");
     const { matchCode } = await context.params;
     const result = await acquireScoringSession(user.id, matchCode, parsed.data.deviceSessionId);
     return NextResponse.json(result, { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, {
+      route: "/api/matches/[matchCode]/control",
+      actorUserId,
+    });
   }
 }

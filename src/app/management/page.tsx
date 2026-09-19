@@ -1,9 +1,8 @@
-import { redirect } from "next/navigation";
+import { forbidden, redirect } from "next/navigation";
 
 import { prisma } from "@/db/client";
-import { requireActiveUser } from "@/server/auth/authorization";
+import { requireActivePageUser } from "@/server/auth/page-authorization";
 import { getPageSession } from "@/server/auth/session";
-import { AppError } from "@/server/services/errors";
 import { StatusBadge } from "@/ui/status-badge";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +10,7 @@ export const dynamic = "force-dynamic";
 export default async function ManagementPage() {
   const session = await getPageSession();
   if (!session) redirect("/login?next=/management");
-  const user = await requireActiveUser(session);
+  const user = await requireActivePageUser(session);
   const assignments = await prisma.roleAssignment.findMany({
     where: { userId: user.id, role: { in: ["ADMIN", "ORGANIZER"] } },
     select: {
@@ -28,7 +27,7 @@ export default async function ManagementPage() {
   });
 
   if (assignments.length === 0) {
-    throw new AppError(403, "forbidden", "你没有赛事管理权限。");
+    forbidden();
   }
 
   return (

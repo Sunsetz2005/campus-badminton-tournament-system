@@ -1,4 +1,5 @@
-import { auth } from "../src/server/auth/auth";
+import { hashPassword, verifyPassword } from "better-auth/crypto";
+
 import { prisma } from "../src/db/client";
 import { assertDemoSeedDatabase } from "../src/db/database-safety";
 import { hashRuleConfig, traditional21Demo } from "../src/domain/rules/rule-profile";
@@ -10,15 +11,30 @@ function required(name: string) {
 }
 
 async function ensureAuthUser(email: string, password: string, name: string) {
-  let user = await prisma.user.findUnique({ where: { email } });
-  if (!user) {
-    await auth.api.signUpEmail({ body: { email, password, name } });
-    user = await prisma.user.findUnique({ where: { email } });
-  }
-  if (!user) throw new Error(`无法创建本地测试身份：${email}`);
-  return prisma.user.update({
-    where: { id: user.id },
-    data: { name, status: "ACTIVE", emailVerified: true },
+  const normalizedEmail = email.toLowerCase();
+  return prisma.$transaction(async (transaction) => {
+    const user = await transaction.user.upsert({
+      where: { email: normalizedEmail },
+      update: { name, status: "ACTIVE", emailVerified: true },
+      create: { email: normalizedEmail, name, emailVerified: true },
+    });
+
+    const accountKey = { providerId: "credential", accountId: user.id };
+    const account = await transaction.account.findUnique({
+      where: { providerId_accountId: accountKey },
+      select: { password: true },
+    });
+    const passwordMatches =
+      account?.password && (await verifyPassword({ hash: account.password, password }));
+    if (!passwordMatches) {
+      const passwordHash = await hashPassword(password);
+      await transaction.account.upsert({
+        where: { providerId_accountId: accountKey },
+        update: { userId: user.id, password: passwordHash },
+        create: { ...accountKey, userId: user.id, password: passwordHash },
+      });
+    }
+    return user;
   });
 }
 

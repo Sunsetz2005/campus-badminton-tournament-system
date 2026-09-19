@@ -1,10 +1,19 @@
+import { notFound } from "next/navigation";
+
 import { getPublicTournament } from "@/server/services/public-tournament-service";
+import { AppError } from "@/server/services/errors";
 import { StatusBadge } from "@/ui/status-badge";
 
 export const dynamic = "force-dynamic";
 
 export default async function PublicPage() {
-  const tournament = await getPublicTournament("phase-1-demo");
+  let tournament: Awaited<ReturnType<typeof getPublicTournament>>;
+  try {
+    tournament = await getPublicTournament("phase-1-demo");
+  } catch (error) {
+    if (error instanceof AppError && error.status === 404) notFound();
+    throw error;
+  }
   return (
     <section>
       <div className="section-heading">

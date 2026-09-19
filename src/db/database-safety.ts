@@ -7,6 +7,9 @@ export function databaseNameFromUrl(value: string | undefined) {
 }
 
 export function assertTestDatabaseUrl(value: string | undefined): asserts value is string {
+  if (!value) {
+    throw new Error("缺少 DATABASE_URL。请先按 .env.test.example 创建 .env.test。");
+  }
   const name = databaseNameFromUrl(value);
   if (!name.endsWith("_test")) {
     throw new Error(`自动化测试只能使用以 _test 结尾的数据库，当前为 ${name}。`);

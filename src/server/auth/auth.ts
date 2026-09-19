@@ -15,7 +15,7 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
-    disableSignUp: process.env.ALLOW_DEMO_ACCOUNTS !== "true",
+    disableSignUp: true,
     minPasswordLength: 12,
   },
   advanced: {

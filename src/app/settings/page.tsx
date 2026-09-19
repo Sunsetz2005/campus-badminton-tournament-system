@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { prisma } from "@/db/client";
-import { requireActiveUser } from "@/server/auth/authorization";
+import { requireActivePageUser } from "@/server/auth/page-authorization";
 import { getPageSession } from "@/server/auth/session";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   const session = await getPageSession();
   if (!session) redirect("/login?next=/settings");
-  const user = await requireActiveUser(session);
+  const user = await requireActivePageUser(session);
   const roles = await prisma.roleAssignment.findMany({
     where: { userId: user.id },
     select: { role: true, tournament: { select: { name: true } } },

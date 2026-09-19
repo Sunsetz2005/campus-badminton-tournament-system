@@ -19,11 +19,12 @@
   "scripts": {
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
-    "start": "next start --hostname 0.0.0.0",
+    "start": "dotenv -e .env -- tsx scripts/start-production-server.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "pnpm db:test:prepare && dotenv -e .env.test -- vitest run",
     "test:e2e": "pnpm db:test:prepare && dotenv -e .env.test -- playwright test",
+    "test:production-startup-security": "pnpm run build && dotenv -e .env.test -- node --test tests/server/production-startup-security.test.mjs",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",

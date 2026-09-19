@@ -3,12 +3,65 @@ import { createHash, randomBytes } from "node:crypto";
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
 import { requireAssignedReferee } from "@/server/auth/authorization";
+import { logServerEvent } from "@/server/logging";
 import { AppError } from "@/server/services/errors";
 
 const SESSION_LIFETIME_MS = 2 * 60 * 1000;
+const DENIED_AUDIT_WINDOW_MS = 60 * 1000;
+
+function deniedAuditId(userId: string, matchId: string, errorCode: string, occurredAt: Date) {
+  const window = Math.floor(occurredAt.getTime() / DENIED_AUDIT_WINDOW_MS);
+  const hex = createHash("sha256")
+    .update(`${userId}:${matchId}:${errorCode}:${window}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
+}
+
+async function recordDeniedAcquire(userId: string, matchCode: string, error: AppError) {
+  try {
+    const match = await prisma.match.findUnique({
+      where: { code: matchCode },
+      select: {
+        id: true,
+        stage: { select: { competition: { select: { tournamentId: true } } } },
+      },
+    });
+    if (!match) return;
+    const occurredAt = new Date();
+    await prisma.auditLog.createMany({
+      data: [{
+        id: deniedAuditId(userId, match.id, error.code, occurredAt),
+        tournamentId: match.stage.competition.tournamentId,
+        actorUserId: userId,
+        action: "SCORING_SESSION_ACQUIRE",
+        targetType: "Match",
+        targetId: match.id,
+        outcome: "DENIED",
+        metadata: { matchCode, errorCode: error.code, dedupeWindowSeconds: 60 },
+        occurredAt,
+      }],
+      skipDuplicates: true,
+    });
+  } catch {
+    logServerEvent("audit_log_write_failed", {
+      action: "SCORING_SESSION_ACQUIRE",
+      actorUserId: userId,
+      matchCode,
+    });
+  }
+}
 
 export async function acquireScoringSession(userId: string, matchCode: string, deviceSessionId: string) {
-  const match = await requireAssignedReferee(userId, matchCode);
+  let match: Awaited<ReturnType<typeof requireAssignedReferee>>;
+  try {
+    match = await requireAssignedReferee(userId, matchCode);
+  } catch (error) {
+    if (error instanceof AppError && error.status === 403) {
+      await recordDeniedAcquire(userId, matchCode, error);
+    }
+    throw error;
+  }
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_LIFETIME_MS);
   const controlToken = randomBytes(32).toString("base64url");

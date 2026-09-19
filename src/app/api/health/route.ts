@@ -6,12 +6,14 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const rows = await prisma.$queryRaw<Array<{ server_time: Date }>>`select now() as server_time`;
+    const rows = await prisma.$queryRaw<Array<{ server_time: string }>>`
+      select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as server_time
+    `;
     return NextResponse.json(
       {
         status: "ok",
         database: "connected",
-        serverTime: rows[0]?.server_time.toISOString() ?? new Date().toISOString(),
+        serverTime: rows[0]?.server_time ?? new Date().toISOString(),
       },
       { headers: { "Cache-Control": "no-store" } },
     );

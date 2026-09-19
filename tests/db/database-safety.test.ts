@@ -17,4 +17,8 @@ describe("数据库隔离门禁", () => {
   it("准确解析数据库名", () => {
     expect(databaseNameFromUrl("postgresql://localhost/example_test?schema=public")).toBe("example_test");
   });
+
+  it("缺少测试环境时给出可执行的中文指引", () => {
+    expect(() => assertTestDatabaseUrl(undefined)).toThrow("请先按 .env.test.example 创建 .env.test");
+  });
 });

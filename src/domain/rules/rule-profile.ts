@@ -41,6 +41,28 @@ export const traditional21Demo: RuleConfig = Object.freeze({
   decidingGameChangeEndsAt: 11,
 });
 
+export const alternative3x15Demo: RuleConfig = Object.freeze({
+  bestOf: 3,
+  targetPoints: 15,
+  winBy: 2,
+  capPoints: 21,
+  intervalAt: 8,
+  intervalSeconds: 60,
+  betweenGamesSeconds: 120,
+  decidingGameChangeEndsAt: 8,
+});
+
+export const singleGame21Demo: RuleConfig = Object.freeze({
+  bestOf: 1,
+  targetPoints: 21,
+  winBy: 2,
+  capPoints: 30,
+  intervalAt: 11,
+  intervalSeconds: 60,
+  betweenGamesSeconds: 0,
+  decidingGameChangeEndsAt: 11,
+});
+
 export function validateRuleConfig(input: unknown) {
   return ruleConfigSchema.parse(input);
 }
