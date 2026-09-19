@@ -21,5 +21,6 @@ export default defineConfig({
     url: "http://127.0.0.1:3100/api/health",
     reuseExistingServer: false,
     timeout: 120_000,
+    env: { ENABLE_TEST_FAULT_INJECTION: "true" },
   },
 });

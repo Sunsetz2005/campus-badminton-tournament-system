@@ -12,6 +12,10 @@ export function assertRuntimeSecurity() {
 
   if (process.env.NODE_ENV !== "production") return;
 
+  if (process.env.ENABLE_TEST_FAULT_INJECTION === "true") {
+    throw new Error("生产环境禁止启用测试故障注入。");
+  }
+
   const demoConfigured =
     process.env.ALLOW_DEMO_ACCOUNTS === "true" ||
     Boolean(process.env.DEMO_ADMIN_PASSWORD) ||

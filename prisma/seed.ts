@@ -103,6 +103,11 @@ async function main() {
     create: { userId: admin.id, tournamentId: tournament.id, role: "ADMIN" },
   });
   await prisma.roleAssignment.upsert({
+    where: { userId_tournamentId_role: { userId: admin.id, tournamentId: tournament.id, role: "CHIEF_REFEREE" } },
+    update: {},
+    create: { userId: admin.id, tournamentId: tournament.id, role: "CHIEF_REFEREE" },
+  });
+  await prisma.roleAssignment.upsert({
     where: { userId_tournamentId_role: { userId: referee.id, tournamentId: tournament.id, role: "REFEREE" } },
     update: {},
     create: { userId: referee.id, tournamentId: tournament.id, role: "REFEREE" },
@@ -248,7 +253,21 @@ async function main() {
     },
   });
 
-  for (const match of [singlesMatch, doublesMatch]) {
+  const assignedDoublesMatch = await prisma.match.upsert({
+    where: { code: "MD-DEMO-002" },
+    update: {},
+    create: {
+      code: "MD-DEMO-002",
+      stageId: doublesStage.id,
+      courtId: court.id,
+      sideAEntryId: doubleA.id,
+      sideBEntryId: doubleB.id,
+      lifecycleStatus: "READY",
+      scheduledAt: new Date("2026-10-01T04:00:00.000Z"),
+    },
+  });
+
+  for (const match of [singlesMatch, doublesMatch, assignedDoublesMatch]) {
     await prisma.matchRuleSnapshot.upsert({
       where: { matchId: match.id },
       update: {},
@@ -274,8 +293,13 @@ async function main() {
     update: { active: true },
     create: { matchId: singlesMatch.id, userId: referee.id, role: "MAIN_REFEREE", active: true },
   });
+  await prisma.officialAssignment.upsert({
+    where: { matchId_userId_role: { matchId: assignedDoublesMatch.id, userId: referee.id, role: "MAIN_REFEREE" } },
+    update: { active: true },
+    create: { matchId: assignedDoublesMatch.id, userId: referee.id, role: "MAIN_REFEREE", active: true },
+  });
 
-  console.info("阶段 1 模拟种子完成：1 场单打、1 场双打、6 名匿名选手、2 个本地测试身份。");
+  console.info("阶段 3 模拟种子完成：1 场单打、2 场双打、6 名匿名选手、2 个本地测试身份。");
 }
 
 main()

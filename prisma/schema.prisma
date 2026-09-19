@@ -82,6 +82,7 @@ enum ScoringSessionStatus {
 
 enum ResultRevisionStatus {
   PENDING
+  RETURNED
   LOCKED
   SUPERSEDED
 }
@@ -102,6 +103,7 @@ model User {
   scoringSessions     ScoringSession[]
   matchEvents         MatchEvent[]         @relation("MatchEventActor")
   resultRevisions     ResultRevision[]     @relation("ResultRevisionActor")
+  reviewedRevisions   ResultRevision[]     @relation("ResultRevisionReviewer")
   auditLogs           AuditLog[]           @relation("AuditActor")
 
   @@map("users")
@@ -338,6 +340,7 @@ model Match {
   startedAt           DateTime?
   endedAt             DateTime?
   version             Int                  @default(0)
+  controlGeneration   Int                  @default(1)
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
   stage               Stage                @relation(fields: [stageId], references: [id], onDelete: Restrict)
@@ -348,6 +351,7 @@ model Match {
   games               Game[]
   ruleSnapshot        MatchRuleSnapshot?
   events              MatchEvent[]
+  snapshot            MatchSnapshot?
   scoringSessions     ScoringSession[]
   resultRevisions     ResultRevision[]
   officialAssignments OfficialAssignment[]
@@ -387,19 +391,49 @@ model Game {
 }
 
 model MatchEvent {
-  id          String   @id @default(uuid()) @db.Uuid
-  matchId     String   @db.Uuid
-  version     Int
-  commandId   String?  @unique @db.Uuid
-  type        String
-  payload     Json
-  actorUserId String?  @db.Uuid
-  occurredAt  DateTime @default(now())
-  match       Match    @relation(fields: [matchId], references: [id], onDelete: Restrict)
-  actor       User?    @relation("MatchEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  id                 String          @id @default(uuid()) @db.Uuid
+  matchId            String          @db.Uuid
+  version            Int
+  commandId          String?         @unique @db.Uuid
+  domainEventId      String?
+  expectedVersion    Int?
+  commandFingerprint String?
+  type               String
+  payload            Json
+  stateBefore        Json?
+  stateAfter         Json?
+  stateBeforeHash    String?
+  stateAfterHash     String?
+  metadata           Json?
+  response           Json?
+  engineVersion      Int             @default(1)
+  actorUserId        String?         @db.Uuid
+  actorRole          TournamentRole?
+  scoringSessionId   String?         @db.Uuid
+  occurredAt         DateTime        @default(now())
+  match              Match           @relation(fields: [matchId], references: [id], onDelete: Restrict)
+  actor              User?           @relation("MatchEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  scoringSession     ScoringSession? @relation(fields: [scoringSessionId], references: [id], onDelete: SetNull)
 
   @@unique([matchId, version])
+  @@index([scoringSessionId])
   @@map("match_events")
+}
+
+model MatchSnapshot {
+  id               String   @id @default(uuid()) @db.Uuid
+  matchId          String   @unique @db.Uuid
+  version          Int      @default(0)
+  engineVersion    Int      @default(1)
+  initialState     Json
+  initialStateHash String
+  state            Json
+  stateHash        String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  match            Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@map("match_snapshots")
 }
 
 model ScoringSession {
@@ -409,31 +443,42 @@ model ScoringSession {
   deviceSessionId    String
   tokenHash          String               @unique
   takeoverGeneration Int                  @default(1)
+  actingRole         TournamentRole       @default(REFEREE)
   status             ScoringSessionStatus @default(ACTIVE)
   expiresAt          DateTime
   lastHeartbeatAt    DateTime             @default(now())
+  revokedAt          DateTime?
+  revokedReason      String?
   createdAt          DateTime             @default(now())
   updatedAt          DateTime             @updatedAt
   match              Match                @relation(fields: [matchId], references: [id], onDelete: Cascade)
   user               User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
+  matchEvents        MatchEvent[]
 
   @@index([matchId, status])
   @@map("scoring_sessions")
 }
 
 model ResultRevision {
-  id          String               @id @default(uuid()) @db.Uuid
-  matchId     String               @db.Uuid
-  revision    Int
-  status      ResultRevisionStatus @default(PENDING)
-  result      Json
-  reason      String?
-  actorUserId String?              @db.Uuid
-  createdAt   DateTime             @default(now())
-  match       Match                @relation(fields: [matchId], references: [id], onDelete: Restrict)
-  actor       User?                @relation("ResultRevisionActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  id               String               @id @default(uuid()) @db.Uuid
+  matchId          String               @db.Uuid
+  revision         Int
+  status           ResultRevisionStatus @default(PENDING)
+  result           Json
+  reason           String?
+  actorUserId      String?              @db.Uuid
+  submittedRole    TournamentRole?
+  reviewedByUserId String?              @db.Uuid
+  reviewedRole     TournamentRole?
+  reviewedAt       DateTime?
+  returnedAt       DateTime?
+  createdAt        DateTime             @default(now())
+  match            Match                @relation(fields: [matchId], references: [id], onDelete: Restrict)
+  actor            User?                @relation("ResultRevisionActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  reviewedBy       User?                @relation("ResultRevisionReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
 
   @@unique([matchId, revision])
+  @@index([reviewedByUserId])
   @@map("result_revisions")
 }
 

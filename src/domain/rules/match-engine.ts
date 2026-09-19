@@ -219,7 +219,7 @@ function assertSide(side: unknown): asserts side is Side {
   if (side !== "A" && side !== "B") throw new RuleViolation("invalid_side", "比赛方必须是 A 或 B。");
 }
 
-function stableStringify(value: unknown): string {
+export function stableStringify(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   if (value && typeof value === "object") {
     return `{${Object.entries(value)
@@ -230,7 +230,7 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function commandFingerprint(command: MatchCommand) {
+export function fingerprintMatchCommand(command: MatchCommand) {
   return stableStringify({ occurredAt: command.occurredAt, type: command.type, payload: command.payload });
 }
 
@@ -743,7 +743,7 @@ function createEvent(
     eventId: `${command.commandId}:event`,
     version: stateAfter.version,
     commandId: command.commandId,
-    commandFingerprint: commandFingerprint(command),
+    commandFingerprint: fingerprintMatchCommand(command),
     occurredAt: command.occurredAt,
     type: command.type,
     payload: clone(command.payload),
@@ -880,7 +880,7 @@ export function createMatchAggregate(input: CreateMatchInput): MatchAggregate {
 export function applyCommand(aggregate: MatchAggregate, command: MatchCommand): ApplyCommandResult {
   try {
     assertCommonCommand(command);
-    const fingerprint = commandFingerprint(command);
+    const fingerprint = fingerprintMatchCommand(command);
     const prior = aggregate.events.find((event) => event.commandId === command.commandId);
     if (prior) {
       if (prior.commandFingerprint !== fingerprint) {

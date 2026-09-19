@@ -28,6 +28,7 @@ describe("测试环境模板", () => {
       "BETTER_AUTH_URL",
       "APP_ENV",
       "ALLOW_DEMO_ACCOUNTS",
+      "ENABLE_TEST_FAULT_INJECTION",
       "DEMO_ADMIN_EMAIL",
       "DEMO_ADMIN_PASSWORD",
       "DEMO_REFEREE_EMAIL",

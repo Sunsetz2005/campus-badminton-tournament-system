@@ -115,3 +115,20 @@ test("合规生产配置可启动且健康检查成功", { timeout: 20_000 }, as
     await server.stop();
   }
 });
+
+test("生产环境拒绝测试故障注入开关", { timeout: 20_000 }, async () => {
+  const port = await getFreePort();
+  const server = await startProductionServer(
+    productionEnvironment(port, { ENABLE_TEST_FAULT_INJECTION: "true" }),
+    port,
+  );
+  try {
+    await server.waitFor(() => server.exited || server.ready, 10_000);
+    assert.equal(server.ready, false, server.output);
+    assert.equal(server.exited, true, server.output);
+    assert.notEqual(server.exitCode, 0, server.output);
+    assert.match(server.output, /生产环境禁止启用测试故障注入/);
+  } finally {
+    await server.stop();
+  }
+});
