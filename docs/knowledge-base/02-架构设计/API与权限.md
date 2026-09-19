@@ -1,8 +1,8 @@
 ---
 title: API 与权限
-stage: 1
+stage: 3
 status: current
-updated: 2026-09-18
+updated: 2026-09-19
 tags:
   - 羽毛球赛事管理系统
   - API
@@ -11,9 +11,9 @@ tags:
 
 # API 与权限
 
-阶段 1 已实现登录、健康检查、公开白名单和最小控制会话 API；阶段 2 已实现命令在纯规则聚合内的语义。逐分 API、数据库事务、租约和多设备处理仍是阶段 3 约束，不能把下方规划接口误写成已实现。
+阶段 3 已将纯规则引擎接入真实 PostgreSQL 事务和裁判工作台。当前实现为轻量轮询，不使用 WebSocket/SSE；断网禁止写入，不支持离线合并记分。
 
-## 阶段 1 已实现接口
+## 已实现接口
 
 | 路由 | 方法 | 权限与返回 |
 |---|---|---|
@@ -21,29 +21,32 @@ tags:
 | `/api/health` | GET | 只返回服务状态、数据库连通状态和服务端时间 |
 | `/api/public/tournaments/[slug]` | GET | 只读白名单 DTO，不返回账号、内部 ID 或审计字段 |
 | `/api/matches/[matchCode]/control` | POST | 必须登录、账号启用、拥有赛事 `REFEREE` 角色且被指派为该场主裁判；建立最小活动控制会话；已登录用户的 403 拒绝写入脱敏审计 |
+| `/api/matches/[matchCode]/state` | GET | 获指派主裁判或该赛事裁判长读取权威快照；`afterVersion` 未变时返回轻量 `unchanged` |
+| `/api/matches/[matchCode]/control` | POST/DELETE | 取得/同设备恢复或主动释放写租约 |
+| `/api/matches/[matchCode]/control/heartbeat` | PUT | 当前 token、会话和代次一致时按服务器时间续租 120 秒 |
+| `/api/matches/[matchCode]/control/takeover` | POST | `CHIEF_REFEREE` 填写原因后原子撤销旧会话、提高代次并建立新会话 |
+| `/api/matches/[matchCode]/commands` | POST | 单事务执行授权、租约、幂等、版本、纯引擎、事件、快照、局分投影和审计 |
+| `/api/matches/[matchCode]/commands/preview` | POST | 使用同一引擎返回更正前后差异，不落库 |
+| `/api/matches/[matchCode]/commands/[commandId]` | GET | 响应未知或刷新后查询原命令结果 |
 
-控制接口目前只证明权限、活动会话唯一性和 token 摘要存储，不提供加分、心跳、接管或旧设备恢复；这些仍属于阶段 2/3。
-
-阶段 2 的 `createMatchAggregate`、`applyCommand` 和 `replayMatch` 位于 `src/domain/rules/match-engine.ts`。它们验证同 ID 同内容/不同内容、状态转换和确定性重放，但不接收登录会话、控制 token 或数据库连接；服务端不得绕过后续事务层直接把客户端输入当成权威事件。
-
-当前 `requireAssignedReferee` 只接受拥有赛事 `REFEREE` 角色且被指派为该场 `MAIN_REFEREE` 的账号。`CHIEF_REFEREE` 接管是阶段 3 的目标能力，当前授权实现会拒绝裁判长直接取得控制权；下方权限矩阵描述的是接管流程完成后的目标状态，不能当作现状。
+`requireAssignedReferee` 仍只允许拥有 `REFEREE` 且被指派的主裁判正常取得租约。裁判长不绕过流程普通取权，而是使用专用 takeover 接口；现有管理员模拟账号同时获授 `CHIEF_REFEREE`，每次敏感操作审计实际使用的裁判长角色，不依赖 `ADMIN`。
 
 ## 状态变更命令信封
 
 ```json
 {
   "commandId": "uuid",
-  "matchId": "match-id",
   "expectedVersion": 42,
-  "deviceSessionId": "device-session-id",
-  "leaseToken": "opaque-token",
+  "scoringSessionId": "session-id",
   "takeoverGeneration": 3,
-  "type": "AwardPoint",
+  "type": "RALLY_WON",
   "payload": {
     "side": "A"
   }
 }
 ```
+
+控制 token 放在 `Authorization: Bearer ...` header，不写入响应、事件或审计元数据。
 
 操作者、角色和赛事范围必须从服务器认证会话取得，不能相信客户端提交的 `actorId`。服务端为规范化后的命令类型与载荷计算摘要，并在一个数据库事务内完成授权、并发检查、幂等处理、事件追加和快照更新。
 
@@ -109,4 +112,4 @@ tags:
 
 ## 权限测试门禁
 
-阶段 1 至少覆盖未登录、错误角色、错误比赛和无指派，并确认拒绝不创建控制会话。阶段 2 只验证了纯聚合内的重复命令语义；过期版本、无效租约、两设备竞争、接管后旧设备写入、数据库并发重复和响应丢失恢复属于阶段 3 门禁，当前未实现。测试范围见[黄金用例与回归清单](../05-测试验收/黄金用例与回归清单.md)。
+阶段 3 已在真实 `_test` 数据库与 HTTP 路由覆盖过期版本、幂等重试、异载荷复用、两命令并发、心跳、裁判长接管、旧设备拒写、响应超时查询原 ID、快照篡改拒写和整事务回滚。测试范围见[黄金用例与回归清单](../05-测试验收/黄金用例与回归清单.md)。
