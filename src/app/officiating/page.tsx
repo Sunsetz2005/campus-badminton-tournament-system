@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 
 import { prisma } from "@/db/client";
 import { requireActivePageUser } from "@/server/auth/page-authorization";
@@ -28,6 +29,24 @@ export default async function OfficiatingPage() {
     },
     orderBy: { match: { scheduledAt: "asc" } },
   });
+  const chiefAssignments = await prisma.roleAssignment.findMany({
+    where: { userId: user.id, role: "CHIEF_REFEREE" },
+    select: { tournamentId: true },
+  });
+  const reviewMatches = chiefAssignments.length ? await prisma.match.findMany({
+    where: {
+      stage: { competition: { tournamentId: { in: chiefAssignments.map((item) => item.tournamentId) } } },
+      lifecycleStatus: "SUBMITTED",
+    },
+    select: {
+      code: true,
+      verificationStatus: true,
+      sideAEntry: { select: { displayName: true } },
+      sideBEntry: { select: { displayName: true } },
+      court: { select: { name: true } },
+    },
+    orderBy: { updatedAt: "desc" },
+  }) : [];
 
   return (
     <section>
@@ -44,12 +63,27 @@ export default async function OfficiatingPage() {
               <h2>{match.code}</h2>
               <p>{match.sideAEntry?.displayName ?? "待定"} vs {match.sideBEntry?.displayName ?? "待定"}</p>
               <small>{match.court?.name ?? "场地待定"} · {role}</small>
+              <Link className="button small" href={`/officiating/${match.code}`}>进入执裁</Link>
             </article>
           ))}
         </div>
       ) : (
         <p className="empty-state">当前账号没有有效裁判指派。</p>
       )}
+      {chiefAssignments.length ? (
+        <section className="stack" style={{ marginTop: "36px" }}>
+          <div className="section-heading"><p className="eyebrow">裁判长权限</p><h2>待复核结果</h2></div>
+          {reviewMatches.length ? reviewMatches.map((match) => (
+            <article className="card" key={match.code}>
+              <StatusBadge tone="warn">{match.verificationStatus}</StatusBadge>
+              <h3>{match.code}</h3>
+              <p>{match.sideAEntry?.displayName ?? "待定"} vs {match.sideBEntry?.displayName ?? "待定"}</p>
+              <small>{match.court?.name ?? "场地待定"}</small>
+              <Link className="button small" href={`/officiating/${match.code}`}>进入复核 / 接管</Link>
+            </article>
+          )) : <p className="empty-state">当前没有待复核结果。</p>}
+        </section>
+      ) : null}
     </section>
   );
 }

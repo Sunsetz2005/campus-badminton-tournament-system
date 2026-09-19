@@ -5,7 +5,7 @@ import { requireActiveUser } from "@/server/auth/authorization";
 import { getSessionFromHeaders } from "@/server/auth/session";
 import { parseControlToken, submitScoringCommand } from "@/server/services/scoring-command-service";
 import { parseScoringCommandRequest } from "@/server/services/scoring-command-schema";
-import { errorResponse } from "@/server/services/errors";
+import { AppError, errorResponse } from "@/server/services/errors";
 
 export async function POST(request: Request, context: { params: Promise<{ matchCode: string }> }) {
   let actorUserId: string | undefined;
@@ -17,7 +17,7 @@ export async function POST(request: Request, context: { params: Promise<{ matchC
     const requestedDelay = Number(request.headers.get("x-test-response-delay-ms") ?? 0);
     if (requestedDelay > 0) {
       if (process.env.ENABLE_TEST_FAULT_INJECTION !== "true") {
-        throw new Error("当前环境未启用测试故障注入。");
+        throw new AppError(403, "fault_injection_forbidden", "当前环境未启用测试故障注入。");
       }
       assertTestDatabaseUrl(process.env.DATABASE_URL);
     }

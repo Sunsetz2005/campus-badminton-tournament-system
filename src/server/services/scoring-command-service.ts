@@ -70,7 +70,12 @@ async function requireController(
 ) {
   const session = await transaction.scoringSession.findUnique({ where: { id: envelope.scoringSessionId } });
   const match = await transaction.match.findUniqueOrThrow({
-    where: { id: matchId }, select: { controlGeneration: true, version: true },
+    where: { id: matchId },
+    select: {
+      controlGeneration: true,
+      version: true,
+      stage: { select: { competition: { select: { tournamentId: true } } } },
+    },
   });
   if (
     !session || session.matchId !== matchId || session.userId !== actorUserId || session.status !== "ACTIVE" ||
@@ -78,6 +83,19 @@ async function requireController(
     match.controlGeneration !== envelope.takeoverGeneration || !verifyControlToken(controlToken, session.tokenHash)
   ) {
     throw new AppError(409, "not_controller", "控制会话已过期、无效或已被接管。");
+  }
+  const tournamentId = match.stage.competition.tournamentId;
+  const activeRole = await transaction.roleAssignment.findFirst({
+    where: { userId: actorUserId, tournamentId, role: session.actingRole },
+    select: { id: true },
+  });
+  if (!activeRole) throw new AppError(403, "role_revoked", "当前会话的赛事角色已被撤销。");
+  if (session.actingRole === "REFEREE") {
+    const assignment = await transaction.officialAssignment.findFirst({
+      where: { matchId, userId: actorUserId, role: "MAIN_REFEREE", active: true },
+      select: { id: true },
+    });
+    if (!assignment) throw new AppError(403, "assignment_revoked", "你的该场主裁判指派已失效。");
   }
   assertRoleForCommand(session.actingRole, envelope.type);
   return { session, match };
