@@ -145,6 +145,7 @@ export type MatchCommand =
       "RECORD_SPECIAL_OUTCOME",
       { type: SpecialOutcome["type"]; winnerSide?: Side; reason: string }
     >
+  | CommandBase<"INVALIDATE_SPECIAL_OUTCOME", { reason: string }>
   | CommandBase<"SUBMIT_RESULT", { reason: string }>
   | CommandBase<"CONFIRM_RESULT", { reason: string }>
   | CommandBase<"REOPEN_RESULT", { reason: string }>;
@@ -160,7 +161,7 @@ export interface MatchEvent {
   reversible: boolean;
   stateBefore: MatchState;
   stateAfter: MatchState;
-  metadata?: { undoneCommandId?: string };
+  metadata?: { undoneCommandId?: string; invalidatedCommandId?: string };
 }
 
 export interface MatchAggregate {
@@ -683,6 +684,12 @@ function nextStateForCommand(state: MatchState, command: MatchCommand) {
       if (next.phase === "SUBMITTED" || next.phase === "CONFIRMED") {
         throw new RuleViolation("result_locked", "已提交或确认的结果不能直接改写。");
       }
+      if (next.phase === "SPECIAL_OUTCOME_PENDING_SUBMISSION") {
+        throw new RuleViolation(
+          "special_outcome_already_recorded",
+          "已记录特殊结果，必须先作废当前记录才能重新录入。",
+        );
+      }
       if (command.payload.winnerSide) assertSide(command.payload.winnerSide);
       next.specialOutcome = {
         type: command.payload.type,
@@ -716,8 +723,9 @@ function nextStateForCommand(state: MatchState, command: MatchCommand) {
       next.phase = next.submittedFromPhase;
       next.submittedFromPhase = null;
       return next;
+    case "INVALIDATE_SPECIAL_OUTCOME":
     case "UNDO_LAST_REVERSIBLE":
-      throw new RuleViolation("internal_undo_path", "撤销命令必须通过聚合历史处理。");
+      throw new RuleViolation("internal_history_path", "该命令必须通过聚合历史处理。");
     default:
       throw new RuleViolation("unknown_command", "未知比赛命令。");
   }
@@ -795,6 +803,33 @@ function applyUndo(aggregate: MatchAggregate, command: Extract<MatchCommand, { t
   return createEvent(aggregate, command, restored, { undoneCommandId: target.commandId });
 }
 
+function applySpecialOutcomeInvalidation(
+  aggregate: MatchAggregate,
+  command: Extract<MatchCommand, { type: "INVALIDATE_SPECIAL_OUTCOME" }>,
+) {
+  requireReason(command.payload.reason);
+  if (aggregate.state.phase !== "SPECIAL_OUTCOME_PENDING_SUBMISSION") {
+    throw new RuleViolation(
+      "special_outcome_cannot_be_invalidated",
+      "只有待提交的特殊结果记录可以作废。",
+    );
+  }
+  const invalidated = new Set(
+    aggregate.events
+      .map((event) => event.metadata?.invalidatedCommandId)
+      .filter((commandId): commandId is string => Boolean(commandId)),
+  );
+  const target = [...aggregate.events]
+    .reverse()
+    .find((event) => event.type === "RECORD_SPECIAL_OUTCOME" && !invalidated.has(event.commandId));
+  if (!target) {
+    throw new RuleViolation("special_outcome_event_missing", "找不到可作废的特殊结果历史。");
+  }
+  return createEvent(aggregate, command, clone(target.stateBefore), {
+    invalidatedCommandId: target.commandId,
+  });
+}
+
 export function createMatchAggregate(input: CreateMatchInput): MatchAggregate {
   if (!input.matchId.trim()) throw new RuleViolation("match_id_required", "比赛 ID 不能为空。");
   if (input.format !== "SINGLES" && input.format !== "DOUBLES") {
@@ -856,7 +891,9 @@ export function applyCommand(aggregate: MatchAggregate, command: MatchCommand): 
     const applied =
       command.type === "UNDO_LAST_REVERSIBLE"
         ? applyUndo(aggregate, command)
-        : createEvent(aggregate, command, nextStateForCommand(aggregate.state, command));
+        : command.type === "INVALIDATE_SPECIAL_OUTCOME"
+          ? applySpecialOutcomeInvalidation(aggregate, command)
+          : createEvent(aggregate, command, nextStateForCommand(aggregate.state, command));
     return { status: "accepted", aggregate: applied.aggregate, events: [applied.event] };
   } catch (error) {
     const violation = error instanceof RuleViolation ? error : new RuleViolation("invalid_command", "命令无法应用。");

@@ -459,6 +459,95 @@ describe("阶段 2 纯规则引擎", () => {
     expect(aggregate.state.phase).toBe("SPECIAL_OUTCOME_PENDING_SUBMISSION");
   });
 
+  it("S2-009：作废误记特殊结果后精确恢复比分、发接发和位置", () => {
+    let aggregate = tossAndOpen(createDoubles());
+    aggregate = accept(aggregate, command("RALLY_WON", { side: "A" }));
+    const before = structuredClone(aggregate.state);
+    const recorded = command("RECORD_SPECIAL_OUTCOME", { type: "RET", winnerSide: "B", reason: "A 方误记退赛" });
+    aggregate = accept(aggregate, recorded);
+    const invalidation = command("INVALIDATE_SPECIAL_OUTCOME", { reason: "现场核对后确认为误记" });
+    aggregate = accept(aggregate, invalidation);
+
+    expect(aggregate.state).toEqual({ ...before, version: before.version + 2 });
+    expect(aggregate.events.at(-1)).toMatchObject({
+      type: "INVALIDATE_SPECIAL_OUTCOME",
+      metadata: { invalidatedCommandId: recorded.commandId },
+    });
+    expect(replayMatch(aggregate.initialState, aggregate.events)).toEqual(aggregate.state);
+
+    const duplicate = applyCommand(aggregate, invalidation);
+    expect(duplicate.status).toBe("duplicate");
+    expect(
+      applyCommand(aggregate, {
+        ...invalidation,
+        payload: { reason: "使用同一 ID 改写原因" },
+      }),
+    ).toMatchObject({ status: "rejected", error: { code: "command_id_reused" } });
+  });
+
+  it("S2-009：作废特殊结果恢复暂停、待办和赛前原状态", () => {
+    const scenarios = [
+      accept(tossAndOpen(createSingles()), command("PAUSE_MATCH", { reason: "场地问题" })),
+      accept(
+        accept(
+          tossAndOpen(createSingles(singleGame21Demo)),
+          command("CORRECT_SCORE_STATE", {
+            reason: "准备间歇点",
+            replacement: replacement(tossAndOpen(createSingles(singleGame21Demo)).state, 10, 0),
+          }),
+        ),
+        command("RALLY_WON", { side: "A" }),
+      ),
+      accept(
+        createSingles(),
+        command("RECORD_COIN_TOSS", {
+          valid: true,
+          winnerSide: "A",
+          winnerChoice: { kind: "SERVICE", decision: "SERVE" },
+          loserChoice: { kind: "END", end: "END_2" },
+        }),
+      ),
+    ];
+
+    for (let aggregate of scenarios) {
+      const before = structuredClone(aggregate.state);
+      aggregate = accept(
+        aggregate,
+        command("RECORD_SPECIAL_OUTCOME", { type: "ABANDONED", reason: "临时记录中止" }),
+      );
+      aggregate = accept(aggregate, command("INVALIDATE_SPECIAL_OUTCOME", { reason: "中止记录不成立" }));
+      expect(aggregate.state).toEqual({ ...before, version: before.version + 2 });
+    }
+  });
+
+  it("S2-009：特殊结果不能直接覆盖，锁定后须先受控重开", () => {
+    let aggregate = tossAndOpen(createSingles());
+    const before = structuredClone(aggregate.state);
+    aggregate = accept(
+      aggregate,
+      command("RECORD_SPECIAL_OUTCOME", { type: "RET", winnerSide: "A", reason: "B 方退赛" }),
+    );
+    expect(
+      applyCommand(
+        aggregate,
+        command("RECORD_SPECIAL_OUTCOME", { type: "DSQ", winnerSide: "B", reason: "不允许直接覆盖" }),
+      ),
+    ).toMatchObject({ status: "rejected", error: { code: "special_outcome_already_recorded" } });
+
+    aggregate = accept(aggregate, command("SUBMIT_RESULT", { reason: "提交特殊结果" }));
+    expect(
+      applyCommand(aggregate, command("INVALIDATE_SPECIAL_OUTCOME", { reason: "不能越过重开" })),
+    ).toMatchObject({ status: "rejected", error: { code: "special_outcome_cannot_be_invalidated" } });
+    aggregate = accept(aggregate, command("CONFIRM_RESULT", { reason: "复核锁定" }));
+    expect(
+      applyCommand(aggregate, command("INVALIDATE_SPECIAL_OUTCOME", { reason: "锁定后不能直接作废" })),
+    ).toMatchObject({ status: "rejected", error: { code: "special_outcome_cannot_be_invalidated" } });
+
+    aggregate = accept(aggregate, command("REOPEN_RESULT", { reason: "发现特殊结果误记" }));
+    aggregate = accept(aggregate, command("INVALIDATE_SPECIAL_OUTCOME", { reason: "受控重开后作废" }));
+    expect(aggregate.state).toEqual({ ...before, version: before.version + 5 });
+  });
+
   it("同 commandId 同内容返回 duplicate，不同内容拒绝", () => {
     let aggregate = tossAndOpen(createSingles());
     const id = "99999999-9999-4999-8999-999999999999";
