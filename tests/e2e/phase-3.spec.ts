@@ -6,6 +6,12 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 import { prisma } from "../../src/db/client";
 import type { MatchState } from "../../src/domain/rules/match-engine";
 
+type ScoringControl = {
+  controlToken: string;
+  sessionId: string;
+  takeoverGeneration: number;
+};
+
 async function login(page: Page, email: string, password: string) {
   await page.goto("/login");
   await page.getByLabel("登录邮箱").fill(email);
@@ -39,6 +45,53 @@ async function resetMatches() {
     (email): email is string => Boolean(email),
   );
   await prisma.session.deleteMany({ where: { user: { email: { in: demoEmails } } } });
+}
+
+async function readAuthoritativeState(request: APIRequestContext, matchCode: string) {
+  const response = await request.get(`/api/matches/${matchCode}/state`);
+  expect(response.status()).toBe(200);
+  return (await response.json()).state as MatchState;
+}
+
+async function readBrowserControl(page: Page, matchCode: string) {
+  const raw = await page.evaluate(
+    (code) => sessionStorage.getItem(`badminton-control:${code}`),
+    matchCode,
+  );
+  expect(raw).not.toBeNull();
+  return JSON.parse(raw!) as ScoringControl;
+}
+
+async function sendCommand(
+  request: APIRequestContext,
+  matchCode: string,
+  control: ScoringControl,
+  state: MatchState,
+  type: string,
+  payload: unknown,
+) {
+  const response = await request.post(`/api/matches/${matchCode}/commands`, {
+    headers: { Authorization: `Bearer ${control.controlToken}` },
+    data: {
+      commandId: crypto.randomUUID(),
+      occurredAt: new Date().toISOString(),
+      expectedVersion: state.version,
+      scoringSessionId: control.sessionId,
+      takeoverGeneration: control.takeoverGeneration,
+      type,
+      payload,
+    },
+  });
+  expect(response.status(), await response.text()).toBe(201);
+  return (await response.json()).state as MatchState;
+}
+
+function courtHalf(page: Page, physicalEnd: "END_1" | "END_2") {
+  return page.locator(`[data-testid="badminton-court"] [data-physical-end="${physicalEnd}"]`);
+}
+
+function courtCell(page: Page, physicalEnd: "END_1" | "END_2", row: "TOP" | "BOTTOM") {
+  return courtHalf(page, physicalEnd).locator(`[data-screen-row="${row}"]`);
 }
 
 async function runFullMatch(request: APIRequestContext, matchCode: string, deviceSessionId: string) {
@@ -125,80 +178,325 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await runFullMatch(page.context().request, "MD-DEMO-002", "42222222-2222-4222-8222-222222222222");
   });
 
-  test("响应超时后使用原 commandId 查回已提交结果", async ({ page }) => {
-    await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
+  test("工作台响应超时后锁定最后确认状态并用原 commandId 恢复", async ({ page }) => {
+    const matchCode = "MS-DEMO-001";
     const request = page.context().request;
-    const state = await (await request.get("/api/matches/MS-DEMO-001/state")).json();
-    const control = await (await request.post("/api/matches/MS-DEMO-001/control", {
-      data: { deviceSessionId: "43333333-3333-4333-8333-333333333333" },
-    })).json();
-    const commandId = crypto.randomUUID();
-    const outcome = await page.evaluate(async ({ control, commandId, version }) => {
-      const abort = new AbortController();
-      setTimeout(() => abort.abort(), 100);
-      try {
-        await fetch("/api/matches/MS-DEMO-001/commands", {
-          method: "POST",
-          signal: abort.signal,
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${control.controlToken}`,
-            "X-Test-Response-Delay-Ms": "800",
-          },
-          body: JSON.stringify({
-            commandId,
-            occurredAt: new Date().toISOString(),
-            expectedVersion: version,
-            scoringSessionId: control.sessionId,
-            takeoverGeneration: control.takeoverGeneration,
-            type: "RECORD_COIN_TOSS",
-            payload: { valid: false, reason: "故障注入测试" },
-          }),
-        });
-        return "responded";
-      } catch {
-        return "unknown";
-      }
-    }, { control, commandId, version: state.version });
-    expect(outcome).toBe("unknown");
-    await page.waitForTimeout(900);
-    const recovered = await request.get(`/api/matches/MS-DEMO-001/commands/${commandId}`);
-    expect(recovered.status()).toBe(200);
-    await expect(recovered.json()).resolves.toMatchObject({ status: "accepted", version: 1 });
-    await expect(prisma.matchEvent.count({ where: { match: { code: "MS-DEMO-001" }, commandId } })).resolves.toBe(1);
+    const pendingKey = `badminton-pending:${matchCode}`;
+    await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
+    await page.goto(`/officiating/${matchCode}`);
+    await page.getByRole("button", { name: "取得本机控制权" }).click();
+    await page.getByRole("button", { name: "A 方胜并选先发" }).click();
+    await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
+    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("0");
+
+    const stableSnapshot = await (await request.get(`/api/matches/${matchCode}/state`)).json();
+    let holdUnknownState = true;
+    await page.route(`**/api/matches/${matchCode}/state*`, async (route) => {
+      if (!holdUnknownState) return route.continue();
+      await route.fulfill({
+        body: JSON.stringify(stableSnapshot),
+        contentType: "application/json",
+        headers: { "Cache-Control": "no-store" },
+        status: 200,
+      });
+    });
+    await page.route(`**/api/matches/${matchCode}/commands/*`, async (route) => {
+      if (!holdUnknownState) return route.continue();
+      await route.fulfill({
+        body: JSON.stringify({ error: { code: "command_not_found", message: "故障注入期间暂不返回命令结果。" } }),
+        contentType: "application/json",
+        headers: { "Cache-Control": "no-store" },
+        status: 404,
+      });
+    });
+    await page.route(`**/api/matches/${matchCode}/commands`, async (route) => {
+      await route.continue({
+        headers: {
+          ...route.request().headers(),
+          "x-test-response-delay-ms": "6500",
+        },
+      });
+    });
+
+    const addPoint = page.getByRole("button", { name: "模拟选手 01 赢得一分" });
+    await addPoint.click();
+    await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), pendingKey)).not.toBeNull();
+    const pendingEnvelope = await page.evaluate(
+      (key) => JSON.parse(localStorage.getItem(key)!),
+      pendingKey,
+    ) as { commandId: string; type: string; payload: unknown };
+    expect(pendingEnvelope.type).toBe("RALLY_WON");
+    expect(pendingEnvelope.payload).toEqual({ side: "A" });
+    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("0");
+    await expect(addPoint).toBeDisabled();
+
+    const recovery = page.locator(".pending-recovery");
+    await expect(recovery).toBeVisible({ timeout: 8_000 });
+    await expect(recovery).toContainText("比分、站位和发接发保持最后一次已确认状态");
+    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("0");
+    await expect(page.locator(".score-adjust.plus").first()).toBeDisabled();
+    await expect(page.locator(".score-adjust.plus").last()).toBeDisabled();
+    await expect(page.evaluate((key) => localStorage.getItem(key), pendingKey)).resolves.not.toBeNull();
+    await expect.poll(() => prisma.matchEvent.count({
+      where: { match: { code: matchCode }, commandId: pendingEnvelope.commandId },
+    })).toBe(1);
+
+    holdUnknownState = false;
+    await recovery.getByRole("button", { name: "查询原命令结果" }).click();
+    await expect(recovery).toBeHidden();
+    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await expect(page.evaluate((key) => localStorage.getItem(key), pendingKey)).resolves.toBeNull();
+    await expect.poll(() => prisma.matchEvent.count({
+      where: { match: { code: matchCode }, commandId: pendingEnvelope.commandId },
+    })).toBe(1);
   });
 
-  test("平板控制端与手机只读端展示同一权威比分", async ({ page }) => {
+  test("单打四格、减分预览与本机翻转均遵守权威状态边界", async ({ page }) => {
+    const matchCode = "MS-DEMO-001";
+    const request = page.context().request;
+    await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
+    await page.goto(`/officiating/${matchCode}`);
+    await page.getByRole("button", { name: "取得本机控制权" }).click();
+    await page.getByRole("button", { name: "A 方胜并选先发" }).click();
+    await expect(page.getByRole("button", { name: "确认首局设置并开赛" })).toBeVisible();
+
+    const setupState = await readAuthoritativeState(request, matchCode);
+    const playerA = setupState.players.A[0];
+    const playerB = setupState.players.B[0];
+    const court = page.getByTestId("badminton-court");
+    await expect(court.locator("[data-screen-row]")).toHaveCount(4);
+    await expect(court).toHaveAttribute("data-flipped", "false");
+    await expect(courtHalf(page, "END_1")).toHaveAttribute("data-side", "A");
+    await expect(courtHalf(page, "END_2")).toHaveAttribute("data-side", "B");
+    await expect(courtCell(page, "END_1", "TOP")).toHaveAttribute("data-logical-court", "L");
+    await expect(courtCell(page, "END_1", "TOP")).toHaveAttribute("data-player-id", "");
+    await expect(courtCell(page, "END_1", "BOTTOM")).toHaveAttribute("data-logical-court", "R");
+    await expect(courtCell(page, "END_1", "BOTTOM")).toHaveAttribute("data-player-id", playerA);
+    await expect(courtCell(page, "END_1", "BOTTOM")).toHaveAttribute("data-role", "");
+    await expect(courtCell(page, "END_1", "BOTTOM")).toContainText("拟首发");
+    await expect(courtCell(page, "END_2", "TOP")).toHaveAttribute("data-logical-court", "R");
+    await expect(courtCell(page, "END_2", "TOP")).toHaveAttribute("data-player-id", playerB);
+    await expect(courtCell(page, "END_2", "TOP")).toHaveAttribute("data-role", "");
+    await expect(courtCell(page, "END_2", "TOP")).toContainText("拟首接");
+    await expect(courtCell(page, "END_2", "BOTTOM")).toHaveAttribute("data-logical-court", "L");
+    await expect(courtCell(page, "END_2", "BOTTOM")).toHaveAttribute("data-player-id", "");
+    await expect(court.locator('[data-role="SERVER"]')).toHaveCount(0);
+    await expect(court.locator('[data-role="RECEIVER"]')).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "模拟选手 01 赢得一分" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "核对单打站位" }).first()).toBeDisabled();
+    await expect(page.getByRole("button", { name: "核对单打站位" }).last()).toBeDisabled();
+    await expect(page.getByRole("button", { name: "更正场地端" })).toBeDisabled();
+
+    await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
+    const addPoint = page.getByRole("button", { name: "模拟选手 01 赢得一分" });
+    await expect(addPoint).toBeEnabled();
+    await expect(court.locator('[data-role="SERVER"]')).toHaveCount(1);
+    await expect(court.locator('[data-role="RECEIVER"]')).toHaveCount(1);
+    await addPoint.click();
+    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await expect(courtCell(page, "END_1", "TOP")).toHaveAttribute("data-player-id", playerA);
+    await expect(courtCell(page, "END_1", "TOP")).toHaveAttribute("data-role", "SERVER");
+    await expect(courtCell(page, "END_1", "BOTTOM")).toHaveAttribute("data-player-id", "");
+    await expect(courtCell(page, "END_2", "TOP")).toHaveAttribute("data-player-id", "");
+    await expect(courtCell(page, "END_2", "BOTTOM")).toHaveAttribute("data-player-id", playerB);
+    await expect(courtCell(page, "END_2", "BOTTOM")).toHaveAttribute("data-role", "RECEIVER");
+    await expect(court.locator('[data-role="SERVER"]')).toHaveCount(1);
+    await expect(court.locator('[data-role="RECEIVER"]')).toHaveCount(1);
+
+    const match = await prisma.match.findUniqueOrThrow({ where: { code: matchCode }, select: { id: true } });
+    const versionBeforePreview = (await readAuthoritativeState(request, matchCode)).version;
+    const eventsBeforePreview = await prisma.matchEvent.count({ where: { matchId: match.id } });
+    await page.getByRole("button", { name: "更正 模拟选手 01 的最近得分" }).click();
+    const undoDialog = page.getByRole("dialog", { name: "更正 A 方最近得分" });
+    await expect(undoDialog).toContainText("不会直接改分");
+    await undoDialog.getByLabel("必填原因").fill("误触减分安全探针");
+    await undoDialog.getByRole("button", { name: "生成服务器预览" }).click();
+    await expect(undoDialog.getByText("服务器预览")).toBeVisible();
+    expect((await readAuthoritativeState(request, matchCode)).version).toBe(versionBeforePreview);
+    await expect(prisma.matchEvent.count({ where: { matchId: match.id } })).resolves.toBe(eventsBeforePreview);
+    await undoDialog.getByRole("button", { name: "取消" }).click();
+    await expect(undoDialog).toBeHidden();
+    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    expect((await readAuthoritativeState(request, matchCode)).version).toBe(versionBeforePreview);
+
+    await page.getByRole("button", { name: "翻转本机视角" }).click();
+    await expect(court).toHaveAttribute("data-flipped", "true");
+    await expect(court.locator(".court-visual-half").first()).toHaveAttribute("data-physical-end", "END_2");
+    await expect(court.locator(".court-visual-half").last()).toHaveAttribute("data-physical-end", "END_1");
+    expect((await readAuthoritativeState(request, matchCode)).version).toBe(versionBeforePreview);
+  });
+
+  test("双打可选择非名单第一人并由权威状态自动换位和换边", async ({ page }) => {
+    const matchCode = "MD-DEMO-002";
+    const request = page.context().request;
+    await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
+    await page.goto(`/officiating/${matchCode}`);
+    await page.getByRole("button", { name: "取得本机控制权" }).click();
+    await page.getByRole("button", { name: "A 方胜并选先发" }).click();
+    await expect(page.getByRole("button", { name: "确认首局设置并开赛" })).toBeVisible();
+
+    const setupState = await readAuthoritativeState(request, matchCode);
+    const [firstA, selectedServer] = setupState.players.A;
+    const [firstB, selectedReceiver] = setupState.players.B;
+    await page.getByLabel("首发球员（A 方）").selectOption(selectedServer);
+    await page.getByLabel("首接球员（B 方）").selectOption(selectedReceiver);
+    await expect(page.locator(`[data-player-id="${selectedServer}"]`)).toHaveAttribute("data-role", "");
+    await expect(page.locator(`[data-player-id="${selectedServer}"]`)).toContainText("拟首发");
+    await expect(page.locator(`[data-player-id="${selectedReceiver}"]`)).toHaveAttribute("data-role", "");
+    await expect(page.locator(`[data-player-id="${selectedReceiver}"]`)).toContainText("拟首接");
+    await expect(page.getByTestId("badminton-court").locator('[data-role="SERVER"]')).toHaveCount(0);
+    await expect(page.getByTestId("badminton-court").locator('[data-role="RECEIVER"]')).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "模拟组合 03/04 赢得一分" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "更正 A 方换位" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "更正 B 方换位" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "更正场地端" })).toBeDisabled();
+    await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
+    await expect(page.getByRole("button", { name: "模拟组合 03/04 赢得一分" })).toBeEnabled();
+    await expect(page.getByTestId("badminton-court").locator('[data-role="SERVER"]')).toHaveCount(1);
+    await expect(page.getByTestId("badminton-court").locator('[data-role="RECEIVER"]')).toHaveCount(1);
+
+    await page.reload();
+    await expect(page.getByRole("button", { name: "模拟组合 03/04 赢得一分" })).toBeEnabled();
+    let state = await readAuthoritativeState(request, matchCode);
+    expect(state.serverPlayerId).toBe(selectedServer);
+    expect(state.receiverPlayerId).toBe(selectedReceiver);
+    expect(state.logicalCourts).toEqual({
+      A: { R: selectedServer, L: firstA },
+      B: { R: selectedReceiver, L: firstB },
+    });
+    await expect(page.locator(`[data-player-id="${selectedServer}"]`)).toHaveAttribute("data-logical-court", "R");
+    await expect(page.locator(`[data-player-id="${selectedServer}"]`)).toHaveAttribute("data-role", "SERVER");
+    await expect(page.locator(`[data-player-id="${selectedReceiver}"]`)).toHaveAttribute("data-logical-court", "R");
+    await expect(page.locator(`[data-player-id="${selectedReceiver}"]`)).toHaveAttribute("data-role", "RECEIVER");
+
+    await page.getByRole("button", { name: "模拟组合 03/04 赢得一分" }).click();
+    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    state = await readAuthoritativeState(request, matchCode);
+    expect(state.logicalCourts).toEqual({
+      A: { R: firstA, L: selectedServer },
+      B: { R: selectedReceiver, L: firstB },
+    });
+    expect(state.serverPlayerId).toBe(selectedServer);
+    expect(state.receiverPlayerId).toBe(firstB);
+    await expect(page.locator(`[data-player-id="${selectedServer}"]`)).toHaveAttribute("data-logical-court", "L");
+    await expect(page.locator(`[data-player-id="${selectedServer}"]`)).toHaveAttribute("data-role", "SERVER");
+    await expect(page.locator(`[data-player-id="${firstB}"]`)).toHaveAttribute("data-logical-court", "L");
+    await expect(page.locator(`[data-player-id="${firstB}"]`)).toHaveAttribute("data-role", "RECEIVER");
+    await expect(page.getByTestId("badminton-court").locator('[data-role="SERVER"]')).toHaveCount(1);
+    await expect(page.getByTestId("badminton-court").locator('[data-role="RECEIVER"]')).toHaveCount(1);
+
+    const control = await readBrowserControl(page, matchCode);
+    state = await sendCommand(request, matchCode, control, state, "CORRECT_SCORE_STATE", {
+      reason: "换边比分面板探针",
+      replacement: {
+        score: { A: 20, B: 0 },
+        gamesWon: state.gamesWon,
+        completedGames: state.completedGames,
+        servingSide: "A",
+        serverPlayerId: state.logicalCourts!.A.R,
+        receiverPlayerId: state.logicalCourts!.B.R,
+        logicalCourts: state.logicalCourts,
+        pendingObligations: [],
+        phase: "IN_PROGRESS",
+      },
+    });
+    state = await sendCommand(request, matchCode, control, state, "RALLY_WON", { side: "A" });
+    expect(state.pendingObligations.some((item) => item.type === "CHANGE_ENDS")).toBe(true);
+    expect(state.score).toEqual({ A: 21, B: 0 });
+    await page.reload();
+    await expect(page.locator("[data-score-side]").first()).toHaveAttribute("data-score-side", "A");
+    await expect(page.locator("[data-score-side]").first().locator(".court-score-number")).toHaveText("21");
+
+    await page.getByRole("button", { name: "确认 / 核对换边" }).click();
+    const endsDialog = page.getByRole("dialog", { name: "核对并更正物理场地端" });
+    await endsDialog.getByRole("button", { name: "生成服务器预览" }).click();
+    await expect(endsDialog.getByText("物理端 A END_1 → END_2")).toBeVisible();
+    await endsDialog.getByRole("button", { name: "确认执行预览结果" }).click();
+    await expect(endsDialog).toBeHidden();
+
+    state = await readAuthoritativeState(request, matchCode);
+    expect(state.physicalEnds).toEqual({ A: "END_2", B: "END_1" });
+    expect(state.score).toEqual({ A: 21, B: 0 });
+    await expect(page.locator("[data-score-side]").first()).toHaveAttribute("data-score-side", "B");
+    await expect(page.locator("[data-score-side]").first().locator(".court-score-number")).toHaveText("0");
+    await expect(page.locator("[data-score-side]").last()).toHaveAttribute("data-score-side", "A");
+    await expect(page.locator("[data-score-side]").last().locator(".court-score-number")).toHaveText("21");
+  });
+
+  test("Chromium 浏览器设备模拟：单打与双打的平板控制端和手机只读端展示同一权威状态", async ({ page }, testInfo) => {
+    testInfo.annotations.push({
+      type: "acceptance-boundary",
+      description: "本用例生成的四张截图均为 Chromium 浏览器设备模拟，不是真机验收证据。",
+    });
+    const artifactDir = path.join(process.cwd(), "artifacts", "phase3-browser-simulated");
+    mkdirSync(artifactDir, { recursive: true });
+
     await page.setViewportSize({ width: 1024, height: 768 });
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     await page.goto("/officiating/MS-DEMO-001");
     await page.getByRole("button", { name: "取得本机控制权" }).click();
     await page.getByRole("button", { name: "A 方胜并选先发" }).click();
-    await page.getByRole("button", { name: "确认首局发接发并开赛" }).click();
-    await page.getByRole("button", { name: /模拟选手 01 \+1/ }).click();
-    await expect(page.locator(".side-a .score-number")).toHaveText("1");
+    await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
+    await page.getByRole("button", { name: "模拟选手 01 赢得一分" }).click();
+    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
 
-    await page.getByRole("button", { name: "撤销 / 更正" }).click();
-    await expect(page.getByRole("dialog", { name: "撤销与更正" })).toBeVisible();
+    await page.getByRole("button", { name: "更正 模拟选手 01 的最近得分" }).click();
+    const screenshotDialog = page.getByRole("dialog", { name: "更正 A 方最近得分" });
+    await expect(screenshotDialog).toBeVisible();
     await page.getByLabel("关闭").click();
+    await expect(screenshotDialog).toBeHidden();
+    await page.evaluate(() => window.scrollTo(0, 0));
 
-    const artifactDir = path.join(process.cwd(), "artifacts", "phase3-browser-simulated");
-    mkdirSync(artifactDir, { recursive: true });
-    await page.screenshot({ path: path.join(artifactDir, "tablet-1024x768.png"), fullPage: true });
+    await page.screenshot({
+      path: path.join(artifactDir, "singles-tablet-landscape-1024x768-chromium.png"),
+    });
+    await page.screenshot({
+      path: path.join(artifactDir, "tablet-1024x768.png"),
+    });
 
-    const phone = await page.context().newPage();
-    await phone.setViewportSize({ width: 390, height: 844 });
-    await phone.goto("/officiating/MS-DEMO-001");
-    await expect(phone.locator(".side-a .score-number")).toHaveText("1");
-    await expect(phone.getByRole("button", { name: /模拟选手 01 \+1/ })).toBeDisabled();
-    await phone.screenshot({ path: path.join(artifactDir, "mobile-390x844.png"), fullPage: true });
+    const singlesPhone = await page.context().newPage();
+    await singlesPhone.setViewportSize({ width: 390, height: 844 });
+    await singlesPhone.goto("/officiating/MS-DEMO-001");
+    await expect(singlesPhone.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await expect(singlesPhone.getByRole("button", { name: "模拟选手 01 赢得一分" })).toBeDisabled();
+    await singlesPhone.screenshot({
+      path: path.join(artifactDir, "singles-phone-portrait-390x844-chromium.png"),
+    });
+    await singlesPhone.screenshot({
+      path: path.join(artifactDir, "mobile-390x844.png"),
+    });
 
     const versionBeforeOffline = (await (await page.context().request.get("/api/matches/MS-DEMO-001/state")).json()).version;
     await page.context().setOffline(true);
-    await expect(page.getByRole("button", { name: /模拟选手 01 \+1/ })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "模拟选手 01 赢得一分" })).toBeDisabled();
     await page.context().setOffline(false);
     await page.setViewportSize({ width: 768, height: 1024 });
     const versionAfterRotation = (await (await page.context().request.get("/api/matches/MS-DEMO-001/state")).json()).version;
     expect(versionAfterRotation).toBe(versionBeforeOffline);
+    await singlesPhone.close();
+
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await page.goto("/officiating/MD-DEMO-002");
+    await page.getByRole("button", { name: "取得本机控制权" }).click();
+    await page.getByRole("button", { name: "A 方胜并选先发" }).click();
+    await page.getByLabel("首发球员（A 方）").selectOption({ index: 1 });
+    await page.getByLabel("首接球员（B 方）").selectOption({ index: 1 });
+    await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
+    await page.getByRole("button", { name: "模拟组合 03/04 赢得一分" }).click();
+    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({
+      path: path.join(artifactDir, "doubles-tablet-landscape-1024x768-chromium.png"),
+    });
+
+    const doublesPhone = await page.context().newPage();
+    await doublesPhone.setViewportSize({ width: 390, height: 844 });
+    await doublesPhone.goto("/officiating/MD-DEMO-002");
+    await expect(doublesPhone.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await expect(doublesPhone.getByRole("button", { name: "模拟组合 03/04 赢得一分" })).toBeDisabled();
+    await doublesPhone.screenshot({
+      path: path.join(artifactDir, "doubles-phone-portrait-390x844-chromium.png"),
+    });
+    await doublesPhone.close();
   });
 });

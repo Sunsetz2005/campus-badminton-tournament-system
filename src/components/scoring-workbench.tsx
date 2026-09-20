@@ -1,8 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { createPortal } from "react-dom";
 
 import type { MatchCommand, MatchState, Side } from "@/domain/rules/match-engine";
+import { CourtConsole } from "@/components/court-console";
 
 type SessionControl = {
   sessionId: string;
@@ -44,6 +46,25 @@ type Envelope = {
   payload: MatchCommand["payload"];
 };
 
+type ActionSheetState =
+  | { kind: "UNDO"; side: Side }
+  | { kind: "SWAP_POSITION"; side: Side }
+  | { kind: "ENDS" }
+  | { kind: "SCORE"; side?: Side }
+  | { kind: "SERVICE_ORDER" }
+  | { kind: "SINGLES_CHECK"; side: Side }
+  | { kind: "TAKEOVER" }
+  | { kind: "SPECIAL" }
+  | { kind: "REASON_COMMAND"; title: string; type: MatchCommand["type"]; payload: MatchCommand["payload"] };
+
+type PreviewState = {
+  envelope: Envelope;
+  before: MatchState;
+  after: MatchState;
+};
+
+type EndsMode = "CONFIRM" | "FULFILL" | "KEEP_PENDING" | "RESOLVE_REVIEW" | "CORRECT";
+
 function deviceId(matchCode: string) {
   const key = `badminton-device:${matchCode}`;
   let value = sessionStorage.getItem(key);
@@ -54,9 +75,25 @@ function deviceId(matchCode: string) {
   return value;
 }
 
+class ApiRequestError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 async function responseJson(response: Response) {
   const body = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(body?.error?.message ?? "服务器请求失败。");
+  if (!response.ok) {
+    throw new ApiRequestError(
+      response.status,
+      body?.error?.code ?? "request_failed",
+      body?.error?.message ?? "服务器请求失败。",
+    );
+  }
   return body;
 }
 
@@ -70,15 +107,99 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     return saved ? JSON.parse(saved) as SessionControl : null;
   });
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
-  const [syncState, setSyncState] = useState<"SYNCED" | "SUBMITTING" | "UNKNOWN" | "READ_ONLY">("READ_ONLY");
+  const [syncState, setSyncState] = useState<"SYNCED" | "SUBMITTING" | "UNKNOWN" | "CONFLICT" | "READ_ONLY">("READ_ONLY");
+  const [pendingResolution, setPendingResolution] = useState<"QUERYING" | "NOT_FOUND" | null>(null);
   const [message, setMessage] = useState("");
-  const [correctionOpen, setCorrectionOpen] = useState(false);
+  const [actionSheet, setActionSheet] = useState<ActionSheetState | null>(null);
+  const [sheetClosing, setSheetClosing] = useState(false);
   const [reason, setReason] = useState("");
+  const [sheetError, setSheetError] = useState("");
+  const [preview, setPreview] = useState<PreviewState | null>(null);
   const [scoreA, setScoreA] = useState(0);
   const [scoreB, setScoreB] = useState(0);
-  const [flipped, setFlipped] = useState(false);
+  const [correctedServingSide, setCorrectedServingSide] = useState<Side>("A");
+  const [endsMode, setEndsMode] = useState<EndsMode>("CORRECT");
+  const [actualEndA, setActualEndA] = useState<"END_1" | "END_2">("END_1");
+  const [specialType, setSpecialType] = useState<"WO" | "RET" | "DSQ" | "ABANDONED" | "BYE">("RET");
+  const [specialWinner, setSpecialWinner] = useState<"" | Side>("");
+  const [setupServerId, setSetupServerId] = useState("");
+  const [setupReceiverId, setSetupReceiverId] = useState("");
+  const [setupSelectionScope, setSetupSelectionScope] = useState("");
+  const [flipped, setFlipped] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return sessionStorage.getItem(`badminton-view-flipped:${matchCode}`) === "true";
+  });
+  const sheetCloseRef = useRef<HTMLButtonElement>(null);
+  const sheetRef = useRef<HTMLElement>(null);
+  const sheetCloseTimerRef = useRef<number | null>(null);
   const state = snapshot?.state;
   const match = snapshot?.match;
+
+  const closeActionSheet = useCallback(() => {
+    const finish = () => {
+      setActionSheet(null);
+      setSheetClosing(false);
+      setPreview(null);
+      setReason("");
+      setSheetError("");
+      sheetCloseTimerRef.current = null;
+    };
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      finish();
+      return;
+    }
+    setSheetClosing(true);
+    if (sheetCloseTimerRef.current !== null) window.clearTimeout(sheetCloseTimerRef.current);
+    sheetCloseTimerRef.current = window.setTimeout(finish, 180);
+  }, []);
+
+  const reconcilePendingCommand = useCallback(async () => {
+    const raw = localStorage.getItem(pendingKey);
+    if (!raw) {
+      setPendingResolution(null);
+      return "none" as const;
+    }
+    const envelope = JSON.parse(raw) as Envelope;
+    setSyncState("UNKNOWN");
+    setPendingResolution("QUERYING");
+    try {
+      const response = await fetch(
+        `/api/matches/${encodeURIComponent(matchCode)}/commands/${envelope.commandId}`,
+        { cache: "no-store" },
+      );
+      if (response.status === 404) {
+        setPendingResolution("NOT_FOUND");
+        setMessage("服务器暂未找到这条待确认命令。只能查询或以原 commandId 重试，不能开始新操作。");
+        return "not_found" as const;
+      }
+      const body = await responseJson(response);
+      localStorage.removeItem(pendingKey);
+      setSnapshot((current) => current ? {
+        ...current,
+        version: body.version,
+        state: body.state,
+        events: body.events
+          ? [
+              ...(current.events ?? []).filter(
+                (event) => !body.events.some((recovered: { commandId: string }) => recovered.commandId === event.commandId),
+              ),
+              ...body.events,
+            ]
+          : current.events,
+      } : current);
+      setPendingResolution(null);
+      setSyncState("SYNCED");
+      setOnline(true);
+      setMessage("已按原 commandId 找回服务器结果。");
+      return "found" as const;
+    } catch (error) {
+      setPendingResolution(null);
+      setSyncState("UNKNOWN");
+      if (!(error instanceof ApiRequestError)) setOnline(false);
+      setMessage(error instanceof Error ? error.message : "待确认命令仍无法对账。");
+      return "unavailable" as const;
+    }
+  }, [matchCode, pendingKey]);
 
   const refresh = useCallback(async (force = false) => {
     const after = !force && snapshot?.version !== undefined ? `?afterVersion=${snapshot.version}` : "";
@@ -86,17 +207,33 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       const next = await responseJson(await fetch(`/api/matches/${encodeURIComponent(matchCode)}/state${after}`, { cache: "no-store" })) as SnapshotResponse;
       setSnapshot((current) => next.status === "unchanged" ? { ...current!, ...next } : next);
       setOnline(true);
-      if (control) setSyncState("SYNCED");
+      const hasPendingCommand = localStorage.getItem(pendingKey) !== null;
+      setSyncState((current) => current === "SUBMITTING"
+        ? current
+        : hasPendingCommand
+          ? "UNKNOWN"
+          : control
+            ? "SYNCED"
+            : "READ_ONLY");
     } catch (error) {
       setOnline(false);
       setSyncState("READ_ONLY");
       setMessage(error instanceof Error ? error.message : "无法同步权威状态。");
     }
-  }, [control, matchCode, snapshot]);
+  }, [control, matchCode, pendingKey, snapshot]);
 
   useEffect(() => {
-    queueMicrotask(() => void refresh(true));
-    const onOnline = () => { setOnline(true); void refresh(true); };
+    queueMicrotask(() => void (async () => {
+      await refresh(true);
+      await reconcilePendingCommand();
+    })());
+    const onOnline = () => {
+      setOnline(true);
+      void (async () => {
+        await refresh(true);
+        await reconcilePendingCommand();
+      })();
+    };
     const onOffline = () => { setOnline(false); setSyncState("READ_ONLY"); };
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
@@ -107,11 +244,34 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   }, [matchCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const interval = window.setInterval(() => void refresh(), document.hidden ? 10_000 : 2_000);
-    const visible = () => { if (!document.hidden) void refresh(true); };
+    let stopped = false;
+    let timer = 0;
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(async () => {
+        await refresh();
+        if (!stopped) schedule();
+      }, document.hidden ? 10_000 : 2_000);
+    };
+    const reconcileVisibleState = async () => {
+      await refresh(true);
+      await reconcilePendingCommand();
+    };
+    const visible = () => {
+      if (!document.hidden) void reconcileVisibleState();
+      schedule();
+    };
+    const orientationChanged = () => void reconcileVisibleState();
+    schedule();
     document.addEventListener("visibilitychange", visible);
-    return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", visible); };
-  }, [refresh]);
+    window.addEventListener("orientationchange", orientationChanged);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("orientationchange", orientationChanged);
+    };
+  }, [reconcilePendingCommand, refresh]);
 
   useEffect(() => {
     if (!control) return;
@@ -136,27 +296,50 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   }, [control, matchCode, storageKey]);
 
   useEffect(() => {
-    const raw = localStorage.getItem(pendingKey);
-    if (!raw) return;
-    const envelope = JSON.parse(raw) as Envelope;
-    queueMicrotask(() => setSyncState("UNKNOWN"));
-    void fetch(`/api/matches/${encodeURIComponent(matchCode)}/commands/${envelope.commandId}`, { cache: "no-store" })
-      .then(async (response) => {
-        if (response.status === 404) return;
-        const body = await responseJson(response);
-        localStorage.removeItem(pendingKey);
-        setSnapshot((current) => current ? { ...current, version: body.version, state: body.state } : current);
-        setSyncState("SYNCED");
-      })
-      .catch(() => setSyncState("UNKNOWN"));
-  }, [matchCode, pendingKey]);
+    if (!actionSheet) return;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeActionSheet();
+        return;
+      }
+      if (event.key !== "Tab" || !sheetRef.current) return;
+      const focusable = Array.from(sheetRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ));
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    queueMicrotask(() => sheetCloseRef.current?.focus());
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      queueMicrotask(() => previouslyFocused?.focus());
+    };
+  }, [actionSheet, closeActionSheet]);
 
-  async function acquire(takeover = false) {
+  useEffect(() => {
+    if (!actionSheet) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [actionSheet]);
+
+  async function acquire(takeover = false, takeoverReason = "") {
     setMessage("");
     try {
       const path = takeover ? "control/takeover" : "control";
       const body = takeover
-        ? { deviceSessionId: deviceId(matchCode), reason: window.prompt("请填写强制接管原因") ?? "" }
+        ? { deviceSessionId: deviceId(matchCode), reason: takeoverReason.trim() }
         : { deviceSessionId: deviceId(matchCode) };
       if (takeover && !body.reason) return;
       const result = await responseJson(await fetch(`/api/matches/${encodeURIComponent(matchCode)}/${path}`, {
@@ -166,10 +349,14 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       })) as SessionControl;
       setControl(result);
       sessionStorage.setItem(storageKey, JSON.stringify(result));
-      setSyncState("SYNCED");
       await refresh(true);
+      setSyncState("SYNCED");
+      setActionSheet(null);
+      setReason("");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "无法取得控制权。");
+      const errorMessage = error instanceof Error ? error.message : "无法取得控制权。";
+      if (takeover) setSheetError(errorMessage);
+      else setMessage(errorMessage);
     }
   }
 
@@ -187,8 +374,18 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   }
 
   async function submitEnvelope(envelope: Envelope) {
-    if (!control || !online || syncState === "SUBMITTING") return;
+    if (!control || !online || syncState === "SUBMITTING") return false;
+    const existingPending = localStorage.getItem(pendingKey);
+    if (existingPending) {
+      const pendingEnvelope = JSON.parse(existingPending) as Envelope;
+      if (pendingEnvelope.commandId !== envelope.commandId) {
+        setSyncState("UNKNOWN");
+        setMessage("仍有待确认命令；新操作已阻止。请先按原 commandId 对账。");
+        return false;
+      }
+    }
     setSyncState("SUBMITTING");
+    setPendingResolution(null);
     setMessage("");
     localStorage.setItem(pendingKey, JSON.stringify(envelope));
     const abort = new AbortController();
@@ -201,70 +398,356 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         body: JSON.stringify(envelope),
       }));
       localStorage.removeItem(pendingKey);
-      setSnapshot((current) => current ? { ...current, version: body.version, state: body.state, events: [...(current.events ?? []), ...body.events] } : current);
+      setSnapshot((current) => current ? {
+        ...current,
+        version: body.version,
+        state: body.state,
+        events: [
+          ...(current.events ?? []).filter(
+            (event) => !body.events.some((accepted: { commandId: string }) => accepted.commandId === event.commandId),
+          ),
+          ...body.events,
+        ],
+      } : current);
+      setPendingResolution(null);
       setSyncState("SYNCED");
+      return true;
     } catch (error) {
-      setSyncState(error instanceof DOMException && error.name === "AbortError" ? "UNKNOWN" : "READ_ONLY");
-      setMessage(error instanceof Error ? error.message : "命令结果未知，恢复后将用原 ID 对账。");
+      if (error instanceof ApiRequestError) {
+        localStorage.removeItem(pendingKey);
+        setPendingResolution(null);
+        if (error.code === "not_controller" || error.status === 401 || error.status === 403) {
+          setControl(null);
+          sessionStorage.removeItem(storageKey);
+          setSyncState("READ_ONLY");
+        } else if (error.status === 409) {
+          setSyncState("CONFLICT");
+        } else {
+          setSyncState(control ? "SYNCED" : "READ_ONLY");
+        }
+        if (actionSheet) setSheetError(error.message);
+        else setMessage(error.message);
+        await refresh(true);
+        if (error.code === "not_controller" || error.status === 401 || error.status === 403) setSyncState("READ_ONLY");
+        else if (error.status === 409) setSyncState("CONFLICT");
+        return false;
+      }
+      setSyncState("UNKNOWN");
+      setMessage("命令结果未知。正式状态保持最后一次服务器确认值，正在按原 commandId 对账。");
+      if (actionSheet) closeActionSheet();
       await refresh(true);
+      await reconcilePendingCommand();
+      return false;
     } finally {
       window.clearTimeout(timeout);
     }
   }
 
   async function send(type: MatchCommand["type"], payload: MatchCommand["payload"]) {
-    await submitEnvelope(makeEnvelope(type, payload));
+    return submitEnvelope(makeEnvelope(type, payload));
   }
 
-  async function previewAndSend(type: MatchCommand["type"], payload: MatchCommand["payload"]) {
-    if (!control) return;
-    const envelope = makeEnvelope(type, payload);
+  async function retryPendingCommand() {
+    const raw = localStorage.getItem(pendingKey);
+    if (!raw) return reconcilePendingCommand();
+    if (!control || !online) {
+      setMessage("当前离线或控制会话已失效，不能重试待确认命令。");
+      return false;
+    }
+    return submitEnvelope(JSON.parse(raw) as Envelope);
+  }
+
+  function openActionSheet(next: ActionSheetState) {
+    if (sheetCloseTimerRef.current !== null) window.clearTimeout(sheetCloseTimerRef.current);
+    setSheetClosing(false);
+    setActionSheet(next);
+    setReason("");
+    setSheetError("");
+    setPreview(null);
+    setScoreA(state?.score.A ?? 0);
+    setScoreB(state?.score.B ?? 0);
+    setCorrectedServingSide(state?.servingSide ?? "A");
+    setActualEndA(state?.physicalEnds?.A ?? "END_1");
+    if (next.kind === "ENDS") {
+      const hasChangeEnds = state?.pendingObligations.some((item) => item.type === "CHANGE_ENDS");
+      const hasReview = state?.pendingObligations.some((item) => item.type === "PHYSICAL_ENDS_REVIEW");
+      setEndsMode(hasChangeEnds ? "CONFIRM" : hasReview ? "RESOLVE_REVIEW" : "CORRECT");
+    }
+  }
+
+  async function requestPreview(envelope: Envelope) {
+    if (!control) return null;
     try {
-      const preview = await responseJson(await fetch(`/api/matches/${encodeURIComponent(matchCode)}/commands/preview`, {
+      setSheetError("");
+      const result = await responseJson(await fetch(`/api/matches/${encodeURIComponent(matchCode)}/commands/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${control.controlToken}` },
         body: JSON.stringify(envelope),
       }));
-      const before = preview.before.score;
-      const after = preview.after.score;
-      if (window.confirm(`确认更正？\n比分 ${before.A}:${before.B} → ${after.A}:${after.B}\n原因：${reason}`)) {
-        await submitEnvelope(envelope);
-        setCorrectionOpen(false);
-        setReason("");
-      }
+      const nextPreview = { envelope, before: result.before, after: result.after } satisfies PreviewState;
+      setPreview(nextPreview);
+      return nextPreview;
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "无法生成更正预览。");
+      setSheetError(error instanceof Error ? error.message : "无法生成更正预览。");
+      return null;
     }
   }
 
-  const canWrite = Boolean(control && online && syncState === "SYNCED");
-  const sideOrder: Side[] = flipped ? ["B", "A"] : ["A", "B"];
+  async function previewCurrentAction() {
+    if (!actionSheet || !state) return;
+    const trimmedReason = reason.trim();
+    let envelope: Envelope;
+
+    if (actionSheet.kind === "UNDO") {
+      if (!trimmedReason) return setSheetError("撤销原因不能为空。");
+      envelope = makeEnvelope("UNDO_LAST_REVERSIBLE", { reason: trimmedReason });
+      const result = await requestPreview(envelope);
+      if (!result) return;
+      const otherSide = actionSheet.side === "A" ? "B" : "A";
+      if (
+        result.before.score[actionSheet.side] - result.after.score[actionSheet.side] !== 1 ||
+        result.before.score[otherSide] !== result.after.score[otherSide]
+      ) {
+        setPreview(null);
+        setSheetError(`最近可撤销得分不属于 ${actionSheet.side} 方，请使用完整更正。`);
+      }
+      return;
+    }
+
+    if (actionSheet.kind === "SWAP_POSITION") {
+      if (!trimmedReason || !state.logicalCourts) return setSheetError("换位原因不能为空。");
+      const side = actionSheet.side;
+      envelope = makeEnvelope("CORRECT_LOGICAL_COURTS", {
+        reason: trimmedReason,
+        logicalCourts: {
+          ...state.logicalCourts,
+          [side]: { R: state.logicalCourts[side].L, L: state.logicalCourts[side].R },
+        },
+      });
+      await requestPreview(envelope);
+      return;
+    }
+
+    if (actionSheet.kind === "ENDS") {
+      const changeEnds = state.pendingObligations.find((item) => item.type === "CHANGE_ENDS");
+      const review = state.pendingObligations.find((item) => item.type === "PHYSICAL_ENDS_REVIEW");
+      if (endsMode === "CONFIRM") {
+        if (!changeEnds) return setSheetError("当前没有待确认的规则换边事项。");
+        await requestPreview(makeEnvelope("CONFIRM_CHANGE_ENDS", { obligationId: changeEnds.id }));
+        return;
+      }
+      if (!trimmedReason) return setSheetError("场地端更正原因不能为空。");
+      const obligation = endsMode === "RESOLVE_REVIEW" ? review : changeEnds;
+      const obligationRelationship = obligation
+        ? { obligationId: obligation.id, action: endsMode === "KEEP_PENDING" ? "KEEP_PENDING" as const : "FULFILL" as const }
+        : undefined;
+      await requestPreview(makeEnvelope("CORRECT_PHYSICAL_ENDS", {
+        reason: trimmedReason,
+        physicalEnds: { A: actualEndA, B: actualEndA === "END_1" ? "END_2" : "END_1" },
+        ...(obligationRelationship ? { obligationRelationship } : {}),
+      }));
+      return;
+    }
+
+    if (actionSheet.kind === "SERVICE_ORDER") {
+      if (!trimmedReason || !state.logicalCourts) return setSheetError("发接发更正原因不能为空。");
+      const servingSide = correctedServingSide;
+      const receivingSide = servingSide === "A" ? "B" : "A";
+      const court = state.score[servingSide] % 2 === 0 ? "R" : "L";
+      await requestPreview(makeEnvelope("CORRECT_SERVICE_ORDER", {
+        reason: trimmedReason,
+        servingSide,
+        serverPlayerId: state.logicalCourts[servingSide][court],
+        receiverPlayerId: state.logicalCourts[receivingSide][court],
+      }));
+      return;
+    }
+
+    if (actionSheet.kind === "SCORE" || actionSheet.kind === "SINGLES_CHECK") {
+      if (!trimmedReason || !state.servingSide) return setSheetError("更正原因不能为空。");
+      const servingSide = correctedServingSide;
+      const receivingSide = servingSide === "A" ? "B" : "A";
+      const court = (servingSide === "A" ? scoreA : scoreB) % 2 === 0 ? "R" : "L";
+      await requestPreview(makeEnvelope("CORRECT_SCORE_STATE", { reason: trimmedReason, replacement: {
+        score: { A: scoreA, B: scoreB }, gamesWon: state.gamesWon, completedGames: state.completedGames,
+        servingSide,
+        serverPlayerId: state.format === "DOUBLES" ? state.logicalCourts![servingSide][court] : state.players[servingSide][0],
+        receiverPlayerId: state.format === "DOUBLES" ? state.logicalCourts![receivingSide][court] : state.players[receivingSide][0],
+        logicalCourts: state.logicalCourts,
+        pendingObligations: state.pendingObligations,
+        phase: state.pendingObligations.length > 0 ? "OBLIGATIONS_PENDING" : "IN_PROGRESS",
+      } }));
+    }
+  }
+
+  async function confirmPreview() {
+    if (!preview) return;
+    if (await submitEnvelope(preview.envelope)) closeActionSheet();
+  }
+
+  async function submitSheetAction() {
+    if (!actionSheet) return;
+    const trimmedReason = reason.trim();
+    if (actionSheet.kind === "TAKEOVER") {
+      if (!trimmedReason) return setSheetError("接管原因不能为空。");
+      await acquire(true, trimmedReason);
+      return;
+    }
+    if (actionSheet.kind === "SPECIAL") {
+      if (!trimmedReason) return setSheetError("特殊结果原因不能为空。");
+      const accepted = await send("RECORD_SPECIAL_OUTCOME", {
+        type: specialType,
+        ...(specialWinner ? { winnerSide: specialWinner } : {}),
+        reason: trimmedReason,
+      });
+      if (accepted) closeActionSheet();
+      return;
+    }
+    if (actionSheet.kind === "REASON_COMMAND") {
+      if (!trimmedReason) return setSheetError("原因不能为空。");
+      if (await send(actionSheet.type, { ...actionSheet.payload, reason: trimmedReason } as MatchCommand["payload"])) {
+        closeActionSheet();
+      }
+    }
+  }
+
+  const canWrite = Boolean(
+    control && online && syncState === "SYNCED" &&
+    snapshot?.control.ownedByCurrentUser && snapshot.control.sessionId === control.sessionId,
+  );
+  const syncLabel = !online
+    ? "离线"
+    : ({
+        SYNCED: "已同步",
+        SUBMITTING: "提交中",
+        UNKNOWN: "响应待确认",
+        CONFLICT: "版本冲突",
+        READ_ONLY: "只读",
+      } as const)[syncState];
   const sideName = (side: Side) => side === "A" ? match?.sideAName : match?.sideBName;
   const playerName = (id: string | null) => id ? match?.playerNames[id] ?? id : "待确认";
-  const defaultCourts = useMemo(() => state?.format === "DOUBLES" ? {
-    A: { R: state.players.A[0], L: state.players.A[1] },
-    B: { R: state.players.B[0], L: state.players.B[1] },
-  } : null, [state]);
+  const intervalStartedAt = snapshot?.events
+    ? [...snapshot.events].reverse().find(
+        (event) => event.type === "RALLY_WON" || event.type === "CORRECT_SCORE_STATE",
+      )?.occurredAt ?? snapshot.serverTime
+    : snapshot?.serverTime;
+  const setupServingSide = state?.phase === "AWAITING_NEXT_GAME_SETUP" ? state.nextGameServingSide : state?.servingSide;
+  const setupReceivingSide = setupServingSide === "A" ? "B" : setupServingSide === "B" ? "A" : null;
+  const setupScope = state && setupServingSide && setupReceivingSide
+    ? `${state.phase}:${state.currentGame}:${setupServingSide}:${setupReceivingSide}`
+    : "";
+  const effectiveSetupServerId = state && setupServingSide && setupSelectionScope === setupScope && state.players[setupServingSide].includes(setupServerId)
+    ? setupServerId
+    : state && setupServingSide ? state.players[setupServingSide][0] ?? "" : "";
+  const effectiveSetupReceiverId = state && setupReceivingSide && setupSelectionScope === setupScope && state.players[setupReceivingSide].includes(setupReceiverId)
+    ? setupReceiverId
+    : state && setupReceivingSide ? state.players[setupReceivingSide][0] ?? "" : "";
+  const setupCourts = useMemo(() => {
+    if (!state || state.format !== "DOUBLES" || !setupServingSide || !setupReceivingSide || !effectiveSetupServerId || !effectiveSetupReceiverId) return null;
+    const serverPartner = state.players[setupServingSide].find((id) => id !== effectiveSetupServerId);
+    const receiverPartner = state.players[setupReceivingSide].find((id) => id !== effectiveSetupReceiverId);
+    if (!serverPartner || !receiverPartner) return null;
+    return {
+      [setupServingSide]: { R: effectiveSetupServerId, L: serverPartner },
+      [setupReceivingSide]: { R: effectiveSetupReceiverId, L: receiverPartner },
+    } as MatchState["logicalCourts"];
+  }, [effectiveSetupReceiverId, effectiveSetupServerId, setupReceivingSide, setupServingSide, state]);
+  const setupActive = Boolean(
+    state && (state.phase === "AWAITING_OPENING_SETUP" || state.phase === "AWAITING_NEXT_GAME_SETUP") &&
+    setupServingSide && setupReceivingSide && effectiveSetupServerId && effectiveSetupReceiverId,
+  );
+  const courtState = useMemo(() => {
+    if (!state || !setupActive || !setupServingSide) return state;
+    return {
+      ...state,
+      currentGame: state.phase === "AWAITING_NEXT_GAME_SETUP" ? state.currentGame + 1 : state.currentGame,
+      score: state.phase === "AWAITING_NEXT_GAME_SETUP" ? { A: 0, B: 0 } : state.score,
+      servingSide: setupServingSide,
+      serverPlayerId: effectiveSetupServerId,
+      receiverPlayerId: effectiveSetupReceiverId,
+      serverCourt: "R" as const,
+      receiverCourt: "R" as const,
+      logicalCourts: state.format === "DOUBLES" ? setupCourts : null,
+    };
+  }, [effectiveSetupReceiverId, effectiveSetupServerId, setupActive, setupCourts, setupServingSide, state]);
+
+  async function confirmSetup() {
+    if (!state || !setupActive || !effectiveSetupServerId || !effectiveSetupReceiverId) return;
+    const type = state.phase === "AWAITING_NEXT_GAME_SETUP" ? "CONFIRM_NEXT_GAME_SETUP" : "CONFIRM_OPENING_SETUP";
+    await send(type, {
+      serverPlayerId: effectiveSetupServerId,
+      receiverPlayerId: effectiveSetupReceiverId,
+      logicalCourts: state.format === "DOUBLES" ? setupCourts : null,
+    });
+  }
+
+  function flipLocalView() {
+    setFlipped((current) => {
+      const next = !current;
+      sessionStorage.setItem(`badminton-view-flipped:${matchCode}`, String(next));
+      return next;
+    });
+  }
 
   if (!snapshot || !state || !match) return <p className="empty-state">正在读取权威比赛状态…</p>;
 
   return (
-    <section className="scoring-shell">
+    <>
+    <section className="scoring-shell" inert={actionSheet ? true : undefined}>
       <header className="scoring-statusbar">
         <div><span className="eyebrow">{match.competitionName} · {match.courtName ?? "场地待定"}</span><h1>{match.code}</h1></div>
-        <div className="sync-cluster" aria-live="polite">
-          <span className={`sync-dot ${online ? "online" : "offline"}`} />
-          <strong>{online ? syncState : "OFFLINE_READ_ONLY"}</strong>
+        <div className="status-facts" aria-live="polite">
+          <span><i className={`sync-dot ${online ? "online" : "offline"}`} />网络<strong>{online ? "在线" : "离线"}</strong></span>
+          <span>控制<strong>{canWrite ? "本机可写" : "只读"}</strong></span>
+          <span>同步<strong>{syncLabel}</strong></span>
           <small>服务器版本 {state.version}</small>
         </div>
       </header>
 
       {message ? <p className="scoring-alert" role="alert">{message}</p> : null}
+      {syncState === "UNKNOWN" ? (
+        <section className="pending-recovery" aria-live="assertive">
+          <div>
+            <strong>有一条命令结果待确认</strong>
+            <span>比分、站位和发接发保持最后一次已确认状态；在原命令解决前禁止新操作。</span>
+          </div>
+          <button className="button secondary" disabled={!online || pendingResolution === "QUERYING"} onClick={() => void reconcilePendingCommand()}>
+            {pendingResolution === "QUERYING" ? "正在查询…" : "查询原命令结果"}
+          </button>
+          {pendingResolution === "NOT_FOUND" ? (
+            <button className="button" disabled={!online || !control} onClick={() => void retryPendingCommand()}>
+              以原命令重试
+            </button>
+          ) : null}
+        </section>
+      ) : null}
+      <CourtConsole
+        busy={syncState === "SUBMITTING" || syncState === "UNKNOWN"}
+        canWrite={canWrite}
+        draft={setupActive}
+        flipped={flipped}
+        onAddPoint={(side) => void send("RALLY_WON", { side })}
+        onChangeEnds={() => openActionSheet({ kind: "ENDS" })}
+        onCorrectPosition={(side) => openActionSheet(state.format === "DOUBLES" ? { kind: "SWAP_POSITION", side } : { kind: "SINGLES_CHECK", side })}
+        onSubtractPoint={(side) => openActionSheet({ kind: "UNDO", side })}
+        playerName={playerName}
+        sideName={(side) => sideName(side) ?? `${side} 方`}
+        state={courtState ?? state}
+      />
+
       <div className="control-strip">
         {!control && snapshot.access.assignedReferee ? <button className="button" onClick={() => void acquire()}>取得本机控制权</button> : null}
-        {snapshot.access.chiefReferee ? <button className="button secondary" onClick={() => void acquire(true)}>裁判长接管</button> : null}
-        <button className="button secondary" onClick={() => { setFlipped((value) => !value); void refresh(true); }}>翻转本机视角</button>
-        <span>{canWrite ? "本机可写" : "当前只读"}</span>
+        {snapshot.access.chiefReferee ? <button className="button secondary" onClick={() => openActionSheet({ kind: "TAKEOVER" })}>裁判长接管</button> : null}
+        <button className="button secondary" onClick={flipLocalView}>翻转本机视角</button>
+        <span>{canWrite
+          ? "所有操作等待服务器确认后更新"
+          : syncState === "UNKNOWN"
+            ? "响应未知，只读；必须用原 commandId 对账"
+            : syncState === "CONFLICT"
+              ? "版本冲突，只读；已拉取服务器权威状态"
+              : online
+                ? "当前设备没有有效写入控制"
+                : "离线，只读；恢复后先对账"}</span>
       </div>
 
       <div className="games-ribbon">
@@ -273,49 +756,48 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       </div>
       {state.pendingObligations.some((item) => item.type === "INTERVAL") ? (
         <IntervalClock
+          key={`${intervalStartedAt}:${snapshot.serverTime}`}
           seconds={state.phase === "GAME_COMPLETE" ? state.ruleConfig.betweenGamesSeconds : state.ruleConfig.intervalSeconds}
           serverTime={snapshot.serverTime}
-          startedAt={snapshot.events?.at(-1)?.occurredAt ?? snapshot.serverTime}
+          startedAt={intervalStartedAt ?? snapshot.serverTime}
         />
       ) : null}
 
-      <div className="score-stage">
-        {sideOrder.map((side) => (
-          <article className={`score-side side-${side.toLowerCase()}`} key={side}>
-            <span className="side-label">{side} 方</span>
-            <h2>{sideName(side)}</h2>
-            <strong className="score-number">{state.score[side]}</strong>
-            <button
-              className="score-button"
-              disabled={!canWrite || state.phase !== "IN_PROGRESS"}
-              onClick={() => void send("RALLY_WON", { side })}
-            >
-              {sideName(side)} +1
-            </button>
-          </article>
-        ))}
-      </div>
+      {setupActive && setupServingSide && setupReceivingSide ? (
+        <section className="opening-setup-panel" aria-labelledby="opening-setup-title">
+          <div><span className="eyebrow">确认后才写入比赛</span><h2 id="opening-setup-title">本局首发与首接设置</h2></div>
+          <label>首发球员（{setupServingSide} 方）
+            <select value={effectiveSetupServerId} onChange={(event) => { setSetupSelectionScope(setupScope); setSetupServerId(event.target.value); }}>
+              {state.players[setupServingSide].map((id) => <option key={id} value={id}>{playerName(id)}</option>)}
+            </select>
+          </label>
+          <label>首接球员（{setupReceivingSide} 方）
+            <select value={effectiveSetupReceiverId} onChange={(event) => { setSetupSelectionScope(setupScope); setSetupReceiverId(event.target.value); }}>
+              {state.players[setupReceivingSide].map((id) => <option key={id} value={id}>{playerName(id)}</option>)}
+            </select>
+          </label>
+          <button className="button" disabled={!canWrite || !setupCourts && state.format === "DOUBLES"} onClick={() => void confirmSetup()}>
+            {state.phase === "AWAITING_OPENING_SETUP" ? "确认首局设置并开赛" : "确认下一局设置"}
+          </button>
+        </section>
+      ) : null}
 
       <div className="service-panel">
         <div><span>当前阶段</span><strong>{state.phase}</strong></div>
-        <div><span>发球</span><strong>{playerName(state.serverPlayerId)} · {state.serverCourt ?? "—"}</strong></div>
-        <div><span>接发</span><strong>{playerName(state.receiverPlayerId)} · {state.receiverCourt ?? "—"}</strong></div>
+        <div><span>发球</span><strong>{["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase) ? `${playerName(state.serverPlayerId)} · ${state.serverCourt ?? "—"}` : "当前无下一球"}</strong></div>
+        <div><span>接发</span><strong>{["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase) ? `${playerName(state.receiverPlayerId)} · ${state.receiverCourt ?? "—"}` : "当前无下一球"}</strong></div>
         <div><span>物理端</span><strong>{state.physicalEnds ? `A ${state.physicalEnds.A} / B ${state.physicalEnds.B}` : "待确认"}</strong></div>
-      </div>
-      <div className="court-map" aria-label="发接发与场地位置示意">
-        {sideOrder.map((side) => <div className={`court-half side-${side.toLowerCase()}`} key={side}>
-          <strong>{sideName(side)} · {state.physicalEnds?.[side] ?? "端位待定"}</strong>
-          {state.logicalCourts ? <p>R {playerName(state.logicalCourts[side].R)}<br />L {playerName(state.logicalCourts[side].L)}</p> : <p>{playerName(state.players[side][0])}</p>}
-        </div>)}
       </div>
 
       <PhaseActions
         canWrite={canWrite}
         chief={snapshot.access.chiefReferee}
         state={state}
-        defaultCourts={defaultCourts}
         onSend={send}
-        onCorrection={() => { setScoreA(state.score.A); setScoreB(state.score.B); setCorrectionOpen(true); }}
+        onCorrection={() => openActionSheet({ kind: "SCORE" })}
+        onReasonCommand={(title, type, payload) => openActionSheet({ kind: "REASON_COMMAND", title, type, payload })}
+        onServiceOrder={() => openActionSheet({ kind: "SERVICE_ORDER" })}
+        onSpecial={() => openActionSheet({ kind: "SPECIAL" })}
       />
 
       <section className="history-panel">
@@ -323,79 +805,219 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         <ol>{(snapshot.events ?? []).slice().reverse().map((event) => <li key={event.commandId}><strong>v{event.version}</strong> {event.type}<time>{new Date(event.occurredAt).toLocaleTimeString("zh-CN")}</time></li>)}</ol>
       </section>
 
-      {correctionOpen ? (
-        <div className="correction-scrim" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCorrectionOpen(false); }}>
-          <section aria-labelledby="correction-title" aria-modal="true" className="correction-sheet" role="dialog">
-            <header><div><span className="eyebrow">服务器预览</span><h2 id="correction-title">撤销与更正</h2></div><button className="sheet-close" onClick={() => setCorrectionOpen(false)} aria-label="关闭">×</button></header>
-            <label>必填原因<textarea value={reason} onChange={(event) => setReason(event.target.value)} /></label>
-            <div className="correction-score"><label>A 方比分<input min="0" type="number" value={scoreA} onChange={(event) => setScoreA(Number(event.target.value))} /></label><label>B 方比分<input min="0" type="number" value={scoreB} onChange={(event) => setScoreB(Number(event.target.value))} /></label></div>
-            <div className="sheet-actions">
-              <button className="button secondary" disabled={!reason.trim()} onClick={() => void previewAndSend("UNDO_LAST_REVERSIBLE", { reason })}>预览撤销最近得分</button>
-              {state.physicalEnds && !state.pendingObligations.some((item) => item.type === "CHANGE_ENDS") ? (
-                <button className="button secondary" disabled={!reason.trim()} onClick={() => void previewAndSend("CORRECT_PHYSICAL_ENDS", {
-                  reason,
-                  physicalEnds: { A: state.physicalEnds!.B, B: state.physicalEnds!.A },
-                })}>预览物理场地端更正</button>
-              ) : null}
-              {state.logicalCourts ? (
-                <>
-                  <button className="button secondary" disabled={!reason.trim()} onClick={() => void previewAndSend("CORRECT_LOGICAL_COURTS", {
-                    reason,
-                    logicalCourts: { ...state.logicalCourts!, A: { R: state.logicalCourts!.A.L, L: state.logicalCourts!.A.R } },
-                  })}>A 方左右调整预览</button>
-                  <button className="button secondary" disabled={!reason.trim()} onClick={() => void previewAndSend("CORRECT_LOGICAL_COURTS", {
-                    reason,
-                    logicalCourts: { ...state.logicalCourts!, B: { R: state.logicalCourts!.B.L, L: state.logicalCourts!.B.R } },
-                  })}>B 方左右调整预览</button>
-                </>
-              ) : null}
-              {state.servingSide ? (
-                <button className="button secondary" disabled={!reason.trim()} onClick={() => {
-                  const servingSide = state.servingSide === "A" ? "B" : "A";
-                  const receivingSide = servingSide === "A" ? "B" : "A";
-                  const court = state.score[servingSide] % 2 === 0 ? "R" : "L";
-                  void previewAndSend("CORRECT_SERVICE_ORDER", {
-                    reason,
-                    servingSide,
-                    serverPlayerId: state.format === "DOUBLES" ? state.logicalCourts![servingSide][court] : state.players[servingSide][0],
-                    receiverPlayerId: state.format === "DOUBLES" ? state.logicalCourts![receivingSide][court] : state.players[receivingSide][0],
-                  });
-                }}>切换发球方预览</button>
-              ) : null}
-              <button className="button" disabled={!reason.trim()} onClick={() => {
-                const servingSide = state.servingSide!;
-                const receivingSide = servingSide === "A" ? "B" : "A";
-                const court = (servingSide === "A" ? scoreA : scoreB) % 2 === 0 ? "R" : "L";
-                void previewAndSend("CORRECT_SCORE_STATE", { reason, replacement: {
-                  score: { A: scoreA, B: scoreB }, gamesWon: state.gamesWon, completedGames: state.completedGames,
-                  servingSide,
-                  serverPlayerId: state.format === "DOUBLES" ? state.logicalCourts![servingSide][court] : state.players[servingSide][0],
-                  receiverPlayerId: state.format === "DOUBLES" ? state.logicalCourts![receivingSide][court] : state.players[receivingSide][0],
-                  logicalCourts: state.logicalCourts, pendingObligations: [], phase: "IN_PROGRESS",
-                } });
-              }}>预览完整比分更正</button>
-            </div>
-          </section>
-        </div>
-      ) : null}
     </section>
+      {actionSheet ? createPortal(<WorkbenchActionSheet
+        action={actionSheet}
+        actualEndA={actualEndA}
+        closeRef={sheetCloseRef}
+        closing={sheetClosing}
+        dialogRef={sheetRef}
+        endsMode={endsMode}
+        error={sheetError}
+        onActualEndA={(value) => { setActualEndA(value); setPreview(null); }}
+        onClose={closeActionSheet}
+        onConfirmPreview={() => void confirmPreview()}
+        onCorrectedServingSide={(value) => { setCorrectedServingSide(value); setPreview(null); }}
+        onEndsMode={(value) => { setEndsMode(value); setPreview(null); }}
+        onPreview={() => void previewCurrentAction()}
+        onReason={(value) => { setReason(value); setPreview(null); }}
+        onScoreA={(value) => { setScoreA(value); setPreview(null); }}
+        onScoreB={(value) => { setScoreB(value); setPreview(null); }}
+        onSpecialSubmit={() => void submitSheetAction()}
+        onSpecialType={setSpecialType}
+        onSpecialWinner={setSpecialWinner}
+        onSubmit={() => void submitSheetAction()}
+        preview={preview}
+        reason={reason}
+        scoreA={scoreA}
+        scoreB={scoreB}
+        specialType={specialType}
+        specialWinner={specialWinner}
+        state={state}
+        correctedServingSide={correctedServingSide}
+      />, document.body) : null}
+    </>
   );
 }
 
-function PhaseActions({ canWrite, chief, state, defaultCourts, onSend, onCorrection }: {
+function actionSheetTitle(action: ActionSheetState) {
+  switch (action.kind) {
+    case "UNDO": return `更正 ${action.side} 方最近得分`;
+    case "SWAP_POSITION": return `更正 ${action.side} 方双打换位`;
+    case "ENDS": return "核对并更正物理场地端";
+    case "SCORE": return "完整比分与发球权更正";
+    case "SERVICE_ORDER": return "更正发接发顺序";
+    case "SINGLES_CHECK": return `核对 ${action.side} 方单打站位`;
+    case "TAKEOVER": return "裁判长强制接管";
+    case "SPECIAL": return "记录特殊结果";
+    case "REASON_COMMAND": return action.title;
+  }
+}
+
+function WorkbenchActionSheet({
+  action,
+  actualEndA,
+  closeRef,
+  closing,
+  correctedServingSide,
+  dialogRef,
+  endsMode,
+  error,
+  onActualEndA,
+  onClose,
+  onConfirmPreview,
+  onCorrectedServingSide,
+  onEndsMode,
+  onPreview,
+  onReason,
+  onScoreA,
+  onScoreB,
+  onSpecialSubmit,
+  onSpecialType,
+  onSpecialWinner,
+  onSubmit,
+  preview,
+  reason,
+  scoreA,
+  scoreB,
+  specialType,
+  specialWinner,
+  state,
+}: {
+  action: ActionSheetState;
+  actualEndA: "END_1" | "END_2";
+  closeRef: RefObject<HTMLButtonElement | null>;
+  closing: boolean;
+  correctedServingSide: Side;
+  dialogRef: RefObject<HTMLElement | null>;
+  endsMode: EndsMode;
+  error: string;
+  onActualEndA: (end: "END_1" | "END_2") => void;
+  onClose: () => void;
+  onConfirmPreview: () => void;
+  onCorrectedServingSide: (side: Side) => void;
+  onEndsMode: (mode: EndsMode) => void;
+  onPreview: () => void;
+  onReason: (reason: string) => void;
+  onScoreA: (score: number) => void;
+  onScoreB: (score: number) => void;
+  onSpecialSubmit: () => void;
+  onSpecialType: (type: "WO" | "RET" | "DSQ" | "ABANDONED" | "BYE") => void;
+  onSpecialWinner: (side: "" | Side) => void;
+  onSubmit: () => void;
+  preview: PreviewState | null;
+  reason: string;
+  scoreA: number;
+  scoreB: number;
+  specialType: "WO" | "RET" | "DSQ" | "ABANDONED" | "BYE";
+  specialWinner: "" | Side;
+  state: MatchState;
+}) {
+  const previewable = ["UNDO", "SWAP_POSITION", "ENDS", "SCORE", "SERVICE_ORDER", "SINGLES_CHECK"].includes(action.kind);
+  const hasChangeEnds = state.pendingObligations.some((item) => item.type === "CHANGE_ENDS");
+  const hasPhysicalReview = state.pendingObligations.some((item) => item.type === "PHYSICAL_ENDS_REVIEW");
+  const confirmOnly = action.kind === "ENDS" && endsMode === "CONFIRM";
+
+  return (
+    <div className={`correction-scrim ${closing ? "is-closing" : ""}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section aria-labelledby="action-sheet-title" aria-modal="true" className={`correction-sheet ${closing ? "is-closing" : ""}`} ref={dialogRef} role="dialog">
+        <header>
+          <div><span className="eyebrow">服务器权威操作</span><h2 id="action-sheet-title">{actionSheetTitle(action)}</h2></div>
+          <button aria-label="关闭" className="sheet-close" onClick={onClose} ref={closeRef}>×</button>
+        </header>
+
+        {action.kind === "UNDO" ? <p>“−”不会直接改分。系统只预览最近一条可逆得分，并核对它是否属于 {action.side} 方。</p> : null}
+        {action.kind === "SWAP_POSITION" ? <p>只交换 {action.side} 方两名球员的规则 R/L，比分、对方站位和物理端保持不变。</p> : null}
+        {action.kind === "SINGLES_CHECK" ? <p>单打左右发球区由比分奇偶和发球方唯一决定。请更正比分或发球方，不创建任意站位。</p> : null}
+        {action.kind === "ENDS" ? (
+          <div className="sheet-form-grid">
+            <label>处理方式
+              <select value={endsMode} onChange={(event) => onEndsMode(event.target.value as EndsMode)}>
+                {hasChangeEnds ? <option value="CONFIRM">现场已按规则完成换边</option> : null}
+                {hasChangeEnds ? <option value="FULFILL">更正记录，并同时完成换边待办</option> : null}
+                {hasChangeEnds ? <option value="KEEP_PENDING">只更正原记录，换边仍待执行</option> : null}
+                {hasPhysicalReview ? <option value="RESOLVE_REVIEW">完成撤销后的现场端位核对</option> : null}
+                {!hasChangeEnds && !hasPhysicalReview ? <option value="CORRECT">更正当前场地端记录</option> : null}
+              </select>
+            </label>
+            {!confirmOnly ? <label>A 方现场所在端
+              <select value={actualEndA} onChange={(event) => onActualEndA(event.target.value as "END_1" | "END_2")}>
+                <option value="END_1">场地端 1</option><option value="END_2">场地端 2</option>
+              </select>
+            </label> : null}
+          </div>
+        ) : null}
+
+        {action.kind === "SCORE" || action.kind === "SINGLES_CHECK" ? (
+          <>
+            <div className="correction-score">
+              <label>A 方比分<input min="0" type="number" value={scoreA} onChange={(event) => onScoreA(Number(event.target.value))} /></label>
+              <label>B 方比分<input min="0" type="number" value={scoreB} onChange={(event) => onScoreB(Number(event.target.value))} /></label>
+            </div>
+            <label>更正后的发球方
+              <select value={correctedServingSide} onChange={(event) => onCorrectedServingSide(event.target.value as Side)}>
+                <option value="A">A 方</option><option value="B">B 方</option>
+              </select>
+            </label>
+          </>
+        ) : null}
+
+        {action.kind === "SERVICE_ORDER" ? (
+          <label>更正后的发球方
+            <select value={correctedServingSide} onChange={(event) => onCorrectedServingSide(event.target.value as Side)}>
+              <option value="A">A 方</option><option value="B">B 方</option>
+            </select>
+          </label>
+        ) : null}
+
+        {action.kind === "SPECIAL" ? (
+          <div className="sheet-form-grid">
+            <label>特殊结果
+              <select value={specialType} onChange={(event) => onSpecialType(event.target.value as typeof specialType)}>
+                <option value="WO">WO</option><option value="RET">RET</option><option value="DSQ">DSQ</option><option value="ABANDONED">ABANDONED</option><option value="BYE">BYE</option>
+              </select>
+            </label>
+            <label>胜方
+              <select value={specialWinner} onChange={(event) => onSpecialWinner(event.target.value as "" | Side)}>
+                <option value="">无胜方</option><option value="A">A 方</option><option value="B">B 方</option>
+              </select>
+            </label>
+          </div>
+        ) : null}
+
+        {!confirmOnly ? <label>必填原因<textarea autoComplete="off" value={reason} onChange={(event) => onReason(event.target.value)} /></label> : null}
+        {error ? <p className="sheet-error" role="alert">{error}</p> : null}
+        {preview ? (
+          <div className="server-preview" aria-live="polite">
+            <strong>服务器预览</strong>
+            <span>比分 {preview.before.score.A}:{preview.before.score.B} → {preview.after.score.A}:{preview.after.score.B}</span>
+            <span>发球方 {preview.before.servingSide ?? "—"} → {preview.after.servingSide ?? "—"}</span>
+            <span>物理端 A {preview.before.physicalEnds?.A ?? "—"} → {preview.after.physicalEnds?.A ?? "—"}</span>
+          </div>
+        ) : null}
+
+        <div className="sheet-actions">
+          {previewable && !preview ? <button className="button" onClick={onPreview}>生成服务器预览</button> : null}
+          {previewable && preview ? <button className="button" onClick={onConfirmPreview}>确认执行预览结果</button> : null}
+          {action.kind === "SPECIAL" ? <button className="button danger" onClick={onSpecialSubmit}>确认记录特殊结果</button> : null}
+          {action.kind === "TAKEOVER" || action.kind === "REASON_COMMAND" ? <button className="button" onClick={onSubmit}>确认提交</button> : null}
+          <button className="button secondary" onClick={onClose}>取消</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PhaseActions({ canWrite, chief, state, onSend, onCorrection, onReasonCommand, onServiceOrder, onSpecial }: {
   canWrite: boolean;
   chief: boolean;
   state: MatchState;
-  defaultCourts: MatchState["logicalCourts"];
-  onSend: (type: MatchCommand["type"], payload: MatchCommand["payload"]) => Promise<void>;
+  onSend: (type: MatchCommand["type"], payload: MatchCommand["payload"]) => Promise<unknown>;
   onCorrection: () => void;
+  onReasonCommand: (title: string, type: MatchCommand["type"], payload: MatchCommand["payload"]) => void;
+  onServiceOrder: () => void;
+  onSpecial: () => void;
 }) {
-  const reason = (label: string) => window.prompt(label)?.trim() ?? "";
-  const setupPayload = {
-    serverPlayerId: state.players[state.servingSide ?? state.nextGameServingSide ?? "A"][0],
-    receiverPlayerId: state.players[(state.servingSide ?? state.nextGameServingSide) === "B" ? "A" : "B"][0],
-    logicalCourts: defaultCourts,
-  };
   return (
     <section className="phase-actions" aria-label="当前阶段操作">
       {state.phase === "AWAITING_COIN_TOSS" ? <>
@@ -405,37 +1027,28 @@ function PhaseActions({ canWrite, chief, state, defaultCourts, onSend, onCorrect
           <button className="button secondary" disabled={!canWrite} key={`${side}-end`} onClick={() => void onSend("RECORD_COIN_TOSS", { valid: true, winnerSide: side, winnerChoice: { kind: "END", end: "END_1" }, loserChoice: { kind: "SERVICE", decision: "SERVE" } })}>{side} 方胜并选场地端</button>,
         ])}
       </> : null}
-      {state.phase === "AWAITING_OPENING_SETUP" ? <>
-        <button className="button" disabled={!canWrite} onClick={() => void onSend("CONFIRM_OPENING_SETUP", setupPayload)}>确认首局发接发并开赛</button>
-        {chief ? <button className="button danger" disabled={!canWrite} onClick={() => { const value = reason("作废抛币原因"); if (value) void onSend("INVALIDATE_COIN_TOSS", { reason: value }); }}>裁判长作废抛币</button> : null}
-      </> : null}
+      {state.phase === "AWAITING_OPENING_SETUP" && chief ? <button className="button danger" disabled={!canWrite} onClick={() => onReasonCommand("裁判长作废抛币", "INVALIDATE_COIN_TOSS", { reason: "" })}>裁判长作废抛币</button> : null}
       {state.pendingObligations.map((item) => item.type === "INTERVAL" ?
         <button className="button" disabled={!canWrite} key={item.id} onClick={() => void onSend("ACKNOWLEDGE_INTERVAL", { obligationId: item.id })}>确认间歇完成</button> :
-        item.type === "CHANGE_ENDS" ? <span className="inline-actions" key={item.id}><button className="button" disabled={!canWrite} onClick={() => void onSend("CONFIRM_CHANGE_ENDS", { obligationId: item.id })}>确认已换边</button><button className="button secondary" disabled={!canWrite} onClick={() => { const value = reason("漏换边说明"); if (value) void onSend("RECORD_MISSED_CHANGE_ENDS", { obligationId: item.id, reason: value }); }}>记录漏换后补做</button></span> : null)}
-      {state.phase === "AWAITING_NEXT_GAME_SETUP" ? <button className="button" disabled={!canWrite} onClick={() => void onSend("CONFIRM_NEXT_GAME_SETUP", setupPayload)}>确认下一局发接发</button> : null}
+        item.type === "CHANGE_ENDS" ? <button className="button secondary" disabled={!canWrite} key={item.id} onClick={() => onReasonCommand("记录漏换边后补做", "RECORD_MISSED_CHANGE_ENDS", { obligationId: item.id, reason: "" })}>记录漏换后补做</button> : null)}
       {state.phase === "IN_PROGRESS" || state.phase === "OBLIGATIONS_PENDING" ? <>
-        <button className="button secondary" disabled={!canWrite} onClick={onCorrection}>撤销 / 更正</button>
-        <button className="button secondary" disabled={!canWrite} onClick={() => { const value = reason("LET 原因"); if (value) void onSend("LET", { reason: value }); }}>LET 重发球</button>
-        <button className="button secondary" disabled={!canWrite} onClick={() => { const value = reason("暂停原因"); if (value) void onSend("PAUSE_MATCH", { reason: value }); }}>暂停比赛</button>
-        <button className="button danger" disabled={!canWrite} onClick={() => {
-          const type = (window.prompt("输入特殊结果：WO / RET / DSQ / ABANDONED / BYE") ?? "").trim().toUpperCase();
-          if (!["WO", "RET", "DSQ", "ABANDONED", "BYE"].includes(type)) return;
-          const winner = (window.prompt("胜方 A / B；无胜方留空") ?? "").trim().toUpperCase();
-          const value = reason("特殊结果原因");
-          if (value && window.confirm(`确认记录 ${type}？`)) void onSend("RECORD_SPECIAL_OUTCOME", { type: type as "WO" | "RET" | "DSQ" | "ABANDONED" | "BYE", ...(winner === "A" || winner === "B" ? { winnerSide: winner } : {}), reason: value });
-        }}>记录特殊结果</button>
+        <button className="button secondary" disabled={!canWrite} onClick={onCorrection}>更多比分 / 发球权更正</button>
+        {state.format === "DOUBLES" ? <button className="button secondary" disabled={!canWrite} onClick={onServiceOrder}>更正发接发顺序</button> : null}
+        <button className="button secondary" disabled={!canWrite} onClick={() => onReasonCommand("LET 重发球", "LET", { reason: "" })}>LET 重发球</button>
+        <button className="button secondary" disabled={!canWrite} onClick={() => onReasonCommand("暂停比赛", "PAUSE_MATCH", { reason: "" })}>暂停比赛</button>
+        <button className="button danger" disabled={!canWrite} onClick={onSpecial}>记录特殊结果</button>
       </> : null}
-      {state.phase === "PAUSED" ? <button className="button" disabled={!canWrite} onClick={() => { const value = reason("恢复比赛原因"); if (value) void onSend("RESUME_MATCH", { reason: value }); }}>恢复比赛</button> : null}
+      {state.phase === "PAUSED" ? <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("恢复比赛", "RESUME_MATCH", { reason: "" })}>恢复比赛</button> : null}
       {state.phase === "SPECIAL_OUTCOME_PENDING_SUBMISSION" ? <>
-        <button className="button secondary" disabled={!canWrite} onClick={() => { const value = reason("作废原因"); if (value) void onSend("INVALIDATE_SPECIAL_OUTCOME", { reason: value }); }}>作废该特殊结果</button>
-        <button className="button" disabled={!canWrite} onClick={() => void onSend("SUBMIT_RESULT", { reason: "主裁判提交特殊结果" })}>提交结果复核</button>
+        <button className="button secondary" disabled={!canWrite} onClick={() => onReasonCommand("作废该特殊结果", "INVALIDATE_SPECIAL_OUTCOME", { reason: "" })}>作废该特殊结果</button>
+        <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("提交特殊结果复核", "SUBMIT_RESULT", { reason: "" })}>提交结果复核</button>
       </> : null}
-      {state.phase === "MATCH_COMPLETE_PENDING_SUBMISSION" ? <button className="button" disabled={!canWrite} onClick={() => void onSend("SUBMIT_RESULT", { reason: "主裁判提交全场结果" })}>提交全场结果</button> : null}
+      {state.phase === "MATCH_COMPLETE_PENDING_SUBMISSION" ? <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("提交全场结果", "SUBMIT_RESULT", { reason: "" })}>提交全场结果</button> : null}
       {state.phase === "SUBMITTED" && chief ? <>
-        <button className="button" disabled={!canWrite} onClick={() => void onSend("CONFIRM_RESULT", { reason: "裁判长复核通过" })}>复核锁定</button>
-        <button className="button danger" disabled={!canWrite} onClick={() => { const value = reason("退回补正原因"); if (value) void onSend("REOPEN_RESULT", { reason: value }); }}>退回补正</button>
+        <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("裁判长复核锁定", "CONFIRM_RESULT", { reason: "" })}>复核锁定</button>
+        <button className="button danger" disabled={!canWrite} onClick={() => onReasonCommand("退回补正", "REOPEN_RESULT", { reason: "" })}>退回补正</button>
       </> : null}
-      {state.phase === "CONFIRMED" && chief ? <button className="button danger" disabled={!canWrite} onClick={() => { const value = reason("受控重开原因"); if (value) void onSend("REOPEN_RESULT", { reason: value }); }}>受控重开</button> : null}
+      {state.phase === "CONFIRMED" && chief ? <button className="button danger" disabled={!canWrite} onClick={() => onReasonCommand("受控重开", "REOPEN_RESULT", { reason: "" })}>受控重开</button> : null}
     </section>
   );
 }
