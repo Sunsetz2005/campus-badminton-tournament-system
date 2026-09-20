@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
-import { AppNav } from "@/components/app-nav";
+import { AppFooter, AppNav } from "@/components/app-nav";
 
 import "./globals.css";
 
@@ -14,9 +14,10 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
   return (
     <html lang="zh-CN">
       <body>
+        <a className="skip-link" href="#main-content">跳到主要内容</a>
         <AppNav />
-        <main className="page-shell">{children}</main>
-        <footer>阶段 1 工程骨架 · 本机与局域网开发演示</footer>
+        <main className="page-shell" id="main-content" tabIndex={-1}>{children}</main>
+        <AppFooter />
       </body>
     </html>
   );

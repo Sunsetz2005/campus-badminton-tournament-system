@@ -50,9 +50,16 @@ export function CourtConsole({
     "AWAITING_NEXT_GAME_SETUP",
   ].includes(state.phase);
   const changeEndsPending = state.pendingObligations.some((item) => item.type === "CHANGE_ENDS");
+  const interactionExplanation = busy
+    ? "服务器正在处理或确认上一项操作，全部场地操作暂时锁定。"
+    : draft
+      ? "当前为开局设置草稿，确认首发与首接前不能计分或更正。"
+      : canWrite
+        ? "本机具有写入控制；所有操作仍需等待服务器确认后更新。"
+        : "当前设备只读，没有有效写入控制。";
 
   return (
-    <section aria-busy={busy} aria-label="权威比赛场地与比分" className="court-console">
+    <section aria-busy={busy} aria-describedby="court-interaction-status" aria-label="权威比赛场地与比分" className="court-console">
       <div className="court-heading">
         <div>
           <span className="eyebrow">第 {state.currentGame} 局 · 下一次发球前的规则位置</span>
@@ -128,6 +135,7 @@ export function CourtConsole({
       <p className="court-caption">
         四格表示规则发球区和下一次发接发顺序，不追踪回合中的实际跑位。
       </p>
+      <p className="court-interaction-status" id="court-interaction-status">{interactionExplanation}</p>
 
       <div className="court-position-actions">
         <button className="court-action-button" disabled={!canWrite || busy || !positionCorrectionAllowed} onClick={() => onCorrectPosition(view.halves[0].side)} type="button">
@@ -174,6 +182,9 @@ export function CourtConsole({
           </section>
         ))}
       </div>
+      <p aria-atomic="true" aria-live="polite" className="visually-hidden">
+        当前比分，{sideName("A")} {state.score.A} 分，{sideName("B")} {state.score.B} 分。
+      </p>
     </section>
   );
 }

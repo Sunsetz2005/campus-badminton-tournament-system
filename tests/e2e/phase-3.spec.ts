@@ -178,6 +178,52 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await runFullMatch(page.context().request, "MD-DEMO-002", "42222222-2222-4222-8222-222222222222");
   });
 
+  test("裁判工作台区分初次失败、权限拒绝和有旧数据时的过期状态", async ({ page }) => {
+    const matchCode = "MS-DEMO-001";
+    const statePattern = `**/api/matches/${matchCode}/state*`;
+    await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
+
+    await page.route(statePattern, async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({ error: { code: "simulated_failure", message: "模拟服务器读取失败。" } }),
+        contentType: "application/json",
+        status: 500,
+      });
+    });
+    await page.goto(`/officiating/${matchCode}`);
+    await expect(page.getByRole("heading", { name: "暂时无法读取权威状态" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "重新读取" })).toBeVisible();
+    await expect(page.getByText("正在读取比赛状态")).toBeHidden();
+
+    await page.unroute(statePattern);
+    await page.getByRole("button", { name: "重新读取" }).click();
+    await expect(page.getByTestId("badminton-court")).toBeVisible();
+
+    await page.route(statePattern, async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({ error: { code: "simulated_refresh_failure", message: "模拟后台刷新失败。" } }),
+        contentType: "application/json",
+        status: 500,
+      });
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event("orientationchange")));
+    await expect(page.locator('.scoring-alert[role="alert"]')).toContainText("模拟后台刷新失败");
+    await expect(page.getByTestId("badminton-court")).toBeVisible();
+    await expect(page.locator(".status-facts")).toContainText("数据可能过期");
+
+    await page.unroute(statePattern);
+    await page.route(statePattern, async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({ error: { code: "forbidden", message: "当前账号不能读取该场比赛。" } }),
+        contentType: "application/json",
+        status: 403,
+      });
+    });
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "无法进入该场执裁" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "重新读取" })).toHaveCount(0);
+  });
+
   test("工作台响应超时后锁定最后确认状态并用原 commandId 恢复", async ({ page }) => {
     const matchCode = "MS-DEMO-001";
     const request = page.context().request;

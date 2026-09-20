@@ -10,9 +10,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 阶段纪律（最容易踩的坑）
 
-本项目按 `prompt-kit/`（本机位于 `~/Downloads/prompt-kit/`，**不在仓库内**）的 0—10 阶段推进，**一次只做一个阶段**。当前停在阶段 2 纯规则引擎完成、等待独立复验，阶段 3 未开始。
+本项目按 `prompt-kit/`（本机位于 `~/Downloads/prompt-kit/`，**不在仓库内**）的 0—10 阶段推进，**一次只做一个阶段**。当前停在阶段 3 收尾：S2-008、S2-009 已通过独立复验，场地图裁判工作台获独立“有条件通过”；UI-01-B 与联合总判原为“不通过”，F-001—F-005 已由 Codex 本地修复但尚待独立复判。未经用户明确要求不得进入阶段 4 或 UI-01-C。
 
-阶段 2 已实现纯 TypeScript 计分 reducer、抛币、单双打发接发、撤销/更正和物理换边规则，但没有连接 API 或数据库。阶段 3 及以后功能——服务端命令事务、心跳/接管、完整裁判工作台、报名编排、成绩册——**尚未实现，不要顺手补上**。改动前先读 `docs/knowledge-base/06-开发日志/当前进度与下一步.md` 和 `01-项目规划/需求验收追踪矩阵.md`。
+阶段 2 纯 TypeScript 规则引擎已由阶段 3 服务端命令事务接入 PostgreSQL；心跳/接管、响应未知恢复和场地图裁判工作台已经实现。报名编排、排名、成绩册和真实公开赛程接口仍未实现，不要顺手补上。改动前先读 `docs/knowledge-base/06-开发日志/当前进度与下一步.md` 和 `01-项目规划/需求验收追踪矩阵.md`。
 
 追踪矩阵的状态只能用「已完成/已规划/未实现/未测试/待核验/后续版本」，且**必须有真实执行证据**才能写「已完成」。
 
@@ -52,7 +52,7 @@ node --test tests/sync-knowledge-base.test.mjs   # 同步脚本测试，走 node
 |---|---|---|
 | `.env` | `next dev/build/start`、`prisma.config.ts` | 开发库 `badminton_tournament_dev` + `BETTER_AUTH_*` |
 | `.env.seed` | 只有 `db:seed`（`dotenv -e .env -e .env.seed`） | 示例账号邮箱/口令 + `ALLOW_DEMO_ACCOUNTS=true` |
-| `.env.test` | `test` / `test:e2e` / `db:test:prepare` | 测试库 `badminton_tournament_test`、`BETTER_AUTH_URL=:3100` |
+| `.env.test` | `test` / `test:e2e` / `db:test:prepare` / `test:production-startup-security` | 测试库 `badminton_tournament_test`、`BETTER_AUTH_URL=:3100` |
 | `.env.example` | 人 | `.env` 的可提交模板 |
 | `.env.test.example` | 人 | `.env.test` 的可提交模板；复制后填写隔离 `_test` 库和本机测试身份 |
 
@@ -87,10 +87,10 @@ API 路由用 `errorResponse(error)`（`src/server/services/errors.ts`）把 `Ap
 
 `RuleProfile → RuleProfileRevision`（不可变，有 `revision`、`configHash`、`frozenAt`）可挂在 tournament / competition / stage 上；比赛开始时冻结为 `MatchRuleSnapshot`（含 `config`、`configHash`、`sourceChain`）。**改默认规则不能影响已开始的比赛。** 所有阈值来自 `src/domain/rules/rule-profile.ts`，纯状态机位于 `src/domain/rules/match-engine.ts`。三个内置 profile 都是**演示配置**，不是核实过的正式赛事规程。
 
-### 为阶段 3 预留的服务端并发原语（已建表，事务逻辑未实现）
+### 阶段 3 已接入的服务端并发原语
 
 - `Match.version` —— 乐观并发的 `expectedVersion`
-- `MatchEvent.commandId @unique` + `@@unique([matchId, version])` —— 数据库幂等与确定性重放；纯引擎语义已实现，事务未接入
+- `MatchEvent.commandId @unique` + `@@unique([matchId, version])` —— 数据库幂等与确定性重放；已接入 Serializable 服务端命令事务
 - `ScoringSession`：`tokenHash`、`takeoverGeneration`、`expiresAt`、`lastHeartbeatAt`，加上迁移里 `scoring_sessions_one_active_per_match` 的部分唯一索引（每场只允许一个 `ACTIVE`）
 - `ResultRevision`、`AuditLog`
 

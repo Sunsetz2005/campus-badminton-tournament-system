@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 
+import { ActionButton } from "@/components/ui/action-button";
+import { ResourceState } from "@/components/ui/resource-state";
 import type { MatchCommand, MatchState, Side } from "@/domain/rules/match-engine";
 import { CourtConsole } from "@/components/court-console";
 
@@ -64,6 +66,36 @@ type PreviewState = {
 };
 
 type EndsMode = "CONFIRM" | "FULFILL" | "KEEP_PENDING" | "RESOLVE_REVIEW" | "CORRECT";
+type InitialLoadState =
+  | { kind: "loading" }
+  | { kind: "ready" }
+  | { kind: "forbidden"; message: string }
+  | { kind: "not-found"; message: string }
+  | { kind: "offline"; message: string }
+  | { kind: "error"; message: string };
+type ActionRequestState = "IDLE" | "ACQUIRING" | "PREVIEWING";
+
+const phaseLabels: Record<MatchState["phase"], string> = {
+  AWAITING_COIN_TOSS: "等待抛币",
+  AWAITING_OPENING_SETUP: "等待首局设置",
+  IN_PROGRESS: "比赛进行中",
+  OBLIGATIONS_PENDING: "有规则事项待处理",
+  GAME_COMPLETE: "本局结束",
+  AWAITING_NEXT_GAME_SETUP: "等待下一局设置",
+  MATCH_COMPLETE_PENDING_SUBMISSION: "比赛结束，待提交",
+  SPECIAL_OUTCOME_PENDING_SUBMISSION: "特殊结果待提交",
+  PAUSED: "比赛暂停",
+  SUBMITTED: "结果已提交，待复核",
+  CONFIRMED: "结果已确认",
+};
+
+const specialOutcomeLabels: Record<NonNullable<MatchState["specialOutcome"]>["type"], string> = {
+  WO: "弃权（WO）",
+  RET: "退赛（RET）",
+  DSQ: "取消资格（DSQ）",
+  ABANDONED: "比赛中止",
+  BYE: "轮空（BYE）",
+};
 
 function deviceId(matchCode: string) {
   const key = `badminton-device:${matchCode}`;
@@ -99,6 +131,8 @@ async function responseJson(response: Response) {
 
 export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   const [snapshot, setSnapshot] = useState<SnapshotResponse | null>(null);
+  const [initialLoadState, setInitialLoadState] = useState<InitialLoadState>({ kind: "loading" });
+  const [dataFreshness, setDataFreshness] = useState<"FRESH" | "STALE">("FRESH");
   const storageKey = `badminton-control:${matchCode}`;
   const pendingKey = `badminton-pending:${matchCode}`;
   const [control, setControl] = useState<SessionControl | null>(() => {
@@ -110,6 +144,8 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   const [syncState, setSyncState] = useState<"SYNCED" | "SUBMITTING" | "UNKNOWN" | "CONFLICT" | "READ_ONLY">("READ_ONLY");
   const [pendingResolution, setPendingResolution] = useState<"QUERYING" | "NOT_FOUND" | null>(null);
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"error" | "status">("error");
+  const [actionRequestState, setActionRequestState] = useState<ActionRequestState>("IDLE");
   const [actionSheet, setActionSheet] = useState<ActionSheetState | null>(null);
   const [sheetClosing, setSheetClosing] = useState(false);
   const [reason, setReason] = useState("");
@@ -132,16 +168,21 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   const sheetCloseRef = useRef<HTMLButtonElement>(null);
   const sheetRef = useRef<HTMLElement>(null);
   const sheetCloseTimerRef = useRef<number | null>(null);
+  const actionSheetEpochRef = useRef(0);
+  const latestVersionRef = useRef(-1);
+  const refreshSequenceRef = useRef(0);
   const state = snapshot?.state;
   const match = snapshot?.match;
 
   const closeActionSheet = useCallback(() => {
+    actionSheetEpochRef.current += 1;
     const finish = () => {
       setActionSheet(null);
       setSheetClosing(false);
       setPreview(null);
       setReason("");
       setSheetError("");
+      setActionRequestState("IDLE");
       sheetCloseTimerRef.current = null;
     };
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -169,11 +210,13 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       );
       if (response.status === 404) {
         setPendingResolution("NOT_FOUND");
+        setMessageTone("error");
         setMessage("服务器暂未找到这条待确认命令。只能查询或以原 commandId 重试，不能开始新操作。");
         return "not_found" as const;
       }
       const body = await responseJson(response);
       localStorage.removeItem(pendingKey);
+      latestVersionRef.current = Math.max(latestVersionRef.current, body.version);
       setSnapshot((current) => current ? {
         ...current,
         version: body.version,
@@ -190,22 +233,36 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       setPendingResolution(null);
       setSyncState("SYNCED");
       setOnline(true);
+      setDataFreshness("FRESH");
+      setMessageTone("status");
       setMessage("已按原 commandId 找回服务器结果。");
       return "found" as const;
     } catch (error) {
       setPendingResolution(null);
       setSyncState("UNKNOWN");
       if (!(error instanceof ApiRequestError)) setOnline(false);
+      setMessageTone("error");
       setMessage(error instanceof Error ? error.message : "待确认命令仍无法对账。");
       return "unavailable" as const;
     }
   }, [matchCode, pendingKey]);
 
   const refresh = useCallback(async (force = false) => {
+    const requestSequence = ++refreshSequenceRef.current;
     const after = !force && snapshot?.version !== undefined ? `?afterVersion=${snapshot.version}` : "";
     try {
       const next = await responseJson(await fetch(`/api/matches/${encodeURIComponent(matchCode)}/state${after}`, { cache: "no-store" })) as SnapshotResponse;
+      if (requestSequence !== refreshSequenceRef.current) return;
+      if (next.status === "snapshot" && next.version < latestVersionRef.current) {
+        setDataFreshness("STALE");
+        setMessageTone("status");
+        setMessage("已忽略迟到的旧版本响应，继续显示较新的服务器权威状态。");
+        return;
+      }
+      latestVersionRef.current = Math.max(latestVersionRef.current, next.version);
       setSnapshot((current) => next.status === "unchanged" ? { ...current!, ...next } : next);
+      setInitialLoadState({ kind: "ready" });
+      setDataFreshness("FRESH");
       setOnline(true);
       const hasPendingCommand = localStorage.getItem(pendingKey) !== null;
       setSyncState((current) => current === "SUBMITTING"
@@ -216,9 +273,26 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
             ? "SYNCED"
             : "READ_ONLY");
     } catch (error) {
-      setOnline(false);
+      if (requestSequence !== refreshSequenceRef.current) return;
+      const errorMessage = error instanceof Error ? error.message : "无法同步权威状态。";
+      const requestReachedServer = error instanceof ApiRequestError;
+      if (!requestReachedServer) setOnline(false);
+      else setOnline(navigator.onLine);
       setSyncState("READ_ONLY");
-      setMessage(error instanceof Error ? error.message : "无法同步权威状态。");
+      setDataFreshness("STALE");
+      setMessageTone("error");
+      setMessage(errorMessage);
+      if (!snapshot) {
+        if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
+          setInitialLoadState({ kind: "forbidden", message: errorMessage });
+        } else if (error instanceof ApiRequestError && error.status === 404) {
+          setInitialLoadState({ kind: "not-found", message: errorMessage });
+        } else if (!requestReachedServer) {
+          setInitialLoadState({ kind: "offline", message: "无法连接服务器，请检查网络后重试。" });
+        } else {
+          setInitialLoadState({ kind: "error", message: errorMessage });
+        }
+      }
     }
   }, [control, matchCode, pendingKey, snapshot]);
 
@@ -289,6 +363,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         setControl(null);
         sessionStorage.removeItem(storageKey);
         setSyncState("READ_ONLY");
+        setMessageTone("error");
         setMessage(error instanceof Error ? error.message : "心跳失败，已切换只读。");
       }
     }, 30_000);
@@ -335,6 +410,8 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   }, [actionSheet]);
 
   async function acquire(takeover = false, takeoverReason = "") {
+    if (actionRequestState !== "IDLE") return;
+    setActionRequestState("ACQUIRING");
     setMessage("");
     try {
       const path = takeover ? "control/takeover" : "control";
@@ -356,7 +433,12 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "无法取得控制权。";
       if (takeover) setSheetError(errorMessage);
-      else setMessage(errorMessage);
+      else {
+        setMessageTone("error");
+        setMessage(errorMessage);
+      }
+    } finally {
+      setActionRequestState("IDLE");
     }
   }
 
@@ -380,6 +462,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       const pendingEnvelope = JSON.parse(existingPending) as Envelope;
       if (pendingEnvelope.commandId !== envelope.commandId) {
         setSyncState("UNKNOWN");
+        setMessageTone("error");
         setMessage("仍有待确认命令；新操作已阻止。请先按原 commandId 对账。");
         return false;
       }
@@ -398,6 +481,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         body: JSON.stringify(envelope),
       }));
       localStorage.removeItem(pendingKey);
+      latestVersionRef.current = Math.max(latestVersionRef.current, body.version);
       setSnapshot((current) => current ? {
         ...current,
         version: body.version,
@@ -411,6 +495,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       } : current);
       setPendingResolution(null);
       setSyncState("SYNCED");
+      setDataFreshness("FRESH");
       return true;
     } catch (error) {
       if (error instanceof ApiRequestError) {
@@ -426,13 +511,17 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
           setSyncState(control ? "SYNCED" : "READ_ONLY");
         }
         if (actionSheet) setSheetError(error.message);
-        else setMessage(error.message);
+        else {
+          setMessageTone("error");
+          setMessage(error.message);
+        }
         await refresh(true);
         if (error.code === "not_controller" || error.status === 401 || error.status === 403) setSyncState("READ_ONLY");
         else if (error.status === 409) setSyncState("CONFLICT");
         return false;
       }
       setSyncState("UNKNOWN");
+      setMessageTone("error");
       setMessage("命令结果未知。正式状态保持最后一次服务器确认值，正在按原 commandId 对账。");
       if (actionSheet) closeActionSheet();
       await refresh(true);
@@ -451,6 +540,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     const raw = localStorage.getItem(pendingKey);
     if (!raw) return reconcilePendingCommand();
     if (!control || !online) {
+      setMessageTone("error");
       setMessage("当前离线或控制会话已失效，不能重试待确认命令。");
       return false;
     }
@@ -459,11 +549,13 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
 
   function openActionSheet(next: ActionSheetState) {
     if (sheetCloseTimerRef.current !== null) window.clearTimeout(sheetCloseTimerRef.current);
+    actionSheetEpochRef.current += 1;
     setSheetClosing(false);
     setActionSheet(next);
     setReason("");
     setSheetError("");
     setPreview(null);
+    setActionRequestState("IDLE");
     setScoreA(state?.score.A ?? 0);
     setScoreB(state?.score.B ?? 0);
     setCorrectedServingSide(state?.servingSide ?? "A");
@@ -476,7 +568,9 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   }
 
   async function requestPreview(envelope: Envelope) {
-    if (!control) return null;
+    if (!control || actionRequestState !== "IDLE") return null;
+    const epoch = actionSheetEpochRef.current;
+    setActionRequestState("PREVIEWING");
     try {
       setSheetError("");
       const result = await responseJson(await fetch(`/api/matches/${encodeURIComponent(matchCode)}/commands/preview`, {
@@ -484,12 +578,17 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${control.controlToken}` },
         body: JSON.stringify(envelope),
       }));
+      if (epoch !== actionSheetEpochRef.current) return null;
       const nextPreview = { envelope, before: result.before, after: result.after } satisfies PreviewState;
       setPreview(nextPreview);
       return nextPreview;
     } catch (error) {
-      setSheetError(error instanceof Error ? error.message : "无法生成更正预览。");
+      if (epoch === actionSheetEpochRef.current) {
+        setSheetError(error instanceof Error ? error.message : "无法生成更正预览。");
+      }
       return null;
+    } finally {
+      if (epoch === actionSheetEpochRef.current) setActionRequestState("IDLE");
     }
   }
 
@@ -689,7 +788,37 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     });
   }
 
-  if (!snapshot || !state || !match) return <p className="empty-state">正在读取权威比赛状态…</p>;
+  async function retryInitialLoad() {
+    setInitialLoadState({ kind: "loading" });
+    setMessage("");
+    await refresh(true);
+  }
+
+  if (!snapshot || !state || !match) {
+    if (initialLoadState.kind === "loading") {
+      return (
+        <ResourceState
+          description="正在从服务器读取比赛、控制权和最新比分。服务器确认前不会显示可写状态。"
+          eyebrow="权威状态"
+          title="正在读取比赛状态"
+          tone="loading"
+        />
+      );
+    }
+    const canRetry = initialLoadState.kind === "offline" || initialLoadState.kind === "error";
+    const loadMessage = initialLoadState.kind === "ready"
+      ? "服务器响应缺少完整比赛状态，请重新读取。"
+      : initialLoadState.message;
+    return (
+      <ResourceState
+        action={canRetry ? <ActionButton onClick={() => void retryInitialLoad()}>重新读取</ActionButton> : undefined}
+        description={loadMessage}
+        eyebrow={initialLoadState.kind === "forbidden" ? "没有访问权限" : initialLoadState.kind === "not-found" ? "比赛不存在" : "读取失败"}
+        title={initialLoadState.kind === "forbidden" ? "无法进入该场执裁" : initialLoadState.kind === "not-found" ? "找不到这场比赛" : "暂时无法读取权威状态"}
+        tone={initialLoadState.kind === "not-found" ? "not-found" : "error"}
+      />
+    );
+  }
 
   return (
     <>
@@ -700,11 +829,13 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
           <span><i className={`sync-dot ${online ? "online" : "offline"}`} />网络<strong>{online ? "在线" : "离线"}</strong></span>
           <span>控制<strong>{canWrite ? "本机可写" : "只读"}</strong></span>
           <span>同步<strong>{syncLabel}</strong></span>
+          <span>数据<strong>{dataFreshness === "FRESH" ? "最新" : "可能过期"}</strong></span>
           <small>服务器版本 {state.version}</small>
         </div>
       </header>
 
-      {message ? <p className="scoring-alert" role="alert">{message}</p> : null}
+      {dataFreshness === "STALE" && !message ? <p className="scoring-stale" role="status">无法确认最新状态；继续显示最后一次服务器确认数据，写入保持只读。</p> : null}
+      {message ? <p className={`scoring-alert ${messageTone === "status" ? "is-status" : ""}`} role={messageTone === "error" ? "alert" : "status"}>{message}</p> : null}
       {syncState === "UNKNOWN" ? (
         <section className="pending-recovery" aria-live="assertive">
           <div>
@@ -736,7 +867,11 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       />
 
       <div className="control-strip">
-        {!control && snapshot.access.assignedReferee ? <button className="button" onClick={() => void acquire()}>取得本机控制权</button> : null}
+        {!control && snapshot.access.assignedReferee ? (
+          <ActionButton loading={actionRequestState === "ACQUIRING"} loadingLabel="正在取得控制…" onClick={() => void acquire()}>
+            取得本机控制权
+          </ActionButton>
+        ) : null}
         {snapshot.access.chiefReferee ? <button className="button secondary" onClick={() => openActionSheet({ kind: "TAKEOVER" })}>裁判长接管</button> : null}
         <button className="button secondary" onClick={flipLocalView}>翻转本机视角</button>
         <span>{canWrite
@@ -754,6 +889,19 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         <strong>第 {state.currentGame} 局</strong>
         {state.completedGames.map((game) => <span key={game.number}>第{game.number}局 {game.scoreA}:{game.scoreB}</span>)}
       </div>
+      {state.specialOutcome ? (
+        <section className="special-outcome-summary" aria-labelledby="special-outcome-title">
+          <div>
+            <span className="eyebrow">特殊结果待处理</span>
+            <h2 id="special-outcome-title">{specialOutcomeLabels[state.specialOutcome.type]}</h2>
+          </div>
+          <dl>
+            <div><dt>胜方（如适用）</dt><dd>{state.specialOutcome.winnerSide ? `${state.specialOutcome.winnerSide} 方` : "无胜方"}</dd></div>
+            <div><dt>记录原因</dt><dd>{state.specialOutcome.reason}</dd></div>
+          </dl>
+          <p>作废会由服务器恢复到录入前的完整权威状态，不会在浏览器本地拼接比分或站位。</p>
+        </section>
+      ) : null}
       {state.pendingObligations.some((item) => item.type === "INTERVAL") ? (
         <IntervalClock
           key={`${intervalStartedAt}:${snapshot.serverTime}`}
@@ -783,10 +931,10 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       ) : null}
 
       <div className="service-panel">
-        <div><span>当前阶段</span><strong>{state.phase}</strong></div>
-        <div><span>发球</span><strong>{["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase) ? `${playerName(state.serverPlayerId)} · ${state.serverCourt ?? "—"}` : "当前无下一球"}</strong></div>
-        <div><span>接发</span><strong>{["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase) ? `${playerName(state.receiverPlayerId)} · ${state.receiverCourt ?? "—"}` : "当前无下一球"}</strong></div>
-        <div><span>物理端</span><strong>{state.physicalEnds ? `A ${state.physicalEnds.A} / B ${state.physicalEnds.B}` : "待确认"}</strong></div>
+        <div><span>当前阶段</span><strong>{phaseLabels[state.phase]}</strong></div>
+        <div><span>发球</span><strong>{["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase) ? `${playerName(state.serverPlayerId)} · ${state.serverCourt === "R" ? "右发球区" : state.serverCourt === "L" ? "左发球区" : "待确认"}` : "当前无下一球"}</strong></div>
+        <div><span>接发</span><strong>{["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase) ? `${playerName(state.receiverPlayerId)} · ${state.receiverCourt === "R" ? "右发球区" : state.receiverCourt === "L" ? "左发球区" : "待确认"}` : "当前无下一球"}</strong></div>
+        <div><span>物理端</span><strong>{state.physicalEnds ? `A 场地端 ${state.physicalEnds.A.replace("END_", "")} / B 场地端 ${state.physicalEnds.B.replace("END_", "")}` : "待确认"}</strong></div>
       </div>
 
       <PhaseActions
@@ -808,6 +956,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     </section>
       {actionSheet ? createPortal(<WorkbenchActionSheet
         action={actionSheet}
+        busy={actionRequestState !== "IDLE" || syncState === "SUBMITTING"}
         actualEndA={actualEndA}
         closeRef={sheetCloseRef}
         closing={sheetClosing}
@@ -857,6 +1006,7 @@ function actionSheetTitle(action: ActionSheetState) {
 function WorkbenchActionSheet({
   action,
   actualEndA,
+  busy,
   closeRef,
   closing,
   correctedServingSide,
@@ -886,6 +1036,7 @@ function WorkbenchActionSheet({
 }: {
   action: ActionSheetState;
   actualEndA: "END_1" | "END_2";
+  busy: boolean;
   closeRef: RefObject<HTMLButtonElement | null>;
   closing: boolean;
   correctedServingSide: Side;
@@ -919,12 +1070,14 @@ function WorkbenchActionSheet({
   const confirmOnly = action.kind === "ENDS" && endsMode === "CONFIRM";
 
   return (
-    <div className={`correction-scrim ${closing ? "is-closing" : ""}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section aria-labelledby="action-sheet-title" aria-modal="true" className={`correction-sheet ${closing ? "is-closing" : ""}`} ref={dialogRef} role="dialog">
+    <div className={`correction-scrim ${closing ? "is-closing" : ""}`} onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onClose(); }}>
+      <section aria-busy={busy || undefined} aria-describedby="action-sheet-description" aria-labelledby="action-sheet-title" aria-modal="true" className={`correction-sheet ${closing ? "is-closing" : ""}`} ref={dialogRef} role="dialog">
         <header>
           <div><span className="eyebrow">服务器权威操作</span><h2 id="action-sheet-title">{actionSheetTitle(action)}</h2></div>
           <button aria-label="关闭" className="sheet-close" onClick={onClose} ref={closeRef}>×</button>
         </header>
+
+        <p className="sheet-guidance" id="action-sheet-description">先由服务器生成并验证预览；确认前不会改变权威比分、站位或比赛阶段。</p>
 
         {action.kind === "UNDO" ? <p>“−”不会直接改分。系统只预览最近一条可逆得分，并核对它是否属于 {action.side} 方。</p> : null}
         {action.kind === "SWAP_POSITION" ? <p>只交换 {action.side} 方两名球员的规则 R/L，比分、对方站位和物理端保持不变。</p> : null}
@@ -932,7 +1085,7 @@ function WorkbenchActionSheet({
         {action.kind === "ENDS" ? (
           <div className="sheet-form-grid">
             <label>处理方式
-              <select value={endsMode} onChange={(event) => onEndsMode(event.target.value as EndsMode)}>
+              <select disabled={busy} value={endsMode} onChange={(event) => onEndsMode(event.target.value as EndsMode)}>
                 {hasChangeEnds ? <option value="CONFIRM">现场已按规则完成换边</option> : null}
                 {hasChangeEnds ? <option value="FULFILL">更正记录，并同时完成换边待办</option> : null}
                 {hasChangeEnds ? <option value="KEEP_PENDING">只更正原记录，换边仍待执行</option> : null}
@@ -941,7 +1094,7 @@ function WorkbenchActionSheet({
               </select>
             </label>
             {!confirmOnly ? <label>A 方现场所在端
-              <select value={actualEndA} onChange={(event) => onActualEndA(event.target.value as "END_1" | "END_2")}>
+              <select disabled={busy} value={actualEndA} onChange={(event) => onActualEndA(event.target.value as "END_1" | "END_2")}>
                 <option value="END_1">场地端 1</option><option value="END_2">场地端 2</option>
               </select>
             </label> : null}
@@ -951,11 +1104,11 @@ function WorkbenchActionSheet({
         {action.kind === "SCORE" || action.kind === "SINGLES_CHECK" ? (
           <>
             <div className="correction-score">
-              <label>A 方比分<input min="0" type="number" value={scoreA} onChange={(event) => onScoreA(Number(event.target.value))} /></label>
-              <label>B 方比分<input min="0" type="number" value={scoreB} onChange={(event) => onScoreB(Number(event.target.value))} /></label>
+              <label>A 方比分<input disabled={busy} min="0" type="number" value={scoreA} onChange={(event) => onScoreA(Number(event.target.value))} /></label>
+              <label>B 方比分<input disabled={busy} min="0" type="number" value={scoreB} onChange={(event) => onScoreB(Number(event.target.value))} /></label>
             </div>
             <label>更正后的发球方
-              <select value={correctedServingSide} onChange={(event) => onCorrectedServingSide(event.target.value as Side)}>
+              <select disabled={busy} value={correctedServingSide} onChange={(event) => onCorrectedServingSide(event.target.value as Side)}>
                 <option value="A">A 方</option><option value="B">B 方</option>
               </select>
             </label>
@@ -964,7 +1117,7 @@ function WorkbenchActionSheet({
 
         {action.kind === "SERVICE_ORDER" ? (
           <label>更正后的发球方
-            <select value={correctedServingSide} onChange={(event) => onCorrectedServingSide(event.target.value as Side)}>
+            <select disabled={busy} value={correctedServingSide} onChange={(event) => onCorrectedServingSide(event.target.value as Side)}>
               <option value="A">A 方</option><option value="B">B 方</option>
             </select>
           </label>
@@ -973,19 +1126,19 @@ function WorkbenchActionSheet({
         {action.kind === "SPECIAL" ? (
           <div className="sheet-form-grid">
             <label>特殊结果
-              <select value={specialType} onChange={(event) => onSpecialType(event.target.value as typeof specialType)}>
+              <select disabled={busy} value={specialType} onChange={(event) => onSpecialType(event.target.value as typeof specialType)}>
                 <option value="WO">WO</option><option value="RET">RET</option><option value="DSQ">DSQ</option><option value="ABANDONED">ABANDONED</option><option value="BYE">BYE</option>
               </select>
             </label>
-            <label>胜方
-              <select value={specialWinner} onChange={(event) => onSpecialWinner(event.target.value as "" | Side)}>
+            <label>胜方（如适用）
+              <select disabled={busy} value={specialWinner} onChange={(event) => onSpecialWinner(event.target.value as "" | Side)}>
                 <option value="">无胜方</option><option value="A">A 方</option><option value="B">B 方</option>
               </select>
             </label>
           </div>
         ) : null}
 
-        {!confirmOnly ? <label>必填原因<textarea autoComplete="off" value={reason} onChange={(event) => onReason(event.target.value)} /></label> : null}
+        {!confirmOnly ? <label>必填原因<textarea autoComplete="off" disabled={busy} value={reason} onChange={(event) => onReason(event.target.value)} /></label> : null}
         {error ? <p className="sheet-error" role="alert">{error}</p> : null}
         {preview ? (
           <div className="server-preview" aria-live="polite">
@@ -997,11 +1150,11 @@ function WorkbenchActionSheet({
         ) : null}
 
         <div className="sheet-actions">
-          {previewable && !preview ? <button className="button" onClick={onPreview}>生成服务器预览</button> : null}
-          {previewable && preview ? <button className="button" onClick={onConfirmPreview}>确认执行预览结果</button> : null}
-          {action.kind === "SPECIAL" ? <button className="button danger" onClick={onSpecialSubmit}>确认记录特殊结果</button> : null}
-          {action.kind === "TAKEOVER" || action.kind === "REASON_COMMAND" ? <button className="button" onClick={onSubmit}>确认提交</button> : null}
-          <button className="button secondary" onClick={onClose}>取消</button>
+          {previewable && !preview ? <ActionButton loading={busy} loadingLabel="正在生成预览…" onClick={onPreview}>生成服务器预览</ActionButton> : null}
+          {previewable && preview ? <ActionButton loading={busy} loadingLabel="正在提交…" onClick={onConfirmPreview}>确认执行预览结果</ActionButton> : null}
+          {action.kind === "SPECIAL" ? <ActionButton loading={busy} loadingLabel="正在记录…" onClick={onSpecialSubmit} variant="danger">确认记录特殊结果</ActionButton> : null}
+          {action.kind === "TAKEOVER" || action.kind === "REASON_COMMAND" ? <ActionButton loading={busy} loadingLabel="正在提交…" onClick={onSubmit}>确认提交</ActionButton> : null}
+          <ActionButton disabled={busy} onClick={onClose} variant="secondary">取消</ActionButton>
         </div>
       </section>
     </div>
@@ -1061,5 +1214,12 @@ function IntervalClock({ seconds, startedAt, serverTime }: { seconds: number; st
     return () => window.clearInterval(timer);
   }, []);
   const remaining = Math.max(0, seconds - Math.floor((now + serverOffset - Date.parse(startedAt)) / 1_000));
-  return <p className="interval-clock" aria-live="polite">间歇提醒 <strong>{Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, "0")}</strong><span>归零只提醒，不自动处罚或改分。</span></p>;
+  const announcement = [60, 30, 10, 0].includes(remaining) ? `间歇剩余 ${remaining} 秒` : "";
+  return (
+    <p className="interval-clock">
+      间歇提醒 <strong>{Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, "0")}</strong>
+      <span>归零只提醒，不自动处罚或改分。</span>
+      <span aria-atomic="true" aria-live="polite" className="visually-hidden">{announcement}</span>
+    </p>
+  );
 }

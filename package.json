@@ -24,7 +24,7 @@
     "typecheck": "tsc --noEmit",
     "test": "pnpm db:test:prepare && dotenv -e .env.test -- vitest run",
     "test:e2e": "pnpm db:test:prepare && dotenv -e .env.test -- playwright test",
-    "test:production-startup-security": "pnpm run build && dotenv -e .env.test -- node --test tests/server/production-startup-security.test.mjs",
+    "test:production-startup-security": "dotenv -e .env.test -- tsx scripts/build-production-startup-test.ts && dotenv -e .env.test -- node --test tests/server/production-startup-security.test.mjs",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",

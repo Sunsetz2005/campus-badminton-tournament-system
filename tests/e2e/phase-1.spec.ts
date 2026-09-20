@@ -21,6 +21,7 @@ test.describe.serial("阶段 1 浏览器权限链", () => {
       where: { action: { in: ["SCORING_SESSION_ACQUIRE", "SCORING_SESSION_ACQUIRED"] } },
     });
     await prisma.session.deleteMany({ where: { user: { email: { in: demoEmails } } } });
+    await prisma.match.update({ where: { id: match.id }, data: { controlGeneration: 1 } });
   }
 
   test.beforeEach(clearControlArtifacts);

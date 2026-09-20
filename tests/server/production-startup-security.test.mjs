@@ -3,6 +3,15 @@ import { createServer } from "node:net";
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { assertTestDatabaseUrl } from "../../src/db/database-safety.ts";
+
+try {
+  assertTestDatabaseUrl(process.env.DATABASE_URL);
+} catch {
+  console.error("生产启动安全测试仅允许使用有效且数据库名以 _test 结尾的 DATABASE_URL。");
+  process.exit(1);
+}
+
 const READY_PATTERN = /Ready in|Local:\s+http/i;
 
 async function getFreePort() {
@@ -28,6 +37,8 @@ function productionEnvironment(port, overrides = {}) {
   delete environment.DEMO_ADMIN_PASSWORD;
   delete environment.DEMO_REFEREE_PASSWORD;
   if (!("ALLOW_DEMO_ACCOUNTS" in overrides)) delete environment.ALLOW_DEMO_ACCOUNTS;
+  if (!("ENABLE_TEST_FAULT_INJECTION" in overrides)) delete environment.ENABLE_TEST_FAULT_INJECTION;
+  if (!("ENABLE_PUBLIC_UI_PREVIEW" in overrides)) delete environment.ENABLE_PUBLIC_UI_PREVIEW;
   return environment;
 }
 
@@ -128,6 +139,22 @@ test("生产环境拒绝测试故障注入开关", { timeout: 20_000 }, async ()
     assert.equal(server.exited, true, server.output);
     assert.notEqual(server.exitCode, 0, server.output);
     assert.match(server.output, /生产环境禁止启用测试故障注入/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("生产环境保持可用且公开端界面预览始终返回 404", { timeout: 20_000 }, async () => {
+  const port = await getFreePort();
+  const server = await startProductionServer(
+    productionEnvironment(port, { ENABLE_PUBLIC_UI_PREVIEW: "true" }),
+    port,
+  );
+  try {
+    await server.waitFor(() => server.exited || server.ready, 10_000);
+    assert.equal(server.exited, false, server.output);
+    const response = await fetch(`http://127.0.0.1:${port}/public/preview/autumn-campus-2026/schedule`);
+    assert.equal(response.status, 404, server.output);
   } finally {
     await server.stop();
   }
