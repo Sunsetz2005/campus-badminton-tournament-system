@@ -17,6 +17,16 @@ const schema = z.object({
 export async function parseScoringCommandRequest(request: Request): Promise<ScoringCommandEnvelope> {
   const parsed = schema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) throw new AppError(400, "invalid_request", "比赛命令信封无效。");
+  if (
+    parsed.data.type === "CORRECT_PHYSICAL_ENDS" &&
+    Object.prototype.hasOwnProperty.call(parsed.data.payload, "fulfillsObligationId")
+  ) {
+    throw new AppError(
+      400,
+      "legacy_command_field_not_allowed",
+      "新命令必须使用 obligationRelationship；旧字段仅用于历史事件重放。",
+    );
+  }
   return {
     ...parsed.data,
     type: parsed.data.type as MatchCommand["type"],

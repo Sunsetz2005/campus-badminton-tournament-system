@@ -130,7 +130,13 @@ export type MatchCommand =
   | CommandBase<"RECORD_MISSED_CHANGE_ENDS", { obligationId: string; reason: string }>
   | CommandBase<
       "CORRECT_PHYSICAL_ENDS",
-      { reason: string; physicalEnds: PhysicalEnds; fulfillsObligationId?: string }
+      {
+        reason: string;
+        physicalEnds: PhysicalEnds;
+        obligationRelationship?: { obligationId: string; action: "FULFILL" | "KEEP_PENDING" };
+        /** @deprecated Retained only so persisted historical events can be replayed. */
+        fulfillsObligationId?: string;
+      }
     >
   | CommandBase<"CORRECT_LOGICAL_COURTS", { reason: string; logicalCourts: LogicalCourts }>
   | CommandBase<
@@ -336,6 +342,16 @@ function assertResultUnlocked(state: MatchState) {
   if (state.phase === "SUBMITTED" || state.phase === "CONFIRMED") {
     throw new RuleViolation("result_locked", "已提交或确认的结果必须先受控重开，不能直接更正。");
   }
+}
+
+function assertCorrectionPhase(
+  state: MatchState,
+  allowedPhases: readonly MatchPhase[],
+  code: string,
+  message: string,
+) {
+  assertResultUnlocked(state);
+  if (!allowedPhases.includes(state.phase)) throw new RuleViolation(code, message);
 }
 
 function assertScoreCorrectionAllowed(state: MatchState) {
@@ -611,31 +627,85 @@ function nextStateForCommand(state: MatchState, command: MatchCommand) {
       next.physicalEnds = { A: next.physicalEnds.B, B: next.physicalEnds.A };
       return next;
     case "CORRECT_PHYSICAL_ENDS":
-      assertResultUnlocked(next);
+      assertCorrectionPhase(
+        next,
+        ["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED", "GAME_COMPLETE", "AWAITING_NEXT_GAME_SETUP"],
+        "physical_ends_correction_not_allowed",
+        "当前比赛状态不能更正物理场地端。",
+      );
       requireReason(command.payload.reason);
       if (command.payload.physicalEnds.A === command.payload.physicalEnds.B) {
         throw new RuleViolation("invalid_physical_ends", "双方不能占据同一物理场地端。");
       }
       const pendingChangeEnds = next.pendingObligations.filter((item) => item.type === "CHANGE_ENDS");
-      if (pendingChangeEnds.length > 0 && !command.payload.fulfillsObligationId) {
+      const pendingPhysicalReviews = next.pendingObligations.filter((item) => item.type === "PHYSICAL_ENDS_REVIEW");
+      const hasNewRelationship = command.payload.obligationRelationship !== undefined;
+      const hasLegacyRelationship = command.payload.fulfillsObligationId !== undefined;
+      if (hasNewRelationship && hasLegacyRelationship) {
         throw new RuleViolation(
-          "change_ends_relationship_required",
-          "存在未处理的规则换边义务，物理端更正必须明确是否同时完成该义务。",
+          "obligation_relationship_conflict",
+          "物理端更正不能同时提交新旧两种待办关系字段。",
         );
       }
-      if (command.payload.fulfillsObligationId) {
-        const allowedType = pendingChangeEnds.length > 0 ? "CHANGE_ENDS" : "PHYSICAL_ENDS_REVIEW";
+      const relationship = hasNewRelationship
+        ? command.payload.obligationRelationship
+        : hasLegacyRelationship
+          ? { obligationId: command.payload.fulfillsObligationId!, action: "FULFILL" as const }
+          : undefined;
+      if (
+        relationship &&
+        (!relationship.obligationId ||
+          (relationship.action !== "FULFILL" && relationship.action !== "KEEP_PENDING"))
+      ) {
+        throw new RuleViolation("invalid_obligation_relationship", "物理端更正与待办的关系无效。");
+      }
+      const expectedObligationType =
+        pendingChangeEnds.length > 0
+          ? "CHANGE_ENDS"
+          : pendingPhysicalReviews.length > 0
+            ? "PHYSICAL_ENDS_REVIEW"
+            : null;
+      if (!expectedObligationType && relationship) {
+        throw new RuleViolation(
+          "obligation_relationship_not_allowed",
+          "当前没有可与物理端更正关联的待办事项。",
+        );
+      }
+      if (expectedObligationType && !relationship) {
+        throw new RuleViolation(
+          expectedObligationType === "CHANGE_ENDS"
+            ? "change_ends_relationship_required"
+            : "physical_ends_review_relationship_required",
+          expectedObligationType === "CHANGE_ENDS"
+            ? "存在未处理的规则换边义务，物理端更正必须明确是否同时完成该义务。"
+            : "物理场地核对待办必须由显式物理端更正完成。",
+        );
+      }
+      if (expectedObligationType && relationship) {
         const obligation = next.pendingObligations.find(
-          (item) => item.id === command.payload.fulfillsObligationId && item.type === allowedType,
+          (item) => item.id === relationship.obligationId && item.type === expectedObligationType,
         );
         if (!obligation) throw new RuleViolation("obligation_not_found", "物理场地核对事项不存在。");
-        next.pendingObligations = next.pendingObligations.filter((item) => item.id !== obligation.id);
-        finishObligationPhase(next);
+        if (obligation.type === "PHYSICAL_ENDS_REVIEW" && relationship.action !== "FULFILL") {
+          throw new RuleViolation(
+            "physical_ends_review_must_be_fulfilled",
+            "物理场地核对待办不能在更正后继续保留。",
+          );
+        }
+        if (relationship.action === "FULFILL") {
+          next.pendingObligations = next.pendingObligations.filter((item) => item.id !== obligation.id);
+          finishObligationPhase(next);
+        }
       }
       next.physicalEnds = clone(command.payload.physicalEnds);
       return next;
     case "CORRECT_LOGICAL_COURTS":
-      assertResultUnlocked(next);
+      assertCorrectionPhase(
+        next,
+        ["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"],
+        "logical_courts_correction_not_allowed",
+        "当前比赛状态不能更正逻辑发球区。",
+      );
       requireReason(command.payload.reason);
       assertLogicalCourts(next, command.payload.logicalCourts);
       next.logicalCourts = clone(command.payload.logicalCourts);
@@ -643,7 +713,12 @@ function nextStateForCommand(state: MatchState, command: MatchCommand) {
       setServiceOrder(next, next.servingSide);
       return next;
     case "CORRECT_SERVICE_ORDER":
-      assertResultUnlocked(next);
+      assertCorrectionPhase(
+        next,
+        ["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"],
+        "service_order_correction_not_allowed",
+        "当前比赛状态不能更正发接发顺序。",
+      );
       requireReason(command.payload.reason);
       assertSide(command.payload.servingSide);
       assertPlayers(next, command.payload.serverPlayerId, command.payload.servingSide);

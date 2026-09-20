@@ -12,7 +12,9 @@ import {
   takeoverScoringSession,
 } from "@/server/services/scoring-session-service";
 
-const MATCH_CODE = "MS-DEMO-001";
+// Keep this suite isolated from authorization.test.ts, which deliberately
+// mutates the single-match control sessions in parallel Vitest workers.
+const MATCH_CODE = "MD-DEMO-002";
 let refereeId: string;
 let chiefId: string;
 let matchId: string;
@@ -182,6 +184,97 @@ describe("阶段 3 权威记分事务", () => {
     expect(result).toMatchObject({ status: "accepted", state: { phase: "AWAITING_COIN_TOSS", specialOutcome: null } });
     await expect(prisma.matchEvent.count({ where: { matchId } })).resolves.toBe(2);
     await expect(prisma.match.findUniqueOrThrow({ where: { id: matchId } })).resolves.toMatchObject({ outcomeType: null, version: 2 });
+  });
+
+  it("S2-008 在数据库事务中区分保留与完成规则换边待办", async () => {
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "37aaaaaa-7777-4777-8777-777777777777");
+    let result = await submitScoringCommand(
+      refereeId,
+      MATCH_CODE,
+      command(control, 0, "RECORD_COIN_TOSS", {
+        valid: true,
+        winnerSide: "A",
+        winnerChoice: { kind: "SERVICE", decision: "SERVE" },
+        loserChoice: { kind: "END", end: "END_2" },
+      }),
+      control.controlToken,
+    );
+    if (result.status !== "accepted") throw new Error("有效抛币不应命中幂等分支。");
+    result = await submitScoringCommand(
+      refereeId,
+      MATCH_CODE,
+      command(control, result.version, "CONFIRM_OPENING_SETUP", {
+        serverPlayerId: result.state.players.A[0],
+        receiverPlayerId: result.state.players.B[0],
+        logicalCourts: {
+          A: { R: result.state.players.A[0], L: result.state.players.A[1] },
+          B: { R: result.state.players.B[0], L: result.state.players.B[1] },
+        },
+      }),
+      control.controlToken,
+    );
+    if (result.status !== "accepted") throw new Error("开局设置不应命中幂等分支。");
+    result = await submitScoringCommand(
+      refereeId,
+      MATCH_CODE,
+      command(control, result.version, "CORRECT_SCORE_STATE", {
+        reason: "准备局末换边待办",
+        replacement: {
+          score: { A: 20, B: 0 },
+          gamesWon: result.state.gamesWon,
+          completedGames: result.state.completedGames,
+          servingSide: "A",
+          serverPlayerId: result.state.logicalCourts!.A.R,
+          receiverPlayerId: result.state.logicalCourts!.B.R,
+          logicalCourts: result.state.logicalCourts,
+          pendingObligations: [],
+          phase: "IN_PROGRESS",
+        },
+      }),
+      control.controlToken,
+    );
+    if (result.status !== "accepted") throw new Error("赛点准备不应命中幂等分支。");
+    result = await submitScoringCommand(
+      refereeId,
+      MATCH_CODE,
+      command(control, result.version, "RALLY_WON", { side: "A" }),
+      control.controlToken,
+    );
+    if (result.status !== "accepted") throw new Error("局末得分不应命中幂等分支。");
+    const changeEnds = result.state.pendingObligations.find((item) => item.type === "CHANGE_ENDS");
+    expect(changeEnds).toBeDefined();
+
+    result = await submitScoringCommand(
+      refereeId,
+      MATCH_CODE,
+      command(control, result.version, "CORRECT_PHYSICAL_ENDS", {
+        reason: "只纠正原端位记录，现场尚未换边",
+        physicalEnds: { A: "END_2", B: "END_1" },
+        obligationRelationship: { obligationId: changeEnds!.id, action: "KEEP_PENDING" },
+      }),
+      control.controlToken,
+    );
+    if (result.status !== "accepted") throw new Error("KEEP_PENDING 更正不应命中幂等分支。");
+    expect(result.state).toMatchObject({ physicalEnds: { A: "END_2", B: "END_1" } });
+    expect(result.state.pendingObligations).toContainEqual(expect.objectContaining({ id: changeEnds!.id }));
+
+    result = await submitScoringCommand(
+      refereeId,
+      MATCH_CODE,
+      command(control, result.version, "CORRECT_PHYSICAL_ENDS", {
+        reason: "现场现已完成规则换边",
+        physicalEnds: { A: "END_2", B: "END_1" },
+        obligationRelationship: { obligationId: changeEnds!.id, action: "FULFILL" },
+      }),
+      control.controlToken,
+    );
+    if (result.status !== "accepted") throw new Error("FULFILL 更正不应命中幂等分支。");
+    expect(result.state.physicalEnds).toEqual({ A: "END_2", B: "END_1" });
+    expect(result.state.pendingObligations).not.toContainEqual(expect.objectContaining({ id: changeEnds!.id }));
+    await expect(prisma.matchEvent.count({ where: { matchId } })).resolves.toBe(6);
+    await expect(prisma.matchSnapshot.findUniqueOrThrow({ where: { matchId } })).resolves.toMatchObject({
+      version: result.version,
+    });
   });
 
   it("快照哈希被篡改时拒绝后续写入且不产生半事务", async () => {

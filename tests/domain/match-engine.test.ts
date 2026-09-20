@@ -411,6 +411,14 @@ describe("阶段 2 纯规则引擎", () => {
       "CORRECT_SERVICE_ORDER",
       "CORRECT_PHYSICAL_ENDS",
     ]);
+    aggregate = accept(aggregate, command("RALLY_WON", { side: "B" }));
+    expect(aggregate.state).toMatchObject({
+      phase: "IN_PROGRESS",
+      score: { A: 0, B: 1 },
+      servingSide: "B",
+      serverPlayerId: "B1",
+      receiverPlayerId: "A1",
+    });
   });
 
   it("漏做换边可以补记，物理核对事项只能由显式端位更正清除", () => {
@@ -429,12 +437,31 @@ describe("阶段 2 纯规则引擎", () => {
     );
     aggregate = accept(aggregate, command("UNDO_LAST_REVERSIBLE", { reason: "阈值分误点" }));
     const review = aggregate.state.pendingObligations.find((item) => item.type === "PHYSICAL_ENDS_REVIEW")!;
+    expect(
+      applyCommand(
+        aggregate,
+        command("CORRECT_PHYSICAL_ENDS", {
+          reason: "核对待办不能隐式保留",
+          physicalEnds: aggregate.state.physicalEnds!,
+        }),
+      ),
+    ).toMatchObject({ status: "rejected", error: { code: "physical_ends_review_relationship_required" } });
+    expect(
+      applyCommand(
+        aggregate,
+        command("CORRECT_PHYSICAL_ENDS", {
+          reason: "核对待办不能继续挂起",
+          physicalEnds: aggregate.state.physicalEnds!,
+          obligationRelationship: { obligationId: review.id, action: "KEEP_PENDING" },
+        }),
+      ),
+    ).toMatchObject({ status: "rejected", error: { code: "physical_ends_review_must_be_fulfilled" } });
     aggregate = accept(
       aggregate,
       command("CORRECT_PHYSICAL_ENDS", {
         reason: "已核对现场实际端位",
         physicalEnds: aggregate.state.physicalEnds!,
-        fulfillsObligationId: review.id,
+        obligationRelationship: { obligationId: review.id, action: "FULFILL" },
       }),
     );
     expect(aggregate.state.pendingObligations).toEqual([]);
@@ -782,7 +809,7 @@ describe("阶段 2 纯规则引擎", () => {
     ).toBe("accepted");
   });
 
-  it("S2-002：物理端更正必须显式消费尚未处理的规则换边义务", () => {
+  it("S2-008：物理端更正必须声明与规则换边义务的关系", () => {
     let aggregate = tossAndOpen(createSingles(singleGame21Demo));
     aggregate = accept(
       aggregate,
@@ -809,7 +836,7 @@ describe("阶段 2 纯规则引擎", () => {
       command("CORRECT_PHYSICAL_ENDS", {
         reason: "现场已完成规则换边",
         physicalEnds: { A: "END_2", B: "END_1" },
-        fulfillsObligationId: changeEnds.id,
+        obligationRelationship: { obligationId: changeEnds.id, action: "FULFILL" },
       }),
     );
     expect(aggregate.state.physicalEnds).toEqual({ A: "END_2", B: "END_1" });
@@ -820,6 +847,222 @@ describe("阶段 2 纯规则引擎", () => {
       physicalEnds: { A: "END_2", B: "END_1" },
       pendingObligations: [],
     });
+  });
+
+  it("S2-008：KEEP_PENDING 只更正端位记录，FULFILL 才消费规则换边义务", () => {
+    let aggregate = tossAndOpen(createSingles(singleGame21Demo));
+    aggregate = accept(
+      aggregate,
+      command("CORRECT_SCORE_STATE", { reason: "准备换边阈值", replacement: replacement(aggregate.state, 10, 0) }),
+    );
+    aggregate = accept(aggregate, command("RALLY_WON", { side: "A" }));
+    const changeEnds = aggregate.state.pendingObligations.find((item) => item.type === "CHANGE_ENDS")!;
+    const keepPending = command("CORRECT_PHYSICAL_ENDS", {
+      reason: "只更正原端位记录，现场尚未执行规则换边",
+      physicalEnds: { A: "END_2", B: "END_1" },
+      obligationRelationship: { obligationId: changeEnds.id, action: "KEEP_PENDING" },
+    });
+
+    aggregate = accept(aggregate, keepPending);
+    expect(aggregate.state.physicalEnds).toEqual({ A: "END_2", B: "END_1" });
+    expect(aggregate.state.pendingObligations).toContainEqual(expect.objectContaining({ id: changeEnds.id }));
+    expect(applyCommand(aggregate, keepPending).status).toBe("duplicate");
+    expect(
+      applyCommand(aggregate, {
+        ...keepPending,
+        payload: {
+          ...keepPending.payload,
+          obligationRelationship: { obligationId: changeEnds.id, action: "FULFILL" },
+        },
+      }),
+    ).toMatchObject({ status: "rejected", error: { code: "command_id_reused" } });
+
+    aggregate = accept(
+      aggregate,
+      command("CORRECT_PHYSICAL_ENDS", {
+        reason: "现场已执行规则换边",
+        physicalEnds: { A: "END_2", B: "END_1" },
+        obligationRelationship: { obligationId: changeEnds.id, action: "FULFILL" },
+      }),
+    );
+    expect(aggregate.state.pendingObligations).not.toContainEqual(expect.objectContaining({ id: changeEnds.id }));
+  });
+
+  it("S2-008：拒绝错误待办 ID、新旧关系字段并用和无待办关联", () => {
+    let aggregate = tossAndOpen(createSingles(singleGame21Demo));
+    aggregate = accept(
+      aggregate,
+      command("CORRECT_SCORE_STATE", { reason: "准备换边阈值", replacement: replacement(aggregate.state, 10, 0) }),
+    );
+    aggregate = accept(aggregate, command("RALLY_WON", { side: "A" }));
+    const changeEnds = aggregate.state.pendingObligations.find((item) => item.type === "CHANGE_ENDS")!;
+    const before = structuredClone(aggregate);
+
+    expect(
+      applyCommand(
+        aggregate,
+        command("CORRECT_PHYSICAL_ENDS", {
+          reason: "不存在的换边待办",
+          physicalEnds: { A: "END_2", B: "END_1" },
+          obligationRelationship: { obligationId: "change-ends:missing", action: "FULFILL" },
+        }),
+      ),
+    ).toMatchObject({ status: "rejected", error: { code: "obligation_not_found" } });
+    expect(
+      applyCommand(
+        aggregate,
+        command("CORRECT_PHYSICAL_ENDS", {
+          reason: "不能并用新旧字段",
+          physicalEnds: { A: "END_2", B: "END_1" },
+          obligationRelationship: { obligationId: changeEnds.id, action: "FULFILL" },
+          fulfillsObligationId: changeEnds.id,
+        }),
+      ),
+    ).toMatchObject({ status: "rejected", error: { code: "obligation_relationship_conflict" } });
+    expect(aggregate).toEqual(before);
+
+    const noPending = tossAndOpen(createSingles());
+    expect(
+      applyCommand(
+        noPending,
+        command("CORRECT_PHYSICAL_ENDS", {
+          reason: "无待办时不得伪造关联",
+          physicalEnds: { A: "END_2", B: "END_1" },
+          obligationRelationship: { obligationId: "change-ends:missing", action: "KEEP_PENDING" },
+        }),
+      ),
+    ).toMatchObject({ status: "rejected", error: { code: "obligation_relationship_not_allowed" } });
+  });
+
+  it("S2-008：旧 fulfillsObligationId 事件经 JSON 往返后仍可确定性重放", () => {
+    let aggregate = tossAndOpen(createSingles(singleGame21Demo));
+    aggregate = accept(
+      aggregate,
+      command("CORRECT_SCORE_STATE", { reason: "准备历史重放", replacement: replacement(aggregate.state, 10, 0) }),
+    );
+    aggregate = accept(aggregate, command("RALLY_WON", { side: "A" }));
+    const changeEnds = aggregate.state.pendingObligations.find((item) => item.type === "CHANGE_ENDS")!;
+    aggregate = accept(
+      aggregate,
+      command("CORRECT_PHYSICAL_ENDS", {
+        reason: "历史事件使用旧字段",
+        physicalEnds: { A: "END_2", B: "END_1" },
+        fulfillsObligationId: changeEnds.id,
+      }),
+    );
+
+    const serialized = JSON.parse(JSON.stringify(aggregate)) as MatchAggregate;
+    expect(replayMatch(serialized.initialState, serialized.events)).toEqual(serialized.state);
+  });
+
+  it("三类局部更正命令按 phase 白名单执行", () => {
+    const base = tossAndOpen(createDoubles());
+    const logicalAllowed: MatchState["phase"][] = ["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"];
+    const logicalRejected: MatchState["phase"][] = [
+      "AWAITING_COIN_TOSS",
+      "AWAITING_OPENING_SETUP",
+      "GAME_COMPLETE",
+      "AWAITING_NEXT_GAME_SETUP",
+      "MATCH_COMPLETE_PENDING_SUBMISSION",
+      "SPECIAL_OUTCOME_PENDING_SUBMISSION",
+      "SUBMITTED",
+      "CONFIRMED",
+    ];
+    const physicalAllowed: MatchState["phase"][] = [
+      "IN_PROGRESS",
+      "OBLIGATIONS_PENDING",
+      "PAUSED",
+      "GAME_COMPLETE",
+      "AWAITING_NEXT_GAME_SETUP",
+    ];
+    const physicalRejected: MatchState["phase"][] = [
+      "AWAITING_COIN_TOSS",
+      "AWAITING_OPENING_SETUP",
+      "MATCH_COMPLETE_PENDING_SUBMISSION",
+      "SPECIAL_OUTCOME_PENDING_SUBMISSION",
+      "SUBMITTED",
+      "CONFIRMED",
+    ];
+    const withPhase = (phase: MatchState["phase"]) => {
+      const aggregate = structuredClone(base);
+      aggregate.state.phase = phase;
+      aggregate.state.pendingObligations = [];
+      aggregate.state.pausedFromPhase = phase === "PAUSED" ? "IN_PROGRESS" : null;
+      return aggregate;
+    };
+
+    for (const phase of logicalAllowed) {
+      expect(
+        applyCommand(
+          withPhase(phase),
+          command("CORRECT_LOGICAL_COURTS", {
+            reason: `${phase} 更正逻辑位置`,
+            logicalCourts: { A: { R: "A2", L: "A1" }, B: { R: "B2", L: "B1" } },
+          }),
+        ).status,
+      ).toBe("accepted");
+      expect(
+        applyCommand(
+          withPhase(phase),
+          command("CORRECT_SERVICE_ORDER", {
+            reason: `${phase} 更正发接发`,
+            servingSide: "A",
+            serverPlayerId: "A1",
+            receiverPlayerId: "B1",
+          }),
+        ).status,
+      ).toBe("accepted");
+    }
+    for (const phase of logicalRejected) {
+      const expectedLogicalCode =
+        phase === "SUBMITTED" || phase === "CONFIRMED" ? "result_locked" : "logical_courts_correction_not_allowed";
+      const expectedServiceCode =
+        phase === "SUBMITTED" || phase === "CONFIRMED" ? "result_locked" : "service_order_correction_not_allowed";
+      expect(
+        applyCommand(
+          withPhase(phase),
+          command("CORRECT_LOGICAL_COURTS", {
+            reason: `${phase} 不得更正逻辑位置`,
+            logicalCourts: { A: { R: "A2", L: "A1" }, B: { R: "B2", L: "B1" } },
+          }),
+        ),
+      ).toMatchObject({ status: "rejected", error: { code: expectedLogicalCode } });
+      expect(
+        applyCommand(
+          withPhase(phase),
+          command("CORRECT_SERVICE_ORDER", {
+            reason: `${phase} 不得更正发接发`,
+            servingSide: "A",
+            serverPlayerId: "A1",
+            receiverPlayerId: "B1",
+          }),
+        ),
+      ).toMatchObject({ status: "rejected", error: { code: expectedServiceCode } });
+    }
+    for (const phase of physicalAllowed) {
+      expect(
+        applyCommand(
+          withPhase(phase),
+          command("CORRECT_PHYSICAL_ENDS", {
+            reason: `${phase} 更正物理端`,
+            physicalEnds: { A: "END_2", B: "END_1" },
+          }),
+        ).status,
+      ).toBe("accepted");
+    }
+    for (const phase of physicalRejected) {
+      const expectedCode =
+        phase === "SUBMITTED" || phase === "CONFIRMED" ? "result_locked" : "physical_ends_correction_not_allowed";
+      expect(
+        applyCommand(
+          withPhase(phase),
+          command("CORRECT_PHYSICAL_ENDS", {
+            reason: `${phase} 不得更正物理端`,
+            physicalEnds: { A: "END_2", B: "END_1" },
+          }),
+        ),
+      ).toMatchObject({ status: "rejected", error: { code: expectedCode } });
+    }
   });
 
   it("事件重放和 JSON 往返得到相同权威状态", () => {
