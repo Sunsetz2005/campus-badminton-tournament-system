@@ -14,12 +14,15 @@ describe("项目指令与权限文档一致性", () => {
     expect(guidance).toContain("公众注册始终关闭");
   });
 
-  it("明确记录裁判长接管尚未进入当前授权实现", () => {
+  it("明确记录裁判长通过阶段 3 专用接口接管且不继承 ADMIN 写权限", () => {
     const permissions = fs.readFileSync(
       path.join(root, "docs/knowledge-base/02-架构设计/API与权限.md"),
       "utf8",
     );
     expect(permissions).toContain("CHIEF_REFEREE");
-    expect(permissions).toMatch(/CHIEF_REFEREE[\s\S]{0,160}阶段 3/);
+    expect(permissions).toContain("/api/matches/[matchCode]/control/takeover");
+    expect(permissions).toMatch(/阶段 3[\s\S]*CHIEF_REFEREE/);
+    expect(permissions).toContain("不依赖 `ADMIN`");
+    expect(permissions).not.toContain("裁判长接管尚未进入当前授权实现");
   });
 });
