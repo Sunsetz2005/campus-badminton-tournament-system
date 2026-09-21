@@ -233,7 +233,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await page.getByRole("button", { name: "取得本机控制权" }).click();
     await page.getByRole("button", { name: "A 方胜并选先发" }).click();
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
-    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("0");
+    await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("0");
 
     const stableSnapshot = await (await request.get(`/api/matches/${matchCode}/state`)).json();
     let holdUnknownState = true;
@@ -273,13 +273,13 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     ) as { commandId: string; type: string; payload: unknown };
     expect(pendingEnvelope.type).toBe("RALLY_WON");
     expect(pendingEnvelope.payload).toEqual({ side: "A" });
-    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("0");
+    await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("0");
     await expect(addPoint).toBeDisabled();
 
     const recovery = page.locator(".pending-recovery");
     await expect(recovery).toBeVisible({ timeout: 8_000 });
     await expect(recovery).toContainText("比分、站位和发接发保持最后一次已确认状态");
-    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("0");
+    await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("0");
     await expect(page.locator(".score-adjust.plus").first()).toBeDisabled();
     await expect(page.locator(".score-adjust.plus").last()).toBeDisabled();
     await expect(page.evaluate((key) => localStorage.getItem(key), pendingKey)).resolves.not.toBeNull();
@@ -290,7 +290,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     holdUnknownState = false;
     await recovery.getByRole("button", { name: "查询原命令结果" }).click();
     await expect(recovery).toBeHidden();
-    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("1");
     await expect(page.evaluate((key) => localStorage.getItem(key), pendingKey)).resolves.toBeNull();
     await expect.poll(() => prisma.matchEvent.count({
       where: { match: { code: matchCode }, commandId: pendingEnvelope.commandId },
@@ -329,9 +329,9 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await expect(court.locator('[data-role="SERVER"]')).toHaveCount(0);
     await expect(court.locator('[data-role="RECEIVER"]')).toHaveCount(0);
     await expect(page.getByRole("button", { name: "模拟选手 01 赢得一分" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "核对单打站位" }).first()).toBeDisabled();
-    await expect(page.getByRole("button", { name: "核对单打站位" }).last()).toBeDisabled();
-    await expect(page.getByRole("button", { name: "更正场地端" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "左侧换位" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "右侧换位" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "换边" })).toBeDisabled();
 
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     const addPoint = page.getByRole("button", { name: "模拟选手 01 赢得一分" });
@@ -339,7 +339,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await expect(court.locator('[data-role="SERVER"]')).toHaveCount(1);
     await expect(court.locator('[data-role="RECEIVER"]')).toHaveCount(1);
     await addPoint.click();
-    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("1");
     await expect(courtCell(page, "END_1", "TOP")).toHaveAttribute("data-player-id", playerA);
     await expect(courtCell(page, "END_1", "TOP")).toHaveAttribute("data-role", "SERVER");
     await expect(courtCell(page, "END_1", "BOTTOM")).toHaveAttribute("data-player-id", "");
@@ -362,9 +362,10 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await expect(prisma.matchEvent.count({ where: { matchId: match.id } })).resolves.toBe(eventsBeforePreview);
     await undoDialog.getByRole("button", { name: "取消" }).click();
     await expect(undoDialog).toBeHidden();
-    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("1");
     expect((await readAuthoritativeState(request, matchCode)).version).toBe(versionBeforePreview);
 
+    await page.locator(".secondary-drawer > summary").click();
     await page.getByRole("button", { name: "翻转本机视角" }).click();
     await expect(court).toHaveAttribute("data-flipped", "true");
     await expect(court.locator(".court-visual-half").first()).toHaveAttribute("data-physical-end", "END_2");
@@ -393,9 +394,9 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await expect(page.getByTestId("badminton-court").locator('[data-role="SERVER"]')).toHaveCount(0);
     await expect(page.getByTestId("badminton-court").locator('[data-role="RECEIVER"]')).toHaveCount(0);
     await expect(page.getByRole("button", { name: "模拟组合 03/04 赢得一分" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "更正 A 方换位" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "更正 B 方换位" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "更正场地端" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "左侧换位" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "右侧换位" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "换边" })).toBeDisabled();
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     await expect(page.getByRole("button", { name: "模拟组合 03/04 赢得一分" })).toBeEnabled();
     await expect(page.getByTestId("badminton-court").locator('[data-role="SERVER"]')).toHaveCount(1);
@@ -416,7 +417,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await expect(page.locator(`[data-player-id="${selectedReceiver}"]`)).toHaveAttribute("data-role", "RECEIVER");
 
     await page.getByRole("button", { name: "模拟组合 03/04 赢得一分" }).click();
-    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("1");
     state = await readAuthoritativeState(request, matchCode);
     expect(state.logicalCourts).toEqual({
       A: { R: firstA, L: selectedServer },
@@ -451,9 +452,12 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     expect(state.score).toEqual({ A: 21, B: 0 });
     await page.reload();
     await expect(page.locator("[data-score-side]").first()).toHaveAttribute("data-score-side", "A");
-    await expect(page.locator("[data-score-side]").first().locator(".court-score-number")).toHaveText("21");
+    await expect(page.locator("[data-scoreboard-side]").first().locator(".court-score-number")).toHaveText("21");
 
-    await page.getByRole("button", { name: "确认 / 核对换边" }).click();
+    await expect(page.getByRole("button", { name: "左侧换位" })).toHaveAccessibleName(/左侧换位\s*模拟组合 03\/04/);
+    await expect(page.getByRole("button", { name: "右侧换位" })).toHaveAccessibleName(/右侧换位\s*模拟组合 05\/06/);
+
+    await page.getByRole("button", { name: "换边" }).click();
     const endsDialog = page.getByRole("dialog", { name: "核对并更正物理场地端" });
     await endsDialog.getByRole("button", { name: "生成服务器预览" }).click();
     await expect(endsDialog.getByText("物理端 A END_1 → END_2")).toBeVisible();
@@ -464,9 +468,13 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     expect(state.physicalEnds).toEqual({ A: "END_2", B: "END_1" });
     expect(state.score).toEqual({ A: 21, B: 0 });
     await expect(page.locator("[data-score-side]").first()).toHaveAttribute("data-score-side", "B");
-    await expect(page.locator("[data-score-side]").first().locator(".court-score-number")).toHaveText("0");
+    await expect(page.locator("[data-scoreboard-side]").first().locator(".court-score-number")).toHaveText("0");
     await expect(page.locator("[data-score-side]").last()).toHaveAttribute("data-score-side", "A");
-    await expect(page.locator("[data-score-side]").last().locator(".court-score-number")).toHaveText("21");
+    await expect(page.locator("[data-scoreboard-side]").last().locator(".court-score-number")).toHaveText("21");
+
+    // 换边后「左侧换位 / 右侧换位」必须跟随当前画面实际所在的队伍，而不是永远绑定 A / B。
+    await expect(page.getByRole("button", { name: "左侧换位" })).toHaveAccessibleName(/左侧换位\s*模拟组合 05\/06/);
+    await expect(page.getByRole("button", { name: "右侧换位" })).toHaveAccessibleName(/右侧换位\s*模拟组合 03\/04/);
   });
 
   test("Chromium 浏览器设备模拟：单打与双打的平板控制端和手机只读端展示同一权威状态", async ({ page }, testInfo) => {
@@ -484,7 +492,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await page.getByRole("button", { name: "A 方胜并选先发" }).click();
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     await page.getByRole("button", { name: "模拟选手 01 赢得一分" }).click();
-    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("1");
 
     await page.getByRole("button", { name: "更正 模拟选手 01 的最近得分" }).click();
     const screenshotDialog = page.getByRole("dialog", { name: "更正 A 方最近得分" });
@@ -503,7 +511,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     const singlesPhone = await page.context().newPage();
     await singlesPhone.setViewportSize({ width: 390, height: 844 });
     await singlesPhone.goto("/officiating/MS-DEMO-001");
-    await expect(singlesPhone.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await expect(singlesPhone.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("1");
     await expect(singlesPhone.getByRole("button", { name: "模拟选手 01 赢得一分" })).toBeDisabled();
     await singlesPhone.screenshot({
       path: path.join(artifactDir, "singles-phone-portrait-390x844-chromium.png"),
@@ -529,7 +537,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await page.getByLabel("首接球员（B 方）").selectOption({ index: 1 });
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     await page.getByRole("button", { name: "模拟组合 03/04 赢得一分" }).click();
-    await expect(page.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("1");
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({
       path: path.join(artifactDir, "doubles-tablet-landscape-1024x768-chromium.png"),
@@ -538,7 +546,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     const doublesPhone = await page.context().newPage();
     await doublesPhone.setViewportSize({ width: 390, height: 844 });
     await doublesPhone.goto("/officiating/MD-DEMO-002");
-    await expect(doublesPhone.locator('[data-score-side="A"] .court-score-number')).toHaveText("1");
+    await expect(doublesPhone.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("1");
     await expect(doublesPhone.getByRole("button", { name: "模拟组合 03/04 赢得一分" })).toBeDisabled();
     await doublesPhone.screenshot({
       path: path.join(artifactDir, "doubles-phone-portrait-390x844-chromium.png"),

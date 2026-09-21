@@ -755,6 +755,10 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     state && (state.phase === "AWAITING_OPENING_SETUP" || state.phase === "AWAITING_NEXT_GAME_SETUP") &&
     setupServingSide && setupReceivingSide && effectiveSetupServerId && effectiveSetupReceiverId,
   );
+  // 次要抽屉平时收起；到了必须提交或复核的相位时默认展开，避免把关键一步藏起来。
+  const secondaryNeedsAttention = Boolean(
+    state && ["MATCH_COMPLETE_PENDING_SUBMISSION", "SPECIAL_OUTCOME_PENDING_SUBMISSION", "SUBMITTED", "CONFIRMED"].includes(state.phase),
+  );
   const courtState = useMemo(() => {
     if (!state || !setupActive || !setupServingSide) return state;
     return {
@@ -872,8 +876,6 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
             取得本机控制权
           </ActionButton>
         ) : null}
-        {snapshot.access.chiefReferee ? <button className="button secondary" onClick={() => openActionSheet({ kind: "TAKEOVER" })}>裁判长接管</button> : null}
-        <button className="button secondary" onClick={flipLocalView}>翻转本机视角</button>
         <span>{canWrite
           ? "所有操作等待服务器确认后更新"
           : syncState === "UNKNOWN"
@@ -930,16 +932,10 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         </section>
       ) : null}
 
-      <div className="service-panel">
-        <div><span>当前阶段</span><strong>{phaseLabels[state.phase]}</strong></div>
-        <div><span>发球</span><strong>{["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase) ? `${playerName(state.serverPlayerId)} · ${state.serverCourt === "R" ? "右发球区" : state.serverCourt === "L" ? "左发球区" : "待确认"}` : "当前无下一球"}</strong></div>
-        <div><span>接发</span><strong>{["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase) ? `${playerName(state.receiverPlayerId)} · ${state.receiverCourt === "R" ? "右发球区" : state.receiverCourt === "L" ? "左发球区" : "待确认"}` : "当前无下一球"}</strong></div>
-        <div><span>物理端</span><strong>{state.physicalEnds ? `A 场地端 ${state.physicalEnds.A.replace("END_", "")} / B 场地端 ${state.physicalEnds.B.replace("END_", "")}` : "待确认"}</strong></div>
-      </div>
-
       <PhaseActions
         canWrite={canWrite}
         chief={snapshot.access.chiefReferee}
+        scope="URGENT"
         state={state}
         onSend={send}
         onCorrection={() => openActionSheet({ kind: "SCORE" })}
@@ -948,10 +944,44 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         onSpecial={() => openActionSheet({ kind: "SPECIAL" })}
       />
 
-      <section className="history-panel">
-        <h2>最近操作</h2>
-        <ol>{(snapshot.events ?? []).slice().reverse().map((event) => <li key={event.commandId}><strong>v{event.version}</strong> {event.type}<time>{new Date(event.occurredAt).toLocaleTimeString("zh-CN")}</time></li>)}</ol>
-      </section>
+      {/* 次要操作收进折叠抽屉；需要提交或复核时默认展开，避免误藏关键一步。 */}
+      <details className="secondary-drawer" open={secondaryNeedsAttention}>
+        <summary>
+          次要操作与记录
+          <span>暂停 · 详细更正 · 异常结果 · 接管 · 视角 · 事件记录{secondaryNeedsAttention ? " · 待提交或复核" : ""}</span>
+        </summary>
+        <div className="secondary-drawer-body">
+          <div className="service-panel">
+            <div><span>当前阶段</span><strong>{phaseLabels[state.phase]}</strong></div>
+            <div><span>发球</span><strong>{["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase) ? `${playerName(state.serverPlayerId)} · ${state.serverCourt === "R" ? "右发球区" : state.serverCourt === "L" ? "左发球区" : "待确认"}` : "当前无下一球"}</strong></div>
+            <div><span>接发</span><strong>{["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase) ? `${playerName(state.receiverPlayerId)} · ${state.receiverCourt === "R" ? "右发球区" : state.receiverCourt === "L" ? "左发球区" : "待确认"}` : "当前无下一球"}</strong></div>
+            <div><span>物理端</span><strong>{state.physicalEnds ? `A 场地端 ${state.physicalEnds.A.replace("END_", "")} / B 场地端 ${state.physicalEnds.B.replace("END_", "")}` : "待确认"}</strong></div>
+          </div>
+
+          <PhaseActions
+            canWrite={canWrite}
+            chief={snapshot.access.chiefReferee}
+            scope="SECONDARY"
+            state={state}
+            onSend={send}
+            onCorrection={() => openActionSheet({ kind: "SCORE" })}
+            onReasonCommand={(title, type, payload) => openActionSheet({ kind: "REASON_COMMAND", title, type, payload })}
+            onServiceOrder={() => openActionSheet({ kind: "SERVICE_ORDER" })}
+            onSpecial={() => openActionSheet({ kind: "SPECIAL" })}
+          />
+
+          <div className="device-strip">
+            {snapshot.access.chiefReferee ? <button className="button secondary" onClick={() => openActionSheet({ kind: "TAKEOVER" })}>裁判长接管</button> : null}
+            <button className="button secondary" onClick={flipLocalView}>翻转本机视角</button>
+            <span>翻转视角只改本机显示方向，不是正式换边，也不产生服务器事件。</span>
+          </div>
+
+          <section className="history-panel">
+            <h2>最近操作</h2>
+            <ol>{(snapshot.events ?? []).slice().reverse().map((event) => <li key={event.commandId}><strong>v{event.version}</strong> {event.type}<time>{new Date(event.occurredAt).toLocaleTimeString("zh-CN")}</time></li>)}</ol>
+          </section>
+        </div>
+      </details>
 
     </section>
       {actionSheet ? createPortal(<WorkbenchActionSheet
@@ -1161,9 +1191,15 @@ function WorkbenchActionSheet({
   );
 }
 
-function PhaseActions({ canWrite, chief, state, onSend, onCorrection, onReasonCommand, onServiceOrder, onSpecial }: {
+/**
+ * 阶段操作按 scope 分两处渲染：
+ * - URGENT：时机敏感、误藏会影响执裁的操作（抛币、间歇/换边待办、暂停后恢复），保持首屏可见。
+ * - SECONDARY：更正、异常结果、提交/复核等次要操作，收进折叠抽屉。
+ */
+function PhaseActions({ canWrite, chief, scope, state, onSend, onCorrection, onReasonCommand, onServiceOrder, onSpecial }: {
   canWrite: boolean;
   chief: boolean;
+  scope: "URGENT" | "SECONDARY";
   state: MatchState;
   onSend: (type: MatchCommand["type"], payload: MatchCommand["payload"]) => Promise<unknown>;
   onCorrection: () => void;
@@ -1171,37 +1207,39 @@ function PhaseActions({ canWrite, chief, state, onSend, onCorrection, onReasonCo
   onServiceOrder: () => void;
   onSpecial: () => void;
 }) {
+  const urgent = scope === "URGENT";
+  const secondary = scope === "SECONDARY";
   return (
-    <section className="phase-actions" aria-label="当前阶段操作">
-      {state.phase === "AWAITING_COIN_TOSS" ? <>
+    <section className={`phase-actions ${urgent ? "phase-actions-urgent" : "phase-actions-secondary"}`} aria-label={urgent ? "需要立即处理的阶段操作" : "次要阶段操作"}>
+      {urgent && state.phase === "AWAITING_COIN_TOSS" ? <>
         {(["A", "B"] as const).flatMap((side) => [
           <button className="button" disabled={!canWrite} key={`${side}-serve`} onClick={() => void onSend("RECORD_COIN_TOSS", { valid: true, winnerSide: side, winnerChoice: { kind: "SERVICE", decision: "SERVE" }, loserChoice: { kind: "END", end: "END_2" } })}>{side} 方胜并选先发</button>,
           <button className="button secondary" disabled={!canWrite} key={`${side}-receive`} onClick={() => void onSend("RECORD_COIN_TOSS", { valid: true, winnerSide: side, winnerChoice: { kind: "SERVICE", decision: "RECEIVE" }, loserChoice: { kind: "END", end: "END_2" } })}>{side} 方胜并选先接</button>,
           <button className="button secondary" disabled={!canWrite} key={`${side}-end`} onClick={() => void onSend("RECORD_COIN_TOSS", { valid: true, winnerSide: side, winnerChoice: { kind: "END", end: "END_1" }, loserChoice: { kind: "SERVICE", decision: "SERVE" } })}>{side} 方胜并选场地端</button>,
         ])}
       </> : null}
-      {state.phase === "AWAITING_OPENING_SETUP" && chief ? <button className="button danger" disabled={!canWrite} onClick={() => onReasonCommand("裁判长作废抛币", "INVALIDATE_COIN_TOSS", { reason: "" })}>裁判长作废抛币</button> : null}
-      {state.pendingObligations.map((item) => item.type === "INTERVAL" ?
+      {secondary && state.phase === "AWAITING_OPENING_SETUP" && chief ? <button className="button danger" disabled={!canWrite} onClick={() => onReasonCommand("裁判长作废抛币", "INVALIDATE_COIN_TOSS", { reason: "" })}>裁判长作废抛币</button> : null}
+      {urgent ? state.pendingObligations.map((item) => item.type === "INTERVAL" ?
         <button className="button" disabled={!canWrite} key={item.id} onClick={() => void onSend("ACKNOWLEDGE_INTERVAL", { obligationId: item.id })}>确认间歇完成</button> :
-        item.type === "CHANGE_ENDS" ? <button className="button secondary" disabled={!canWrite} key={item.id} onClick={() => onReasonCommand("记录漏换边后补做", "RECORD_MISSED_CHANGE_ENDS", { obligationId: item.id, reason: "" })}>记录漏换后补做</button> : null)}
-      {state.phase === "IN_PROGRESS" || state.phase === "OBLIGATIONS_PENDING" ? <>
+        item.type === "CHANGE_ENDS" ? <button className="button secondary" disabled={!canWrite} key={item.id} onClick={() => onReasonCommand("记录漏换边后补做", "RECORD_MISSED_CHANGE_ENDS", { obligationId: item.id, reason: "" })}>记录漏换后补做</button> : null) : null}
+      {secondary && (state.phase === "IN_PROGRESS" || state.phase === "OBLIGATIONS_PENDING") ? <>
         <button className="button secondary" disabled={!canWrite} onClick={onCorrection}>更多比分 / 发球权更正</button>
         {state.format === "DOUBLES" ? <button className="button secondary" disabled={!canWrite} onClick={onServiceOrder}>更正发接发顺序</button> : null}
         <button className="button secondary" disabled={!canWrite} onClick={() => onReasonCommand("LET 重发球", "LET", { reason: "" })}>LET 重发球</button>
         <button className="button secondary" disabled={!canWrite} onClick={() => onReasonCommand("暂停比赛", "PAUSE_MATCH", { reason: "" })}>暂停比赛</button>
         <button className="button danger" disabled={!canWrite} onClick={onSpecial}>记录特殊结果</button>
       </> : null}
-      {state.phase === "PAUSED" ? <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("恢复比赛", "RESUME_MATCH", { reason: "" })}>恢复比赛</button> : null}
-      {state.phase === "SPECIAL_OUTCOME_PENDING_SUBMISSION" ? <>
+      {urgent && state.phase === "PAUSED" ? <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("恢复比赛", "RESUME_MATCH", { reason: "" })}>恢复比赛</button> : null}
+      {secondary && state.phase === "SPECIAL_OUTCOME_PENDING_SUBMISSION" ? <>
         <button className="button secondary" disabled={!canWrite} onClick={() => onReasonCommand("作废该特殊结果", "INVALIDATE_SPECIAL_OUTCOME", { reason: "" })}>作废该特殊结果</button>
         <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("提交特殊结果复核", "SUBMIT_RESULT", { reason: "" })}>提交结果复核</button>
       </> : null}
-      {state.phase === "MATCH_COMPLETE_PENDING_SUBMISSION" ? <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("提交全场结果", "SUBMIT_RESULT", { reason: "" })}>提交全场结果</button> : null}
-      {state.phase === "SUBMITTED" && chief ? <>
+      {secondary && state.phase === "MATCH_COMPLETE_PENDING_SUBMISSION" ? <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("提交全场结果", "SUBMIT_RESULT", { reason: "" })}>提交全场结果</button> : null}
+      {secondary && state.phase === "SUBMITTED" && chief ? <>
         <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("裁判长复核锁定", "CONFIRM_RESULT", { reason: "" })}>复核锁定</button>
         <button className="button danger" disabled={!canWrite} onClick={() => onReasonCommand("退回补正", "REOPEN_RESULT", { reason: "" })}>退回补正</button>
       </> : null}
-      {state.phase === "CONFIRMED" && chief ? <button className="button danger" disabled={!canWrite} onClick={() => onReasonCommand("受控重开", "REOPEN_RESULT", { reason: "" })}>受控重开</button> : null}
+      {secondary && state.phase === "CONFIRMED" && chief ? <button className="button danger" disabled={!canWrite} onClick={() => onReasonCommand("受控重开", "REOPEN_RESULT", { reason: "" })}>受控重开</button> : null}
     </section>
   );
 }

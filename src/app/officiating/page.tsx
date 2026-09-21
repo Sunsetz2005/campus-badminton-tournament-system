@@ -53,7 +53,7 @@ export default async function OfficiatingPage() {
       <div className="section-heading">
         <p className="eyebrow">按真实指派读取</p>
         <h1>我的执裁</h1>
-        <p>当前只验证身份、指派和单场控制会话基础；完整记分界面属于后续阶段。</p>
+        <p>按真实指派进入场地化裁判工作台：横向模拟场地、发接发标记、换位与换边、大比分与更正。所有写入都要服务器确认。</p>
       </div>
       {assignments.length ? (
         <div className="card-grid">

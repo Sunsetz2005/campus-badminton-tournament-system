@@ -33,6 +33,10 @@ export interface CourtViewModel {
   physicalEndsConfirmed: boolean;
   leftPhysicalEnd: PhysicalEnd;
   rightPhysicalEnd: PhysicalEnd;
+  /** 当前画面左半场实际是哪一方；比分栏与 +1 必须绑定这个稳定身份，而不是「左就是 A」。 */
+  displayedLeftSide: Side;
+  /** 当前画面右半场实际是哪一方。 */
+  displayedRightSide: Side;
   halves: readonly [CourtHalfViewModel, CourtHalfViewModel];
   cells: readonly CourtCellViewModel[];
 }
@@ -175,6 +179,8 @@ export function buildCourtViewModel(state: MatchState, flipped: boolean): CourtV
     physicalEndsConfirmed: assignment.confirmed,
     leftPhysicalEnd,
     rightPhysicalEnd,
+    displayedLeftSide: left.side,
+    displayedRightSide: right.side,
     halves,
     cells: halves.flatMap((half) => half.cells),
   };

@@ -288,3 +288,117 @@ describe("buildCourtViewModel", () => {
     );
   });
 });
+
+describe("裁判工作台改造：验收轨迹 projectionOnly 与屏幕绑定", () => {
+  /** 把 JSON 的 UPPER_LEFT/LOWER_RIGHT 等槽位映射到投影结果里的球员。 */
+  function slots(state: MatchState, flipped: boolean) {
+    const view = buildCourtViewModel(state, flipped);
+    const pick = (half: "LEFT" | "RIGHT", row: "TOP" | "BOTTOM") =>
+      view.cells.find((candidate) => candidate.screenHalf === half && candidate.screenRow === row)?.playerId ?? null;
+    return {
+      UPPER_LEFT: pick("LEFT", "TOP"),
+      LOWER_LEFT: pick("LEFT", "BOTTOM"),
+      UPPER_RIGHT: pick("RIGHT", "TOP"),
+      LOWER_RIGHT: pick("RIGHT", "BOTTOM"),
+    };
+  }
+
+  it("默认端点：A 在画面左，四格与验收数据一致", () => {
+    // JSON projectionOnly.default（END_LEFT=END_1，END_RIGHT=END_2）
+    const state = matchState({ physicalEnds: { A: "END_1", B: "END_2" } });
+    expect(slots(state, false)).toEqual({
+      UPPER_LEFT: "A2",
+      LOWER_LEFT: "A1",
+      UPPER_RIGHT: "B1",
+      LOWER_RIGHT: "B2",
+    });
+    const view = buildCourtViewModel(state, false);
+    expect(view.displayedLeftSide).toBe("A");
+    expect(view.displayedRightSide).toBe("B");
+  });
+
+  it("相反端点：换边后上下格也按本方 L/R 重新投影，不只是左右平移", () => {
+    // JSON projectionOnly.oppositeEnds
+    const state = matchState({ physicalEnds: { A: "END_2", B: "END_1" } });
+    expect(slots(state, false)).toEqual({
+      UPPER_LEFT: "B2",
+      LOWER_LEFT: "B1",
+      UPPER_RIGHT: "A1",
+      LOWER_RIGHT: "A2",
+    });
+    const view = buildCourtViewModel(state, false);
+    expect(view.displayedLeftSide).toBe("B");
+    expect(view.displayedRightSide).toBe("A");
+  });
+
+  it("换边不改变比分、人员和发接发身份，只改屏幕归属", () => {
+    const before = matchState({ physicalEnds: { A: "END_1", B: "END_2" }, score: { A: 7, B: 4 } });
+    const after = matchState({ physicalEnds: { A: "END_2", B: "END_1" }, score: { A: 7, B: 4 } });
+
+    // 领域事实不变。
+    expect(after.score).toEqual(before.score);
+    expect(after.serverPlayerId).toBe(before.serverPlayerId);
+    expect(after.receiverPlayerId).toBe(before.receiverPlayerId);
+    expect(after.logicalCourts).toEqual(before.logicalCourts);
+
+    // 屏幕左侧从 A 变成 B；「左侧 +1」必须打到 B 而不是仍然打到 A。
+    const beforeView = buildCourtViewModel(before, false);
+    const afterView = buildCourtViewModel(after, false);
+    expect(beforeView.displayedLeftSide).toBe("A");
+    expect(afterView.displayedLeftSide).toBe("B");
+    expect(afterView.halves[0].side).toBe(afterView.displayedLeftSide);
+    expect(afterView.halves[1].side).toBe(afterView.displayedRightSide);
+
+    // 两次投影都只有一个发球员、一个接发员。
+    for (const view of [beforeView, afterView]) {
+      expect(view.cells.filter((candidate) => candidate.role === "SERVER")).toHaveLength(1);
+      expect(view.cells.filter((candidate) => candidate.role === "RECEIVER")).toHaveLength(1);
+    }
+  });
+
+  it("翻转视角两次回到原画面，且不改变任何领域状态", () => {
+    const state = matchState();
+    const snapshot = structuredClone(state);
+
+    const normal = buildCourtViewModel(state, false);
+    const flipped = buildCourtViewModel(state, true);
+    const flippedTwice = buildCourtViewModel(state, false);
+
+    expect(flipped.displayedLeftSide).toBe(normal.displayedRightSide);
+    expect(flippedTwice).toEqual(normal);
+    // 投影是纯函数，不得就地改写传入状态。
+    expect(state).toEqual(snapshot);
+  });
+
+  it("正常待发状态恰有一个发球标记，且接发员在同名逻辑区（物理对角）", () => {
+    const view = buildCourtViewModel(matchState(), false);
+    const server = view.cells.find((candidate) => candidate.role === "SERVER");
+    const receiver = view.cells.find((candidate) => candidate.role === "RECEIVER");
+
+    expect(view.cells.filter((candidate) => candidate.role === "SERVER")).toHaveLength(1);
+    expect(view.cells.filter((candidate) => candidate.role === "RECEIVER")).toHaveLength(1);
+    expect(server!.logicalCourt).toBe(receiver!.logicalCourt);
+    expect(server!.side).not.toBe(receiver!.side);
+    // 同名逻辑区在画面上必然是对角：半场不同且上下格也不同。
+    expect(server!.screenHalf).not.toBe(receiver!.screenHalf);
+    expect(server!.screenRow).not.toBe(receiver!.screenRow);
+  });
+
+  it("单打双方在各自同名逻辑区时，画面上仍是对角两格", () => {
+    // 发球方分数为奇数 → 双方均在各自左区。
+    const state = singlesState({
+      score: { A: 5, B: 4 },
+      servingSide: "A",
+      serverPlayerId: "A1",
+      receiverPlayerId: "B1",
+      serverCourt: "L",
+      receiverCourt: "L",
+    });
+    const view = buildCourtViewModel(state, false);
+    const occupied = view.cells.filter((candidate) => candidate.playerId !== null);
+    expect(occupied).toHaveLength(2);
+    expect(occupied[0].screenHalf).not.toBe(occupied[1].screenHalf);
+    expect(occupied[0].screenRow).not.toBe(occupied[1].screenRow);
+    expect(occupied.every((candidate) => candidate.logicalCourt === "L")).toBe(true);
+  });
+});

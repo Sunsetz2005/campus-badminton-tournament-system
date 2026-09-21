@@ -1,0 +1,455 @@
+{
+  "schemaVersion": 1,
+  "description": "虚拟合成验收轨迹；不是用户项目测试结果。保持稳定A:B计分，左右指运动员面对球网的逻辑区。",
+  "ruleBaseline": "BWF Laws of Badminton 2025-04-26 V5.0(1), Laws 10–12; Badminton BC doubles explanation",
+  "sources": [
+    "https://extranet.bwf.sport/docs/document-system/81/1466/1470/Section%204.1%20-%20Laws%20of%20Badminton%20-%2026%20April%202025%20V5.0%20%281%29%20.pdf",
+    "https://www.badmintonbc.com/page/2888/The-Laws-of-Badminton"
+  ],
+  "participants": {
+    "A": [
+      "A1",
+      "A2"
+    ],
+    "B": [
+      "B1",
+      "B2"
+    ]
+  },
+  "assumptions": [
+    "正常每球得分，不含判罚、发球区更正或未结束回合",
+    "初始A1首发、B1首接，0:0",
+    "每个expected是该得分确认后下一次发接发的状态"
+  ],
+  "doubles": [
+    {
+      "step": 0,
+      "rallyWinner": null,
+      "expected": {
+        "score": {
+          "A": 0,
+          "B": 0
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A2",
+            "RIGHT": "A1"
+          },
+          "B": {
+            "LEFT": "B2",
+            "RIGHT": "B1"
+          }
+        },
+        "servingSideId": "A",
+        "serverId": "A1",
+        "receiverId": "B1",
+        "serviceCourt": "RIGHT"
+      }
+    },
+    {
+      "step": 1,
+      "rallyWinner": "A",
+      "expected": {
+        "score": {
+          "A": 1,
+          "B": 0
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A1",
+            "RIGHT": "A2"
+          },
+          "B": {
+            "LEFT": "B2",
+            "RIGHT": "B1"
+          }
+        },
+        "servingSideId": "A",
+        "serverId": "A1",
+        "receiverId": "B2",
+        "serviceCourt": "LEFT"
+      }
+    },
+    {
+      "step": 2,
+      "rallyWinner": "A",
+      "expected": {
+        "score": {
+          "A": 2,
+          "B": 0
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A2",
+            "RIGHT": "A1"
+          },
+          "B": {
+            "LEFT": "B2",
+            "RIGHT": "B1"
+          }
+        },
+        "servingSideId": "A",
+        "serverId": "A1",
+        "receiverId": "B1",
+        "serviceCourt": "RIGHT"
+      }
+    },
+    {
+      "step": 3,
+      "rallyWinner": "B",
+      "expected": {
+        "score": {
+          "A": 2,
+          "B": 1
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A2",
+            "RIGHT": "A1"
+          },
+          "B": {
+            "LEFT": "B2",
+            "RIGHT": "B1"
+          }
+        },
+        "servingSideId": "B",
+        "serverId": "B2",
+        "receiverId": "A2",
+        "serviceCourt": "LEFT"
+      }
+    },
+    {
+      "step": 4,
+      "rallyWinner": "B",
+      "expected": {
+        "score": {
+          "A": 2,
+          "B": 2
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A2",
+            "RIGHT": "A1"
+          },
+          "B": {
+            "LEFT": "B1",
+            "RIGHT": "B2"
+          }
+        },
+        "servingSideId": "B",
+        "serverId": "B2",
+        "receiverId": "A1",
+        "serviceCourt": "RIGHT"
+      }
+    },
+    {
+      "step": 5,
+      "rallyWinner": "A",
+      "expected": {
+        "score": {
+          "A": 3,
+          "B": 2
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A2",
+            "RIGHT": "A1"
+          },
+          "B": {
+            "LEFT": "B1",
+            "RIGHT": "B2"
+          }
+        },
+        "servingSideId": "A",
+        "serverId": "A2",
+        "receiverId": "B1",
+        "serviceCourt": "LEFT"
+      }
+    },
+    {
+      "step": 6,
+      "rallyWinner": "B",
+      "expected": {
+        "score": {
+          "A": 3,
+          "B": 3
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A2",
+            "RIGHT": "A1"
+          },
+          "B": {
+            "LEFT": "B1",
+            "RIGHT": "B2"
+          }
+        },
+        "servingSideId": "B",
+        "serverId": "B1",
+        "receiverId": "A2",
+        "serviceCourt": "LEFT"
+      }
+    },
+    {
+      "step": 7,
+      "rallyWinner": "A",
+      "expected": {
+        "score": {
+          "A": 4,
+          "B": 3
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A2",
+            "RIGHT": "A1"
+          },
+          "B": {
+            "LEFT": "B1",
+            "RIGHT": "B2"
+          }
+        },
+        "servingSideId": "A",
+        "serverId": "A1",
+        "receiverId": "B2",
+        "serviceCourt": "RIGHT"
+      }
+    },
+    {
+      "step": 8,
+      "rallyWinner": "A",
+      "expected": {
+        "score": {
+          "A": 5,
+          "B": 3
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A1",
+            "RIGHT": "A2"
+          },
+          "B": {
+            "LEFT": "B1",
+            "RIGHT": "B2"
+          }
+        },
+        "servingSideId": "A",
+        "serverId": "A1",
+        "receiverId": "B1",
+        "serviceCourt": "LEFT"
+      }
+    }
+  ],
+  "singles": [
+    {
+      "score": {
+        "A": 4,
+        "B": 3
+      },
+      "servingSideId": "B",
+      "expectedCourts": {
+        "A": "LEFT",
+        "B": "LEFT"
+      }
+    },
+    {
+      "rallyWinner": "B",
+      "score": {
+        "A": 4,
+        "B": 4
+      },
+      "servingSideId": "B",
+      "expectedCourts": {
+        "A": "RIGHT",
+        "B": "RIGHT"
+      }
+    },
+    {
+      "rallyWinner": "A",
+      "score": {
+        "A": 5,
+        "B": 4
+      },
+      "servingSideId": "A",
+      "expectedCourts": {
+        "A": "LEFT",
+        "B": "LEFT"
+      }
+    }
+  ],
+  "singleCourtNotAlwaysToggled": {
+    "before": {
+      "score": {
+        "A": 1,
+        "B": 2
+      },
+      "servingSideId": "A",
+      "courts": {
+        "A": "LEFT",
+        "B": "LEFT"
+      }
+    },
+    "rallyWinner": "B",
+    "after": {
+      "score": {
+        "A": 1,
+        "B": 3
+      },
+      "servingSideId": "B",
+      "courts": {
+        "A": "LEFT",
+        "B": "LEFT"
+      }
+    }
+  },
+  "manualCorrectionScenarios": [
+    {
+      "name": "更正接发方后下一分仍使用更正基线",
+      "baseDoublesStep": 4,
+      "correction": {
+        "sideId": "A",
+        "swapLogicalCourts": true,
+        "keepScore": true,
+        "reason": "合成的已批准发接发状态更正"
+      },
+      "expectedImmediately": {
+        "score": {
+          "A": 2,
+          "B": 2
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A1",
+            "RIGHT": "A2"
+          },
+          "B": {
+            "LEFT": "B1",
+            "RIGHT": "B2"
+          }
+        },
+        "servingSideId": "B",
+        "serverId": "B2",
+        "receiverId": "A2"
+      },
+      "nextRallyWinner": "A",
+      "expectedAfterNextRally": {
+        "score": {
+          "A": 3,
+          "B": 2
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A1",
+            "RIGHT": "A2"
+          },
+          "B": {
+            "LEFT": "B1",
+            "RIGHT": "B2"
+          }
+        },
+        "servingSideId": "A",
+        "serverId": "A1",
+        "receiverId": "B1"
+      }
+    },
+    {
+      "name": "更正发球方后发球标记随正确人员改变",
+      "baseDoublesStep": 4,
+      "correction": {
+        "sideId": "B",
+        "swapLogicalCourts": true,
+        "keepScore": true,
+        "reason": "合成的已批准发接发状态更正"
+      },
+      "expectedImmediately": {
+        "score": {
+          "A": 2,
+          "B": 2
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A2",
+            "RIGHT": "A1"
+          },
+          "B": {
+            "LEFT": "B2",
+            "RIGHT": "B1"
+          }
+        },
+        "servingSideId": "B",
+        "serverId": "B1",
+        "receiverId": "A1"
+      },
+      "nextRallyWinner": "B",
+      "expectedAfterNextRally": {
+        "score": {
+          "A": 2,
+          "B": 3
+        },
+        "positions": {
+          "A": {
+            "LEFT": "A2",
+            "RIGHT": "A1"
+          },
+          "B": {
+            "LEFT": "B1",
+            "RIGHT": "B2"
+          }
+        },
+        "servingSideId": "B",
+        "serverId": "B1",
+        "receiverId": "A2"
+      }
+    }
+  ],
+  "projectionOnly": {
+    "note": "只测投影函数，不授权在任意0:0时实际换边。正式换边还需检查阶段、规则及权限。",
+    "baseDoublesStep": 0,
+    "default": {
+      "physicalEnds": {
+        "A": "END_LEFT",
+        "B": "END_RIGHT"
+      },
+      "viewRotation": 0,
+      "slots": {
+        "UPPER_LEFT": "A2",
+        "LOWER_LEFT": "A1",
+        "UPPER_RIGHT": "B1",
+        "LOWER_RIGHT": "B2"
+      },
+      "displayedLeftSideId": "A",
+      "displayedRightSideId": "B"
+    },
+    "oppositeEnds": {
+      "physicalEnds": {
+        "A": "END_RIGHT",
+        "B": "END_LEFT"
+      },
+      "viewRotation": 0,
+      "slots": {
+        "UPPER_LEFT": "B2",
+        "LOWER_LEFT": "B1",
+        "UPPER_RIGHT": "A1",
+        "LOWER_RIGHT": "A2"
+      },
+      "displayedLeftSideId": "B",
+      "displayedRightSideId": "A"
+    },
+    "invariants": [
+      "score、positions、serverId、receiverId不变",
+      "屏幕左+1绑定当前displayedLeftSideId",
+      "viewRotation只改变视图，不新增比赛事件"
+    ]
+  },
+  "extraRequiredCases": [
+    "未设置首发时不能显示虚假的当前发球图标",
+    "单打非法单侧更正提示冲突，不写入不一致状态",
+    "规则阈值生成待换边，确认后不再被另一方到同分重复执行",
+    "连续相同requestId只生成一次比赛操作",
+    "失去租约的设备被接管后不能写入",
+    "误点得分撤销恢复竞赛状态，新版本仍递增，设备租约不回退",
+    "已确认现实换边之后撤销分数不得无提示倒转端点",
+    "局间显式确认下一局首发与首接",
+    "暂停或LET按采用规则处理，不擅自加分和换人",
+    "已有历史比赛的状态迁移不默认A1首发且不清零"
+  ]
+}
