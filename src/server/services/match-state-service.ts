@@ -4,6 +4,8 @@ import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
 import {
   createMatchAggregate,
+  downgradeMatchStateToEngineV1,
+  normalizeMatchState,
   replayMatch,
   stableStringify,
   type MatchAggregate,
@@ -14,7 +16,11 @@ import { validateRuleConfig } from "@/domain/rules/rule-profile";
 import { getMatchAccess } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
 
-export const MATCH_ENGINE_VERSION = 1;
+/**
+ * 引擎版本 2：MatchState 增加 thresholdObligationsIssued（R3-001）。
+ * v1 的历史事件一律保持原样不改写；重放时按记录形状核对，权威快照在下一次写入时升级。
+ */
+export const MATCH_ENGINE_VERSION = 2;
 
 export function hashMatchValue(value: unknown) {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
@@ -147,29 +153,39 @@ export async function loadVerifiedAggregate(transaction: Transaction, matchId: s
   const events = records.map(domainEventFromRecord);
   const replayed = replayMatch(initialState, events);
   const stored = asMatchState(snapshot.state);
+  // 引擎 v1 写下的快照按 v1 形状核对；核对通过后聚合继续使用 v2 状态，历史事件不被改写。
+  const legacySnapshot = snapshot.engineVersion < MATCH_ENGINE_VERSION;
+  const comparable = legacySnapshot ? downgradeMatchStateToEngineV1(replayed) : replayed;
   if (
     snapshot.version !== replayed.version ||
-    hashMatchValue(replayed) !== snapshot.stateHash ||
-    stableStringify(replayed) !== stableStringify(stored)
+    hashMatchValue(comparable) !== snapshot.stateHash ||
+    stableStringify(comparable) !== stableStringify(stored)
   ) {
     throw new AppError(409, "authoritative_state_corrupted", "事件重放与权威快照不一致，已停止写入。");
   }
-  return { initialState, state: replayed, events };
+  return { initialState: normalizeMatchState(initialState), state: replayed, events };
 }
 
 export async function getAuthoritativeMatchState(userId: string, matchCode: string, afterVersion?: number) {
   const access = await getMatchAccess(userId, matchCode);
   return prisma.$transaction(async (transaction) => {
     await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${access.id}::uuid FOR UPDATE`;
-    const aggregate = await loadVerifiedAggregate(transaction, access.id);
     const match = await loadMatchFacts(transaction, access.id);
+    /*
+     * 轮询路径的最小优化（R3 性能核验）：`matches.version` 与事件写入在同一事务里更新，
+     * 在行锁内读到的版本就是权威版本。版本未变时不返回任何比赛状态，
+     * 因此可以先回答 unchanged，再决定是否付出全量重放的代价。
+     * 写入路径与返回快照的读取路径仍然完整重放并校验哈希，行锁和完整性校验都没有被删除。
+     */
+    const unchanged = afterVersion !== undefined && afterVersion === match.version;
+    const aggregate = unchanged ? null : await loadVerifiedAggregate(transaction, access.id);
     const active = await transaction.scoringSession.findFirst({
       where: { matchId: access.id, status: "ACTIVE", expiresAt: { gt: new Date() } },
       select: { id: true, userId: true, deviceSessionId: true, actingRole: true, expiresAt: true, takeoverGeneration: true },
     });
     const common = {
       serverTime: new Date().toISOString(),
-      version: aggregate.state.version,
+      version: aggregate ? aggregate.state.version : match.version,
       control: active
         ? {
             active: true,
@@ -183,6 +199,7 @@ export async function getAuthoritativeMatchState(userId: string, matchCode: stri
         : { active: false },
       access: { assignedReferee: access.assignedReferee, chiefReferee: access.chiefReferee },
     };
+    if (!aggregate) return { status: "unchanged" as const, ...common };
     if (afterVersion === aggregate.state.version) return { status: "unchanged" as const, ...common };
     return {
       status: "snapshot" as const,

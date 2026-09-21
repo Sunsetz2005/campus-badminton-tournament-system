@@ -82,6 +82,22 @@ export function CourtConsole({
   const view = buildCourtViewModel(state, flipped);
   const activePlay = ["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase);
   const scoringAllowed = !draft && state.phase === "IN_PROGRESS";
+  /**
+   * RV3-004：局末 / 赛末误点必须有正常撤销入口。
+   * 这里只放开“结束待提交”的相位；已提交、已锁定和已开始下一局仍然走不到这里，
+   * 是否真的可撤销由服务端 applyUndo 预览判定，不在浏览器放宽规则。
+   */
+  const endingUndoAllowed = !draft && [
+    "GAME_COMPLETE",
+    "AWAITING_NEXT_GAME_SETUP",
+    "MATCH_COMPLETE_PENDING_SUBMISSION",
+  ].includes(state.phase);
+  // 结束本局 / 本场的那一分必然属于当前领先方，其余方向不放开。
+  const endingScorerSide: Side | null = endingUndoAllowed
+    ? (state.score.A === state.score.B ? null : state.score.A > state.score.B ? "A" : "B")
+    : null;
+  const undoAllowedForSide = (side: Side) =>
+    !draft && (activePlay || (endingUndoAllowed && side === endingScorerSide));
   const positionCorrectionAllowed = !draft && activePlay;
   const endsCorrectionAllowed = !draft && [
     "IN_PROGRESS",
@@ -117,18 +133,16 @@ export function CourtConsole({
       aria-label="权威比赛场地与比分"
       className="court-console"
     >
+      {/* 场地端是物理事实，必须保留；但队名和比分留给大比分区，这里只占一行紧凑标记。 */}
       <div className="court-sides-header">
         {view.halves.map((half) => (
-          <div
+          <span
             className={`court-side-tag side-${half.side.toLowerCase()}`}
             data-side-tag={half.side}
             key={half.screenHalf}
           >
-            <span className="court-side-mark">
-              {half.side} 方 · {half.physicalEnd.replace("END_", "场地端 ")}
-            </span>
-            <strong>{sideName(half.side)}</strong>
-          </div>
+            {half.side} 方 · {half.physicalEnd.replace("END_", "场地端 ")}
+          </span>
         ))}
         <span className={`court-truth ${draft ? "draft" : ""}`}>
           {draft ? "开局设置草稿" : view.physicalEndsConfirmed ? "服务器权威状态" : "场地端待确认"}
@@ -266,15 +280,17 @@ export function CourtConsole({
           );
           const minus = (
             <button
-              aria-label={`更正 ${sideName(half.side)} 的最近得分`}
+              aria-label={half.side === endingScorerSide
+                ? `撤销 ${sideName(half.side)} 刚才结束本局或本场的得分`
+                : `更正 ${sideName(half.side)} 的最近得分`}
               className="score-adjust minus"
-              disabled={!canWrite || busy || !activePlay || draft || state.score[half.side] === 0}
+              disabled={!canWrite || busy || !undoAllowedForSide(half.side) || state.score[half.side] === 0}
               key="minus"
               onClick={() => onSubtractPoint(half.side)}
               type="button"
             >
               <span aria-hidden="true">−1</span>
-              <small>更正</small>
+              <small>{half.side === endingScorerSide ? "撤销结束分" : "更正"}</small>
             </button>
           );
           return (
@@ -296,7 +312,10 @@ export function CourtConsole({
       <p className="court-interaction-status" id="court-interaction-status">{interactionExplanation}</p>
 
       <details className="court-roster">
-        <summary>查看全名与代表队（长姓名不截断）</summary>
+        <summary>查看全名、代表队与发球区说明</summary>
+        <p className="court-caption">
+          四个发球区表示规则位置和下一次发接发顺序，不追踪回合中的实际跑位。
+        </p>
         <ul>
           {view.halves.map((half) => (
             <li key={half.screenHalf}>
@@ -310,9 +329,6 @@ export function CourtConsole({
         </ul>
       </details>
 
-      <p className="court-caption">
-        四个发球区表示规则位置和下一次发接发顺序，不追踪回合中的实际跑位。
-      </p>
       <p aria-atomic="true" aria-live="polite" className="visually-hidden">
         当前比分，{sideName("A")} {state.score.A} 分，{sideName("B")} {state.score.B} 分。
       </p>

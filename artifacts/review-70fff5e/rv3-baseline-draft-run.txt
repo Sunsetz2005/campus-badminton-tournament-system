@@ -1,0 +1,38 @@
+
+ RUN  v5.0.1 /Users/Shared/Files From d.localized/校园羽毛球赛事编排与成绩管理系统
+
+ ❯ tests/domain/referee-boundary-regressions.test.ts (11 tests | 3 failed) 35ms
+   ❯ review regressions: traditional 21 first game (3)
+     × RV3-003: resolve pending tasks while paused then resume to a scoring state 4ms
+   ❯ review regressions: alternative 3x15 first game (3)
+     × RV3-003: resolve pending tasks while paused then resume to a scoring state 1ms
+   ❯ review regressions: single-game 21 (also needs a change of … (3)
+     × RV3-003: resolve pending tasks while paused then resume to a scoring state 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/domain/referee-boundary-regressions.test.ts > review regressions: traditional 21 first game > RV3-003: resolve pending tasks while paused then resume to a scoring state
+ FAIL  tests/domain/referee-boundary-regressions.test.ts > review regressions: alternative 3x15 first game > RV3-003: resolve pending tasks while paused then resume to a scoring state
+ FAIL  tests/domain/referee-boundary-regressions.test.ts > review regressions: single-game 21 (also needs a change of … > RV3-003: resolve pending tasks while paused then resume to a scoring state
+AssertionError: expected 'OBLIGATIONS_PENDING' to be 'IN_PROGRESS' // Object.is equality
+
+Expected: "IN_PROGRESS"
+Received: "OBLIGATIONS_PENDING"
+
+ ❯ tests/domain/referee-boundary-regressions.test.ts:159:35
+    157|       reason: "事项处理完毕，恢复比赛",
+    158|     }));
+    159|     expect(aggregate.state.phase).toBe("IN_PROGRESS");
+       |                                   ^
+    160|     // A leaves the threshold; avoid conflating this assertion with RV…
+    161|     aggregate = point(aggregate, "A");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 8 passed (11)
+   Start at  18:26:12
+   Duration  134ms (tests 41%, import 30%, transform 28%, worker 2%)
+
+exit=1

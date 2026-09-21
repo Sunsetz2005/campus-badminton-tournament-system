@@ -20,6 +20,32 @@ async function login(page: Page, email: string, password: string) {
   await expect(page).toHaveURL("/");
 }
 
+/**
+ * RV3-002：抛币改为分步表单后，页面上不再有写死的“A 方胜并选先发”按钮。
+ * 这个辅助函数按胜方/类别/具体选择驱动真实表单，默认组合与旧按钮等价（A 胜选先发、B 选 END_2）。
+ */
+async function recordCoinToss(page: Page, options?: {
+  winner?: "A" | "B";
+  category?: "SERVICE" | "END";
+  service?: "SERVE" | "RECEIVE";
+  end?: "END_1" | "END_2";
+}) {
+  const winner = options?.winner ?? "A";
+  const category = options?.category ?? "SERVICE";
+  const service = options?.service ?? "SERVE";
+  const end = options?.end ?? "END_2";
+  await page.locator(`input[name="coin-toss-winner"][value="${winner}"]`).check();
+  await page.locator(`input[name="coin-toss-category"][value="${category}"]`).check();
+  if (category === "SERVICE") {
+    await page.locator(`input[name="coin-toss-service"][value="${service}"]`).check();
+    await page.locator(`input[name="coin-toss-end"][value="${end}"]`).check();
+  } else {
+    await page.locator(`input[name="coin-toss-end"][value="${end}"]`).check();
+    await page.locator(`input[name="coin-toss-service"][value="${service}"]`).check();
+  }
+  await page.getByRole("button", { name: "确认并记录抛币" }).click();
+}
+
 async function resetMatches() {
   const matches = await prisma.match.findMany({ where: { code: { in: ["MS-DEMO-001", "MD-DEMO-002"] } }, select: { id: true } });
   const ids = matches.map((item) => item.id);
@@ -231,7 +257,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     await page.goto(`/officiating/${matchCode}`);
     await page.getByRole("button", { name: "取得本机控制权" }).click();
-    await page.getByRole("button", { name: "A 方胜并选先发" }).click();
+    await recordCoinToss(page);
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("0");
 
@@ -303,7 +329,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     await page.goto(`/officiating/${matchCode}`);
     await page.getByRole("button", { name: "取得本机控制权" }).click();
-    await page.getByRole("button", { name: "A 方胜并选先发" }).click();
+    await recordCoinToss(page);
     await expect(page.getByRole("button", { name: "确认首局设置并开赛" })).toBeVisible();
 
     const setupState = await readAuthoritativeState(request, matchCode);
@@ -379,7 +405,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     await page.goto(`/officiating/${matchCode}`);
     await page.getByRole("button", { name: "取得本机控制权" }).click();
-    await page.getByRole("button", { name: "A 方胜并选先发" }).click();
+    await recordCoinToss(page);
     await expect(page.getByRole("button", { name: "确认首局设置并开赛" })).toBeVisible();
 
     const setupState = await readAuthoritativeState(request, matchCode);
@@ -482,14 +508,20 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
       type: "acceptance-boundary",
       description: "本用例生成的四张截图均为 Chromium 浏览器设备模拟，不是真机验收证据。",
     });
-    const artifactDir = path.join(process.cwd(), "artifacts", "phase3-browser-simulated");
+    // 默认写入未提交的 local-run 目录；已记账的 artifacts/phase3-browser-simulated/
+    // 只在显式指定 PHASE3_SHOT_DIR 时才会被重新生成，避免测试无声覆盖证据与清单。
+    const artifactDir = path.join(
+      process.cwd(),
+      "artifacts",
+      process.env.PHASE3_SHOT_DIR ?? "phase3-browser-simulated-local-run",
+    );
     mkdirSync(artifactDir, { recursive: true });
 
     await page.setViewportSize({ width: 1024, height: 768 });
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     await page.goto("/officiating/MS-DEMO-001");
     await page.getByRole("button", { name: "取得本机控制权" }).click();
-    await page.getByRole("button", { name: "A 方胜并选先发" }).click();
+    await recordCoinToss(page);
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     await page.getByRole("button", { name: "模拟选手 01 赢得一分" }).click();
     await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("1");
@@ -532,7 +564,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await page.setViewportSize({ width: 1024, height: 768 });
     await page.goto("/officiating/MD-DEMO-002");
     await page.getByRole("button", { name: "取得本机控制权" }).click();
-    await page.getByRole("button", { name: "A 方胜并选先发" }).click();
+    await recordCoinToss(page);
     await page.getByLabel("首发球员（A 方）").selectOption({ index: 1 });
     await page.getByLabel("首接球员（B 方）").selectOption({ index: 1 });
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();

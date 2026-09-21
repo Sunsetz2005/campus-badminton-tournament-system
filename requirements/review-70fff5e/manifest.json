@@ -1,0 +1,32 @@
+{
+  "reviewed_commit": "70fff5e87c9252e0bd6cbd13060d6d870dd4cd37",
+  "scope": "source review; repository tests and browser not run",
+  "test_draft_validation": "Node 22.16.0 syntax check only; exit 0",
+  "files": [
+    {
+      "file": "01-最新源码审查.md",
+      "bytes": 14672,
+      "sha256": "97b138030bd00fac92ede8721e6aaa70e2a09810a721a3951d48495be93a73a4"
+    },
+    {
+      "file": "02-Claude修复提示词.md",
+      "bytes": 11213,
+      "sha256": "9b936ec4fbb8848ab642d3cbdeb9541373141e28bb2f934c2511d81117088984"
+    },
+    {
+      "file": "README.md",
+      "bytes": 1487,
+      "sha256": "20dc6770e8a4c7ae39497a7d8362eabe32e3eff5792a20fc3e10da11accd8206"
+    },
+    {
+      "file": "tests/referee-boundary-regressions.review.test.ts",
+      "bytes": 7232,
+      "sha256": "f964d30b4774611f82cc4efb9c14272251eac1011ea8a4f6d91e007c6a6ee715"
+    },
+    {
+      "file": "tests/syntax-check.log",
+      "bytes": 231,
+      "sha256": "dd845f0f23dd764f65845b9d2483d8d265e52143a6ea7d0fa2d8ae4c33c17a2c"
+    }
+  ]
+}

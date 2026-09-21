@@ -40,6 +40,7 @@ function matchState(overrides: Partial<MatchState> = {}): MatchState {
     },
     physicalEnds: { A: "END_1", B: "END_2" },
     pendingObligations: [],
+    thresholdObligationsIssued: [],
     nextGameServingSide: null,
     pausedFromPhase: null,
     submittedFromPhase: null,

@@ -1,8 +1,8 @@
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { prisma } from "@/db/client";
 import { assertTestDatabaseUrl } from "@/db/database-safety";
-import type { MatchCommand } from "@/domain/rules/match-engine";
+import type { MatchCommand, MatchState, ScoreStateReplacement } from "@/domain/rules/match-engine";
 import { AppError } from "@/server/services/errors";
 import { getAuthoritativeMatchState } from "@/server/services/match-state-service";
 import { submitScoringCommand, type ScoringCommandEnvelope } from "@/server/services/scoring-command-service";
@@ -297,6 +297,32 @@ describe("阶段 3 权威记分事务", () => {
     await expect(prisma.match.findUniqueOrThrow({ where: { id: matchId } })).resolves.toMatchObject({ version: 1 });
   });
 
+  it("轮询 unchanged 走快路径，但返回快照的读取仍完整重放并发现损坏", async () => {
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "3c111111-1111-4111-8111-111111111111");
+    const first = await submitScoringCommand(
+      refereeId,
+      MATCH_CODE,
+      command(control, 0, "RECORD_COIN_TOSS", { valid: false, reason: "首次抛币无效" }),
+      control.controlToken,
+    );
+    if (first.status !== "accepted") throw new Error("首次命令应被接受。");
+
+    // 版本未变：不返回比赛状态，因此可以跳过全量重放，但版本、控制权和访问信息仍然正确。
+    const unchanged = await getAuthoritativeMatchState(refereeId, MATCH_CODE, first.version);
+    expect(unchanged).toMatchObject({ status: "unchanged", version: first.version });
+    expect(unchanged.control).toMatchObject({ active: true, ownedByCurrentUser: true });
+    expect("state" in unchanged).toBe(false);
+
+    // 只要需要返回状态，就必须完整重放并校验哈希。
+    await prisma.matchSnapshot.update({ where: { matchId }, data: { stateHash: "0".repeat(64) } });
+    await expect(getAuthoritativeMatchState(refereeId, MATCH_CODE)).rejects.toMatchObject({
+      code: "authoritative_state_corrupted",
+    } satisfies Partial<AppError>);
+    await expect(getAuthoritativeMatchState(refereeId, MATCH_CODE, first.version - 1)).rejects.toMatchObject({
+      code: "authoritative_state_corrupted",
+    } satisfies Partial<AppError>);
+  });
+
   it("复核修订缺失时整个确认事务回滚", async () => {
     const control = await acquireScoringSession(refereeId, MATCH_CODE, "39999999-9999-4999-8999-999999999999");
     let result = await submitScoringCommand(
@@ -324,5 +350,161 @@ describe("阶段 3 权威记分事务", () => {
     await expect(prisma.matchEvent.count({ where: { matchId } })).resolves.toBe(2);
     await expect(prisma.matchSnapshot.findUniqueOrThrow({ where: { matchId } })).resolves.toMatchObject({ version: 2 });
     await expect(prisma.match.findUniqueOrThrow({ where: { id: matchId } })).resolves.toMatchObject({ version: 2, verificationStatus: "PENDING_REVIEW" });
+  });
+
+  /**
+   * R3-004 回归：实际结束时刻、提交时刻和复核时刻是三个不同事实。
+   * 只伪造 Date，不伪造计时器，避免干扰数据库驱动的异步流程。
+   */
+  describe("R3-004 实际结束时间与提交/复核时间分离", () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    function replacement(state: MatchState, scoreA: number, scoreB: number): ScoreStateReplacement {
+      const servingSide = state.servingSide!;
+      const receivingSide = servingSide === "A" ? "B" : "A";
+      const court = state.score[servingSide] % 2 === 0 ? "R" : "L";
+      const serveCourt = (servingSide === "A" ? scoreA : scoreB) % 2 === 0 ? "R" : "L";
+      void court;
+      return {
+        score: { A: scoreA, B: scoreB },
+        gamesWon: state.gamesWon,
+        completedGames: state.completedGames,
+        servingSide,
+        serverPlayerId: state.logicalCourts![servingSide][serveCourt],
+        receiverPlayerId: state.logicalCourts![receivingSide][serveCourt],
+        logicalCourts: state.logicalCourts,
+        pendingObligations: [],
+        phase: "IN_PROGRESS",
+      };
+    }
+
+    /** 真实裁判设备靠心跳续租；受控时钟必须同样分段推进，不能凭空跳过租约。 */
+    async function advanceTo(
+      target: Date,
+      holder: { userId: string; control: { sessionId: string; takeoverGeneration: number; controlToken: string } },
+    ) {
+      const step = 90 * 1000;
+      while (Date.now() < target.getTime()) {
+        vi.setSystemTime(new Date(Math.min(Date.now() + step, target.getTime())));
+        await heartbeatScoringSession(
+          holder.userId,
+          MATCH_CODE,
+          holder.control.sessionId,
+          holder.control.takeoverGeneration,
+          holder.control.controlToken,
+        );
+      }
+    }
+
+    async function matchRow() {
+      return prisma.match.findUniqueOrThrow({
+        where: { id: matchId },
+        select: { startedAt: true, endedAt: true, lifecycleStatus: true, verificationStatus: true },
+      });
+    }
+
+    it("10:00 结束、10:05 提交、10:10 复核后 endedAt 仍是 10:00", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-09-21T09:30:00.000Z"));
+      const control = await acquireScoringSession(refereeId, MATCH_CODE, "3b111111-1111-4111-8111-111111111111");
+      let result = await submitScoringCommand(refereeId, MATCH_CODE, command(control, 0, "RECORD_COIN_TOSS", {
+        valid: true,
+        winnerSide: "A",
+        winnerChoice: { kind: "SERVICE", decision: "SERVE" },
+        loserChoice: { kind: "END", end: "END_2" },
+      }), control.controlToken);
+      if (result.status !== "accepted") throw new Error("抛币不应命中幂等分支。");
+
+      const startTime = new Date("2026-09-21T09:40:00.000Z");
+      await advanceTo(startTime, { userId: refereeId, control });
+      result = await submitScoringCommand(refereeId, MATCH_CODE, command(result.version === 1 ? control : control, result.version, "CONFIRM_OPENING_SETUP", {
+        serverPlayerId: result.state.players.A[0],
+        receiverPlayerId: result.state.players.B[0],
+        logicalCourts: {
+          A: { R: result.state.players.A[0], L: result.state.players.A[1] },
+          B: { R: result.state.players.B[0], L: result.state.players.B[1] },
+        },
+      }), control.controlToken);
+      if (result.status !== "accepted") throw new Error("首局设置不应命中幂等分支。");
+      await expect(matchRow()).resolves.toMatchObject({ startedAt: startTime, endedAt: null, lifecycleStatus: "IN_PROGRESS" });
+
+      // 三局两胜：先正常打完第一局，处理局间待办并设置第二局，再在受控时刻打完全场。
+      for (const game of [1, 2] as const) {
+        result = await submitScoringCommand(refereeId, MATCH_CODE, command(control, result.version, "CORRECT_SCORE_STATE", {
+          reason: `推进第 ${game} 局到局末分`,
+          replacement: replacement(result.state, 20, 19),
+        }), control.controlToken);
+        if (result.status !== "accepted") throw new Error("比分更正不应命中幂等分支。");
+        if (game === 2) break;
+        result = await submitScoringCommand(refereeId, MATCH_CODE, command(control, result.version, "RALLY_WON", { side: "A" }), control.controlToken);
+        if (result.status !== "accepted") throw new Error("局末分不应命中幂等分支。");
+        for (const obligation of result.state.pendingObligations) {
+          result = await submitScoringCommand(refereeId, MATCH_CODE, command(
+            control,
+            result.version,
+            obligation.type === "INTERVAL" ? "ACKNOWLEDGE_INTERVAL" : "CONFIRM_CHANGE_ENDS",
+            { obligationId: obligation.id },
+          ), control.controlToken);
+          if (result.status !== "accepted") throw new Error("局间待办不应命中幂等分支。");
+        }
+        result = await submitScoringCommand(refereeId, MATCH_CODE, command(control, result.version, "CONFIRM_NEXT_GAME_SETUP", {
+          serverPlayerId: result.state.players.A[0],
+          receiverPlayerId: result.state.players.B[0],
+          logicalCourts: {
+            A: { R: result.state.players.A[0], L: result.state.players.A[1] },
+            B: { R: result.state.players.B[0], L: result.state.players.B[1] },
+          },
+        }), control.controlToken);
+        if (result.status !== "accepted") throw new Error("次局设置不应命中幂等分支。");
+      }
+
+      const endTime = new Date("2026-09-21T10:00:00.000Z");
+      await advanceTo(endTime, { userId: refereeId, control });
+      result = await submitScoringCommand(refereeId, MATCH_CODE, command(control, result.version, "RALLY_WON", { side: "A" }), control.controlToken);
+      if (result.status !== "accepted") throw new Error("赛末分不应命中幂等分支。");
+      expect(result.state.phase).toBe("MATCH_COMPLETE_PENDING_SUBMISSION");
+      await expect(matchRow()).resolves.toMatchObject({ startedAt: startTime, endedAt: endTime, lifecycleStatus: "ENDED_PENDING_SUBMISSION" });
+
+      const submitTime = new Date("2026-09-21T10:05:00.000Z");
+      await advanceTo(submitTime, { userId: refereeId, control });
+      result = await submitScoringCommand(refereeId, MATCH_CODE, command(control, result.version, "SUBMIT_RESULT", { reason: "主裁判提交本场结果" }), control.controlToken);
+      if (result.status !== "accepted") throw new Error("结果提交不应命中幂等分支。");
+      await expect(matchRow()).resolves.toMatchObject({ startedAt: startTime, endedAt: endTime, verificationStatus: "PENDING_REVIEW" });
+
+      const reviewTime = new Date("2026-09-21T10:10:00.000Z");
+      await advanceTo(reviewTime, { userId: refereeId, control });
+      const chief = await takeoverScoringSession(chiefId, MATCH_CODE, "3b222222-2222-4222-8222-222222222222", "复核结果");
+      result = await submitScoringCommand(chiefId, MATCH_CODE, command(chief, result.version, "CONFIRM_RESULT", { reason: "裁判长复核通过" }), chief.controlToken);
+      if (result.status !== "accepted") throw new Error("结果复核不应命中幂等分支。");
+      await expect(matchRow()).resolves.toMatchObject({ startedAt: startTime, endedAt: endTime, verificationStatus: "LOCKED" });
+
+      // 提交与复核时刻独立记录在结果修订上，不挤占实际结束时刻。
+      const revision = await prisma.resultRevision.findFirstOrThrow({ where: { matchId }, orderBy: { revision: "desc" } });
+      expect(revision.createdAt).toEqual(submitTime);
+      expect(revision.reviewedAt).toEqual(reviewTime);
+
+      await advanceTo(new Date("2026-09-21T10:20:00.000Z"), { userId: chiefId, control: chief });
+      await submitScoringCommand(chiefId, MATCH_CODE, command(chief, result.version, "REOPEN_RESULT", { reason: "发现记录疑点，退回更正" }), chief.controlToken);
+      await expect(matchRow()).resolves.toMatchObject({ startedAt: startTime, endedAt: endTime });
+    });
+
+    it("误记特殊结果被作废后清除结束时间，未开赛的 WO 不伪造开赛时刻", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const recordTime = new Date("2026-09-21T11:00:00.000Z");
+      vi.setSystemTime(recordTime);
+      const control = await acquireScoringSession(refereeId, MATCH_CODE, "3b333333-3333-4333-8333-333333333333");
+      let result = await submitScoringCommand(refereeId, MATCH_CODE, command(control, 0, "RECORD_SPECIAL_OUTCOME", {
+        type: "WO", winnerSide: "A", reason: "B 方未到场",
+      }), control.controlToken);
+      if (result.status !== "accepted") throw new Error("特殊结果不应命中幂等分支。");
+      await expect(matchRow()).resolves.toMatchObject({ startedAt: null, endedAt: recordTime });
+
+      await advanceTo(new Date("2026-09-21T11:03:00.000Z"), { userId: refereeId, control });
+      result = await submitScoringCommand(refereeId, MATCH_CODE, command(control, result.version, "INVALIDATE_SPECIAL_OUTCOME", {
+        reason: "现场核实后作废误记",
+      }), control.controlToken);
+      if (result.status !== "accepted") throw new Error("作废不应命中幂等分支。");
+      await expect(matchRow()).resolves.toMatchObject({ startedAt: null, endedAt: null, lifecycleStatus: "READY" });
+    });
   });
 });

@@ -13,7 +13,11 @@ import type { MatchState } from "../../src/domain/rules/match-engine";
  * 以保证两组截图的视口、比赛状态和数据完全一致。
  * 浏览器设备模拟不等于真机测试。
  */
-const SHOT_DIR = process.env.REFEREE_SHOT_DIR ?? "after";
+/**
+ * 默认写入未提交的 local-run/，跑测试不会覆盖任何已记账的截图证据。
+ * 要生成新一轮证据时显式指定目录，例如 REFEREE_SHOT_DIR=v4-after。
+ */
+const SHOT_DIR = process.env.REFEREE_SHOT_DIR ?? "local-run";
 const OUT_ROOT = path.join(process.cwd(), "artifacts", "referee-court-v2", SHOT_DIR);
 
 const VIEWPORTS = [
@@ -41,6 +45,32 @@ async function login(page: Page, email: string, password: string) {
   await page.getByLabel("密码").fill(password);
   await page.getByRole("button", { name: "登录" }).click();
   await expect(page).toHaveURL("/");
+}
+
+/**
+ * RV3-002：抛币改为分步表单后，页面上不再有写死的“A 方胜并选先发”按钮。
+ * 这个辅助函数按胜方/类别/具体选择驱动真实表单，默认组合与旧按钮等价（A 胜选先发、B 选 END_2）。
+ */
+async function recordCoinToss(page: Page, options?: {
+  winner?: "A" | "B";
+  category?: "SERVICE" | "END";
+  service?: "SERVE" | "RECEIVE";
+  end?: "END_1" | "END_2";
+}) {
+  const winner = options?.winner ?? "A";
+  const category = options?.category ?? "SERVICE";
+  const service = options?.service ?? "SERVE";
+  const end = options?.end ?? "END_2";
+  await page.locator(`input[name="coin-toss-winner"][value="${winner}"]`).check();
+  await page.locator(`input[name="coin-toss-category"][value="${category}"]`).check();
+  if (category === "SERVICE") {
+    await page.locator(`input[name="coin-toss-service"][value="${service}"]`).check();
+    await page.locator(`input[name="coin-toss-end"][value="${end}"]`).check();
+  } else {
+    await page.locator(`input[name="coin-toss-end"][value="${end}"]`).check();
+    await page.locator(`input[name="coin-toss-service"][value="${service}"]`).check();
+  }
+  await page.getByRole("button", { name: "确认并记录抛币" }).click();
 }
 
 async function resetMatches() {
@@ -245,7 +275,7 @@ test.describe.serial(`裁判工作台改造截图证据（${SHOT_DIR}）`, () =>
     const matchCode = "MD-DEMO-002";
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     await openWorkbenchWithControl(page, matchCode);
-    await page.getByRole("button", { name: "A 方胜并选先发" }).click();
+    await recordCoinToss(page);
     await expect(page.getByRole("button", { name: "确认首局设置并开赛" })).toBeVisible();
     await shoot(page, "doubles-draft-setup", ["phone-390x844", "desktop-1440x1000"]);
   });

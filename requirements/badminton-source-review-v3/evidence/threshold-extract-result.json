@@ -1,0 +1,90 @@
+{
+  "baseline": "84a159218b300de333e101da5af6ea8d51d3bacb",
+  "scope": "extracted source branch reproduction only; not repository suite or live application",
+  "runtime": "v22.16.0",
+  "cases": [
+    {
+      "name": "single-game-21: 11:0 acknowledged -> 11:1",
+      "reproducedDuplicateThreshold": true,
+      "scoreAfterNextRally": {
+        "A": 11,
+        "B": 1
+      },
+      "recreatedObligations": [
+        "INTERVAL",
+        "CHANGE_ENDS"
+      ],
+      "afterFirstAcknowledgmentEnds": {
+        "A": "END_2",
+        "B": "END_1"
+      },
+      "afterSecondAcknowledgmentEnds": {
+        "A": "END_1",
+        "B": "END_2"
+      },
+      "duplicateAcknowledgmentSwapsBack": true
+    },
+    {
+      "name": "best-of-3-21, first game: 11:0 acknowledged -> 11:1",
+      "reproducedDuplicateThreshold": true,
+      "scoreAfterNextRally": {
+        "A": 11,
+        "B": 1
+      },
+      "recreatedObligations": [
+        "INTERVAL"
+      ],
+      "afterFirstAcknowledgmentEnds": {
+        "A": "END_1",
+        "B": "END_2"
+      },
+      "afterSecondAcknowledgmentEnds": {
+        "A": "END_1",
+        "B": "END_2"
+      },
+      "duplicateAcknowledgmentSwapsBack": false
+    },
+    {
+      "name": "best-of-3-21, deciding game: 11:0 acknowledged -> 11:1",
+      "reproducedDuplicateThreshold": true,
+      "scoreAfterNextRally": {
+        "A": 11,
+        "B": 1
+      },
+      "recreatedObligations": [
+        "INTERVAL",
+        "CHANGE_ENDS"
+      ],
+      "afterFirstAcknowledgmentEnds": {
+        "A": "END_2",
+        "B": "END_1"
+      },
+      "afterSecondAcknowledgmentEnds": {
+        "A": "END_1",
+        "B": "END_2"
+      },
+      "duplicateAcknowledgmentSwapsBack": true
+    },
+    {
+      "name": "best-of-3-15, deciding game: 8:0 acknowledged -> 8:1",
+      "reproducedDuplicateThreshold": true,
+      "scoreAfterNextRally": {
+        "A": 8,
+        "B": 1
+      },
+      "recreatedObligations": [
+        "INTERVAL",
+        "CHANGE_ENDS"
+      ],
+      "afterFirstAcknowledgmentEnds": {
+        "A": "END_2",
+        "B": "END_1"
+      },
+      "afterSecondAcknowledgmentEnds": {
+        "A": "END_1",
+        "B": "END_2"
+      },
+      "duplicateAcknowledgmentSwapsBack": true
+    }
+  ]
+}

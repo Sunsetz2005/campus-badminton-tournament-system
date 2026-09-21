@@ -101,6 +101,28 @@ async function requireController(
   return { session, match };
 }
 
+/**
+ * 「比赛实际结束」是一个相位事实，与提交、复核时刻无关。
+ * 提交（SUBMITTED）和确认（CONFIRMED）都发生在比赛结束之后，不改变结束时刻。
+ */
+const ENDED_PHASES = new Set<MatchState["phase"]>([
+  "MATCH_COMPLETE_PENDING_SUBMISSION",
+  "SPECIAL_OUTCOME_PENDING_SUBMISSION",
+  "SUBMITTED",
+  "CONFIRMED",
+]);
+
+/**
+ * 只有跨越「未结束 → 已结束」时写入实际结束时刻；
+ * 保持已结束时保留原值；受控重开回到未结束相位时清除，不留下假时刻。
+ */
+function endedAtProjection(before: MatchState, after: MatchState, now: Date) {
+  const wasEnded = ENDED_PHASES.has(before.phase);
+  const isEnded = ENDED_PHASES.has(after.phase);
+  if (isEnded) return wasEnded ? undefined : now;
+  return wasEnded ? null : undefined;
+}
+
 function lifecycleProjection(state: MatchState) {
   if (state.phase === "PAUSED") return "SUSPENDED" as const;
   if (state.phase === "MATCH_COMPLETE_PENDING_SUBMISSION" || state.phase === "SPECIAL_OUTCOME_PENDING_SUBMISSION") {
@@ -129,7 +151,7 @@ async function updateProjections(
       outcomeType,
       verificationStatus: after.phase === "CONFIRMED" ? "LOCKED" : after.phase === "SUBMITTED" ? "PENDING_REVIEW" : "UNVERIFIED",
       startedAt: before.phase === "AWAITING_OPENING_SETUP" && after.phase === "IN_PROGRESS" ? now : undefined,
-      endedAt: lifecycleStatus === "ENDED_PENDING_SUBMISSION" || lifecycleStatus === "SUBMITTED" ? now : null,
+      endedAt: endedAtProjection(before, after, now),
     },
   });
   const completed = new Map(after.completedGames.map((game) => [game.number, game]));
@@ -312,7 +334,12 @@ export async function submitScoringCommand(
     });
     await transaction.matchSnapshot.update({
       where: { matchId: access.id },
-      data: { version: result.aggregate.state.version, state: asInputJson(result.aggregate.state), stateHash },
+      data: {
+        version: result.aggregate.state.version,
+        state: asInputJson(result.aggregate.state),
+        stateHash,
+        engineVersion: MATCH_ENGINE_VERSION,
+      },
     });
     await updateProjections(transaction, access.id, aggregate.state, result.aggregate.state, now);
     await updateResultRevision(transaction, access.id, actorUserId, session.actingRole, command, result.aggregate.state, now);

@@ -1,0 +1,14 @@
+× tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 单局 21：11:0 处理间歇与换边后，对方得分到 11:1 不再生成同一义务 9ms
+× tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 三局 21 第一局：11:0 处理间歇后到 11:1 不再间歇，也不产生决胜局换边 1ms
+× tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 三局 21 决胜局：11:0 处理两项待办后到 11:1 不再重复，也不再换回场地端 2ms
+× tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 3×15 决胜局：阈值来自冻结配置的 8 分，8:0 处理后到 8:1 不再重复 3ms
+× tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 领先方先过阈值后继续得分，另一方稍后到达阈值也不产生第二次局中义务 2ms
+× tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > B 方先到阈值的对称用例同样只触发一次 1ms
+× tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 间歇阈值与换边阈值不同时分别首次触发、确认、消费，不互相抑制 1ms
+✓ tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 换局后新一局重新计算阈值：第二局 11:0 仍应触发间歇 1ms
+✓ tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 阈值一分误点、尚未实际换边便撤销：恢复原比分与必要待办，不增加虚假确认 1ms
+✓ tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 阈值后已实际换边再撤销触发得分：保留物理事实并进入显式核对 1ms
+× tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 比分更正到阈值之后：已处理过的阈值不得因更正被重新生成 1ms
+✓ tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 比分更正回到阈值之前：阈值事实随之撤回，再次到达时重新触发 1ms
+× tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 比分更正直接跳到阈值点：本局尚未触发时必须带上对应义务 1ms
+× tests/domain/threshold-obligations.test.ts > R3-001 阈值义务在一局内只触发一次 > 完整历史重放得到同一权威状态 1ms

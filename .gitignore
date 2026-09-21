@@ -29,3 +29,7 @@ test-results/
 
 # Operating-system metadata
 .DS_Store
+
+# 测试运行时生成的临时截图目录（已记账的证据目录必须显式指定才写入）
+artifacts/referee-court-v2/local-run/
+artifacts/phase3-browser-simulated-local-run/

@@ -68,6 +68,12 @@ export interface MatchState {
   logicalCourts: LogicalCourts | null;
   physicalEnds: PhysicalEnds | null;
   pendingObligations: PendingObligation[];
+  /**
+   * 本局已经生成过的阈值义务 ID（间歇 / 决胜局换边）。
+   * 阈值在一局内只能按规则触发一次，删除待办不等于该阈值可以重新发生。
+   * 引擎 v1 的历史事件没有这个字段，读取时由 normalizeMatchState 依据比分重建。
+   */
+  thresholdObligationsIssued: string[];
   nextGameServingSide: Side | null;
   pausedFromPhase: MatchPhase | null;
   submittedFromPhase: MatchPhase | null;
@@ -302,14 +308,80 @@ function swapLogicalCourts(state: MatchState, side: Side) {
   state.logicalCourts![side] = { R: current.L, L: current.R };
 }
 
+interface ThresholdObligationSpec {
+  id: string;
+  type: "INTERVAL" | "CHANGE_ENDS";
+  threshold: number;
+}
+
+/** 本局适用的局中阈值义务；阈值一律来自本场冻结规则快照，不写死 11 或 8。 */
+function thresholdObligationSpecs(state: MatchState): ThresholdObligationSpec[] {
+  const specs: ThresholdObligationSpec[] = [
+    {
+      id: `interval:game:${state.currentGame}:threshold`,
+      type: "INTERVAL",
+      threshold: state.ruleConfig.intervalAt,
+    },
+  ];
+  const decidingGame = state.ruleConfig.bestOf === 1 || state.currentGame === state.ruleConfig.bestOf;
+  if (decidingGame) {
+    specs.push({
+      id: `change-ends:game:${state.currentGame}:threshold`,
+      type: "CHANGE_ENDS",
+      threshold: state.ruleConfig.decidingGameChangeEndsAt,
+    });
+  }
+  return specs;
+}
+
+/**
+ * 局内比分只增不减，因此「本局是否已越过某阈值」可由当前比分确定重建：
+ * 任一方达到或超过阈值即表示该阈值在本局已经发生过。
+ * 这是引擎 v1 历史状态升级到 v2 的唯一推导规则，不依赖任何被删除的证据。
+ */
+function derivedIssuedThresholds(state: MatchState) {
+  const highest = Math.max(state.score.A, state.score.B);
+  return thresholdObligationSpecs(state)
+    .filter((spec) => highest >= spec.threshold)
+    .map((spec) => spec.id);
+}
+
+/** 把引擎 v1 形状的历史状态补齐为 v2 形状；已是 v2 的状态原样返回。 */
+export function normalizeMatchState(state: MatchState): MatchState {
+  if (Array.isArray(state.thresholdObligationsIssued)) return state;
+  const upgraded = clone(state);
+  upgraded.thresholdObligationsIssued = derivedIssuedThresholds(upgraded);
+  return upgraded;
+}
+
+/** 把 v2 状态降级回 v1 形状，仅用于与历史事件/快照哈希比对，不用于写入。 */
+export function downgradeMatchStateToEngineV1(state: MatchState) {
+  const legacy = clone(state) as Partial<MatchState>;
+  delete legacy.thresholdObligationsIssued;
+  return legacy as MatchState;
+}
+
+function isEngineV1Snapshot(state: MatchState | undefined) {
+  return Boolean(state) && !Array.isArray(state!.thresholdObligationsIssued);
+}
+
 function addObligation(state: MatchState, obligation: PendingObligation) {
   if (!state.pendingObligations.some((item) => item.id === obligation.id)) state.pendingObligations.push(obligation);
 }
 
+function settledPhaseAfterObligations(phase: MatchPhase): MatchPhase {
+  if (phase === "OBLIGATIONS_PENDING") return "IN_PROGRESS";
+  if (phase === "GAME_COMPLETE") return "AWAITING_NEXT_GAME_SETUP";
+  return phase;
+}
+
+/**
+ * 只结算当前相位。暂停期间处理待办不改写 pausedFromPhase，
+ * 历史事件的 stateAfter 因此与旧引擎逐字一致；恢复相位由 RESUME_MATCH 结算（见 RV3-003）。
+ */
 function finishObligationPhase(state: MatchState) {
   if (state.pendingObligations.length > 0) return;
-  if (state.phase === "OBLIGATIONS_PENDING") state.phase = "IN_PROGRESS";
-  if (state.phase === "GAME_COMPLETE") state.phase = "AWAITING_NEXT_GAME_SETUP";
+  state.phase = settledPhaseAfterObligations(state.phase);
 }
 
 function removeObligation(state: MatchState, obligationId: string, type: PendingObligation["type"]) {
@@ -418,6 +490,7 @@ function confirmSetup(
   state.score = { A: 0, B: 0 };
   setServiceOrder(state, servingSide, payload.serverPlayerId, payload.receiverPlayerId);
   state.pendingObligations = [];
+  state.thresholdObligationsIssued = [];
   state.phase = "IN_PROGRESS";
 }
 
@@ -461,27 +534,79 @@ function applyRally(state: MatchState, winner: Side) {
     return;
   }
 
-  const thresholdReached = scoreA === state.ruleConfig.intervalAt || scoreB === state.ruleConfig.intervalAt;
-  if (thresholdReached) {
+  // 阈值只在本局首次跨越时生成义务：确认后删除待办不会让同一阈值再次发生。
+  for (const spec of thresholdObligationSpecs(state)) {
+    if (state.thresholdObligationsIssued.includes(spec.id)) continue;
+    if (scoreA !== spec.threshold && scoreB !== spec.threshold) continue;
     addObligation(state, {
-      id: `interval:game:${state.currentGame}:threshold`,
-      type: "INTERVAL",
+      id: spec.id,
+      type: spec.type,
       gameNumber: state.currentGame,
       triggerScore: clone(state.score),
     });
-  }
-  const decidingGame = state.ruleConfig.bestOf === 1 || state.currentGame === state.ruleConfig.bestOf;
-  const changeEndsReached =
-    scoreA === state.ruleConfig.decidingGameChangeEndsAt || scoreB === state.ruleConfig.decidingGameChangeEndsAt;
-  if (decidingGame && changeEndsReached) {
-    addObligation(state, {
-      id: `change-ends:game:${state.currentGame}:threshold`,
-      type: "CHANGE_ENDS",
-      gameNumber: state.currentGame,
-      triggerScore: clone(state.score),
-    });
+    state.thresholdObligationsIssued = [...state.thresholdObligationsIssued, spec.id];
   }
   if (state.pendingObligations.length > 0) state.phase = "OBLIGATIONS_PENDING";
+}
+
+/**
+ * RV3-001 / RV3-006：更正后的待办与阈值事实只有这一份推导。
+ * applyReplacement（服务端校验）与 deriveScoreCorrectionReplacement（界面收集意图）共用它，
+ * 浏览器因此不会出现第二套竞赛推导算法。
+ */
+function deriveCorrectedObligations(state: MatchState, score: { A: number; B: number }) {
+  const obligations: PendingObligation[] = state.pendingObligations
+    .filter((item) => item.type === "PHYSICAL_ENDS_REVIEW")
+    .map(clone);
+  const triggerScore = clone(score);
+  const correctedHighest = Math.max(score.A, score.B);
+  const specs = thresholdObligationSpecs(state);
+  for (const spec of specs) {
+    // 更正后仍未越过阈值的，本局阈值事实随之撤回；已越过的保持已发生，不因更正重新生成。
+    if (state.thresholdObligationsIssued.includes(spec.id) && correctedHighest >= spec.threshold) continue;
+    const atFirstCrossing =
+      (score.A === spec.threshold && score.B < spec.threshold) ||
+      (score.B === spec.threshold && score.A < spec.threshold);
+    if (!atFirstCrossing) continue;
+    obligations.push({ id: spec.id, type: spec.type, gameNumber: state.currentGame, triggerScore });
+  }
+  const issuedThresholds = specs
+    .filter((spec) => correctedHighest >= spec.threshold)
+    .map((spec) => spec.id);
+  return { obligations, issuedThresholds };
+}
+
+export interface ScoreCorrectionIntent {
+  score: { A: number; B: number };
+  servingSide: Side;
+  serverPlayerId: string;
+  receiverPlayerId: string;
+  logicalCourts?: LogicalCourts | null;
+}
+
+/**
+ * 由裁判的更正意图（目标比分 + 发球权）补全成完整替换状态。
+ * 已完成局、胜局数、待办与阶段一律从权威状态和冻结规则推导，界面不得自行填写。
+ * 服务端仍会用 applyReplacement 独立校验，这里的输出不构成授权。
+ */
+export function deriveScoreCorrectionReplacement(
+  state: MatchState,
+  intent: ScoreCorrectionIntent,
+): ScoreStateReplacement {
+  const { obligations } = deriveCorrectedObligations(state, intent.score);
+  return {
+    score: clone(intent.score),
+    gamesWon: clone(state.gamesWon),
+    completedGames: clone(state.completedGames),
+    servingSide: intent.servingSide,
+    serverPlayerId: intent.serverPlayerId,
+    receiverPlayerId: intent.receiverPlayerId,
+    logicalCourts: (intent.logicalCourts === undefined ? state.logicalCourts : intent.logicalCourts)
+      ? clone((intent.logicalCourts === undefined ? state.logicalCourts : intent.logicalCourts)!)
+      : null,
+    pendingObligations: obligations,
+    phase: obligations.length > 0 ? "OBLIGATIONS_PENDING" : "IN_PROGRESS",
+  };
 }
 
 function applyReplacement(state: MatchState, replacement: ScoreStateReplacement) {
@@ -525,31 +650,8 @@ function applyReplacement(state: MatchState, replacement: ScoreStateReplacement)
     throw new RuleViolation("corrected_match_already_won", "已达到全场胜局数的比赛不能标记为进行中。");
   }
 
-  const expectedObligations: PendingObligation[] = state.pendingObligations
-    .filter((item) => item.type === "PHYSICAL_ENDS_REVIEW")
-    .map(clone);
-  const triggerScore = clone(replacement.score);
-  if (replacement.score.A === state.ruleConfig.intervalAt || replacement.score.B === state.ruleConfig.intervalAt) {
-    expectedObligations.push({
-      id: `interval:game:${state.currentGame}:threshold`,
-      type: "INTERVAL",
-      gameNumber: state.currentGame,
-      triggerScore,
-    });
-  }
-  const decidingGame = state.ruleConfig.bestOf === 1 || state.currentGame === state.ruleConfig.bestOf;
-  if (
-    decidingGame &&
-    (replacement.score.A === state.ruleConfig.decidingGameChangeEndsAt ||
-      replacement.score.B === state.ruleConfig.decidingGameChangeEndsAt)
-  ) {
-    expectedObligations.push({
-      id: `change-ends:game:${state.currentGame}:threshold`,
-      type: "CHANGE_ENDS",
-      gameNumber: state.currentGame,
-      triggerScore,
-    });
-  }
+  const { obligations: expectedObligations, issuedThresholds: correctedIssuedThresholds } =
+    deriveCorrectedObligations(state, replacement.score);
   const sortedObligations = (items: PendingObligation[]) => [...items].sort((left, right) => left.id.localeCompare(right.id));
   const expectedPhase = expectedObligations.length > 0 ? "OBLIGATIONS_PENDING" : "IN_PROGRESS";
   if (
@@ -565,6 +667,7 @@ function applyReplacement(state: MatchState, replacement: ScoreStateReplacement)
   state.completedGames = clone(replacement.completedGames);
   state.logicalCourts = replacement.logicalCourts ? clone(replacement.logicalCourts) : null;
   state.pendingObligations = clone(replacement.pendingObligations);
+  state.thresholdObligationsIssued = correctedIssuedThresholds;
   state.phase = replacement.phase;
   setServiceOrder(state, replacement.servingSide, replacement.serverPlayerId, replacement.receiverPlayerId);
 }
@@ -748,7 +851,15 @@ function nextStateForCommand(state: MatchState, command: MatchCommand) {
       if (next.phase !== "PAUSED" || !next.pausedFromPhase) {
         throw new RuleViolation("resume_not_allowed", "比赛当前未暂停。");
       }
-      next.phase = next.pausedFromPhase;
+      /**
+       * RV3-003：暂停期间允许核对并处理现场事项，恢复时必须按“当前还有没有待办”
+       * 结算目标相位，否则会恢复成待办为空的 OBLIGATIONS_PENDING，RALLY_WON 被拒、比赛卡死。
+       * 待办未清空时仍按原样回填，恢复后继续处理剩余事项。
+       * 兼容性：待办本来就为空的正常恢复结算前后结果相同，历史事件重放不受影响。
+       */
+      next.phase = next.pendingObligations.length === 0
+        ? settledPhaseAfterObligations(next.pausedFromPhase)
+        : next.pausedFromPhase;
       next.pausedFromPhase = null;
       return next;
     case "RECORD_SPECIAL_OUTCOME":
@@ -944,6 +1055,7 @@ export function createMatchAggregate(input: CreateMatchInput): MatchAggregate {
     logicalCourts: null,
     physicalEnds: null,
     pendingObligations: [],
+    thresholdObligationsIssued: [],
     nextGameServingSide: null,
     pausedFromPhase: null,
     submittedFromPhase: null,
@@ -980,10 +1092,29 @@ export function applyCommand(aggregate: MatchAggregate, command: MatchCommand): 
   }
 }
 
+/**
+ * 与历史事件比对前，把重放结果对齐到该事件记录使用的引擎形状。
+ * 引擎 v1 的事件快照没有 thresholdObligationsIssued，比对时只能按 v1 形状核对，
+ * 但聚合本身继续携带 v2 字段，历史事件不被改写、也不被删除。
+ */
+function alignEventToRecordedShape(recomputed: MatchEvent, recorded: MatchEvent): MatchEvent {
+  if (!isEngineV1Snapshot(recorded.stateAfter) && !isEngineV1Snapshot(recorded.stateBefore)) return recomputed;
+  return {
+    ...recomputed,
+    stateBefore: isEngineV1Snapshot(recorded.stateBefore)
+      ? downgradeMatchStateToEngineV1(recomputed.stateBefore)
+      : recomputed.stateBefore,
+    stateAfter: isEngineV1Snapshot(recorded.stateAfter)
+      ? downgradeMatchStateToEngineV1(recomputed.stateAfter)
+      : recomputed.stateAfter,
+  };
+}
+
 export function replayMatch(initialState: MatchState, events: MatchEvent[]) {
+  const normalizedInitial = normalizeMatchState(initialState);
   let aggregate: MatchAggregate = {
-    initialState: clone(initialState),
-    state: clone(initialState),
+    initialState: clone(normalizedInitial),
+    state: clone(normalizedInitial),
     events: [],
   };
   for (const event of events) {
@@ -1000,7 +1131,7 @@ export function replayMatch(initialState: MatchState, events: MatchEvent[]) {
     if (result.status !== "accepted" || result.events.length !== 1) {
       throw new RuleViolation("invalid_replay_event", "事件命令无法从当前状态重新应用。");
     }
-    if (!sameValue(result.events[0], event)) {
+    if (!sameValue(alignEventToRecordedShape(result.events[0], event), event)) {
       throw new RuleViolation("replay_snapshot_mismatch", "事件快照与命令重放结果不一致。");
     }
     aggregate = result.aggregate;

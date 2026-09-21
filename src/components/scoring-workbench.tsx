@@ -5,8 +5,22 @@ import { createPortal } from "react-dom";
 
 import { ActionButton } from "@/components/ui/action-button";
 import { ResourceState } from "@/components/ui/resource-state";
-import type { MatchCommand, MatchState, Side } from "@/domain/rules/match-engine";
+import { deriveScoreCorrectionReplacement } from "@/domain/rules/match-engine";
+import type { MatchCommand, MatchState, PhysicalEnd, Side } from "@/domain/rules/match-engine";
 import { CourtConsole } from "@/components/court-console";
+import { decideSnapshotAdoption } from "@/ui/authoritative-snapshot";
+import { classifyCommandResponse, classifyRequestFailure, type CommandOutcome } from "@/ui/command-outcome";
+import {
+  clearPendingCommand,
+  readPendingCommand,
+  writePendingCommand,
+  type StorageLike,
+} from "@/ui/pending-command-store";
+import {
+  createCommandId,
+  detectCommandIdCapability,
+  type CommandIdCapability,
+} from "@/ui/secure-command-id";
 
 type SessionControl = {
   sessionId: string;
@@ -97,13 +111,60 @@ const specialOutcomeLabels: Record<NonNullable<MatchState["specialOutcome"]>["ty
   BYE: "轮空（BYE）",
 };
 
+/** 本机存储随时可能被禁用或抛错；所有读写都要能安全降级。 */
+function safeStorage(kind: "local" | "session"): StorageLike | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return kind === "local" ? window.localStorage : window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readStoredValue(storage: StorageLike | null, key: string) {
+  if (!storage) return null;
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredValue(storage: StorageLike | null, key: string, value: string) {
+  if (!storage) return false;
+  try {
+    storage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeStoredValue(storage: StorageLike | null, key: string) {
+  if (!storage) return;
+  try {
+    storage.removeItem(key);
+  } catch {
+    // 清除失败不影响权威状态，界面仍以服务器为准。
+  }
+}
+
+function currentCrypto() {
+  return typeof globalThis === "undefined" ? undefined : (globalThis.crypto as Parameters<typeof detectCommandIdCapability>[0]);
+}
+
+function currentSecureContext() {
+  return typeof window !== "undefined" && window.isSecureContext === true;
+}
+
+/** R3-005：设备 ID 也必须来自安全随机源；缺少能力时抛出可读原因而不是原始异常。 */
 function deviceId(matchCode: string) {
   const key = `badminton-device:${matchCode}`;
-  let value = sessionStorage.getItem(key);
-  if (!value) {
-    value = crypto.randomUUID();
-    sessionStorage.setItem(key, value);
-  }
+  const storage = safeStorage("session");
+  const existing = readStoredValue(storage, key);
+  if (existing) return existing;
+  const value = createCommandId(currentCrypto(), currentSecureContext());
+  writeStoredValue(storage, key, value);
   return value;
 }
 
@@ -112,6 +173,8 @@ class ApiRequestError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** 是否为服务器给出的、可核对的明确业务拒绝（4xx + 结构化错误码）。 */
+    public readonly definite: boolean = false,
   ) {
     super(message);
   }
@@ -120,10 +183,12 @@ class ApiRequestError extends Error {
 async function responseJson(response: Response) {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
+    const code = typeof body?.error?.code === "string" ? body.error.code : null;
     throw new ApiRequestError(
       response.status,
-      body?.error?.code ?? "request_failed",
+      code ?? "request_failed",
       body?.error?.message ?? "服务器请求失败。",
+      Boolean(code) && response.status >= 400 && response.status < 500,
     );
   }
   return body;
@@ -136,13 +201,22 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   const storageKey = `badminton-control:${matchCode}`;
   const pendingKey = `badminton-pending:${matchCode}`;
   const [control, setControl] = useState<SessionControl | null>(() => {
-    if (typeof window === "undefined") return null;
-    const saved = sessionStorage.getItem(storageKey);
-    return saved ? JSON.parse(saved) as SessionControl : null;
+    const saved = readStoredValue(safeStorage("session"), storageKey);
+    if (!saved) return null;
+    try {
+      return JSON.parse(saved) as SessionControl;
+    } catch {
+      // 控制令牌记录损坏时按无控制处理：只读不会造成误写，重新取得控制权即可恢复。
+      return null;
+    }
   });
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
   const [syncState, setSyncState] = useState<"SYNCED" | "SUBMITTING" | "UNKNOWN" | "CONFLICT" | "READ_ONLY">("READ_ONLY");
-  const [pendingResolution, setPendingResolution] = useState<"QUERYING" | "NOT_FOUND" | null>(null);
+  const [pendingResolution, setPendingResolution] = useState<"QUERYING" | "NOT_FOUND" | "UNREADABLE" | null>(null);
+  // R3-005：进入可写界面前先检测安全随机源，而不是等裁判按加分时抛原始异常。
+  const [commandIdCapability] = useState<CommandIdCapability>(() =>
+    detectCommandIdCapability(currentCrypto(), currentSecureContext()),
+  );
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"error" | "status">("error");
   const [actionRequestState, setActionRequestState] = useState<ActionRequestState>("IDLE");
@@ -161,10 +235,9 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   const [setupServerId, setSetupServerId] = useState("");
   const [setupReceiverId, setSetupReceiverId] = useState("");
   const [setupSelectionScope, setSetupSelectionScope] = useState("");
-  const [flipped, setFlipped] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return sessionStorage.getItem(`badminton-view-flipped:${matchCode}`) === "true";
-  });
+  const [flipped, setFlipped] = useState(() =>
+    readStoredValue(safeStorage("session"), `badminton-view-flipped:${matchCode}`) === "true",
+  );
   const sheetCloseRef = useRef<HTMLButtonElement>(null);
   const sheetRef = useRef<HTMLElement>(null);
   const sheetCloseTimerRef = useRef<number | null>(null);
@@ -194,58 +267,108 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     sheetCloseTimerRef.current = window.setTimeout(finish, 180);
   }, []);
 
+  /**
+   * R3-002：写入界面快照的唯一入口。只有版本不低于本机已知最新版本的合法快照才被采用；
+   * 历史回执可以核销待确认命令，但不得让界面倒退，也不得把过期数据标成新鲜。
+   */
+  const applyAuthoritativeSnapshot = useCallback((body: unknown) => {
+    const decision = decideSnapshotAdoption(latestVersionRef.current, body);
+    if (decision.kind !== "APPLY") return decision.kind;
+    const payload = decision.payload as { version: number; state: MatchState; events?: SnapshotResponse["events"] };
+    latestVersionRef.current = Math.max(latestVersionRef.current, payload.version);
+    setSnapshot((current) => current ? {
+      ...current,
+      version: payload.version,
+      state: payload.state,
+      events: payload.events
+        ? [
+            ...(current.events ?? []).filter(
+              (event) => !payload.events!.some((applied) => applied.commandId === event.commandId),
+            ),
+            ...payload.events,
+          ]
+        : current.events,
+    } : current);
+    setDataFreshness("FRESH");
+    return "APPLY" as const;
+  }, []);
+
   const reconcilePendingCommand = useCallback(async () => {
-    const raw = localStorage.getItem(pendingKey);
-    if (!raw) {
+    const pendingRead = readPendingCommand(safeStorage("local"), pendingKey);
+    if (pendingRead.kind === "NONE") {
       setPendingResolution(null);
       return "none" as const;
     }
-    const envelope = JSON.parse(raw) as Envelope;
+    if (pendingRead.kind === "UNREADABLE") {
+      // R3-003：不能把不能解析的待确认命令直接清空并显示同步成功。
+      setSyncState("UNKNOWN");
+      setPendingResolution("UNREADABLE");
+      setMessageTone("error");
+      setMessage(pendingRead.message);
+      return "unreadable" as const;
+    }
+    const envelope = pendingRead.envelope;
     setSyncState("UNKNOWN");
     setPendingResolution("QUERYING");
+    let response: Response;
+    let body: unknown;
     try {
-      const response = await fetch(
+      response = await fetch(
         `/api/matches/${encodeURIComponent(matchCode)}/commands/${envelope.commandId}`,
         { cache: "no-store" },
       );
-      if (response.status === 404) {
-        setPendingResolution("NOT_FOUND");
-        setMessageTone("error");
-        setMessage("服务器暂未找到这条待确认命令。只能查询或以原 commandId 重试，不能开始新操作。");
-        return "not_found" as const;
-      }
-      const body = await responseJson(response);
-      localStorage.removeItem(pendingKey);
-      latestVersionRef.current = Math.max(latestVersionRef.current, body.version);
-      setSnapshot((current) => current ? {
-        ...current,
-        version: body.version,
-        state: body.state,
-        events: body.events
-          ? [
-              ...(current.events ?? []).filter(
-                (event) => !body.events.some((recovered: { commandId: string }) => recovered.commandId === event.commandId),
-              ),
-              ...body.events,
-            ]
-          : current.events,
-      } : current);
-      setPendingResolution(null);
-      setSyncState("SYNCED");
-      setOnline(true);
-      setDataFreshness("FRESH");
-      setMessageTone("status");
-      setMessage("已按原 commandId 找回服务器结果。");
-      return "found" as const;
+      body = await response.json().catch(() => null);
     } catch (error) {
+      const failure = classifyRequestFailure(error);
       setPendingResolution(null);
       setSyncState("UNKNOWN");
-      if (!(error instanceof ApiRequestError)) setOnline(false);
+      setOnline(false);
       setMessageTone("error");
-      setMessage(error instanceof Error ? error.message : "待确认命令仍无法对账。");
+      setMessage(failure.message);
       return "unavailable" as const;
     }
-  }, [matchCode, pendingKey]);
+    if (response.status === 404) {
+      setPendingResolution("NOT_FOUND");
+      setMessageTone("error");
+      setMessage("服务器暂未找到这条待确认命令。只能查询或以原 commandId 重试，不能开始新操作。");
+      return "not_found" as const;
+    }
+    const outcome = classifyCommandResponse({
+      ok: response.ok,
+      status: response.status,
+      body,
+      commandId: envelope.commandId,
+    });
+    setOnline(true);
+    if (outcome.kind !== "ACCEPTED") {
+      // 结果仍未知或是无法核对的响应：保留原命令，不解除锁定。
+      setPendingResolution(null);
+      setSyncState("UNKNOWN");
+      setMessageTone("error");
+      setMessage(outcome.kind === "DEFINITE_REJECTION"
+        ? `服务器明确拒绝了这条命令（${outcome.code}）：${outcome.message}`
+        : outcome.message);
+      if (outcome.kind === "DEFINITE_REJECTION") {
+        clearPendingCommand(safeStorage("local"), pendingKey);
+        setSyncState(control ? "CONFLICT" : "READ_ONLY");
+      }
+      return outcome.kind === "DEFINITE_REJECTION" ? "rejected" as const : "unavailable" as const;
+    }
+    // 命令已核销：先清除待确认记录，再按单调版本策略决定是否采用这份快照。
+    const cleared = clearPendingCommand(safeStorage("local"), pendingKey);
+    const adoption = applyAuthoritativeSnapshot(body);
+    setPendingResolution(null);
+    setSyncState(control ? "SYNCED" : "READ_ONLY");
+    setMessageTone("status");
+    setMessage(adoption === "APPLY"
+      ? "已按原 commandId 找回服务器结果。"
+      : `已按原 commandId 核销该命令（版本 ${outcome.version}）；界面继续显示更新的服务器权威状态。`);
+    if (!cleared.ok && cleared.message) {
+      setMessageTone("error");
+      setMessage(cleared.message);
+    }
+    return "found" as const;
+  }, [applyAuthoritativeSnapshot, control, matchCode, pendingKey]);
 
   const refresh = useCallback(async (force = false) => {
     const requestSequence = ++refreshSequenceRef.current;
@@ -253,7 +376,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     try {
       const next = await responseJson(await fetch(`/api/matches/${encodeURIComponent(matchCode)}/state${after}`, { cache: "no-store" })) as SnapshotResponse;
       if (requestSequence !== refreshSequenceRef.current) return;
-      if (next.status === "snapshot" && next.version < latestVersionRef.current) {
+      if (next.version < latestVersionRef.current) {
         setDataFreshness("STALE");
         setMessageTone("status");
         setMessage("已忽略迟到的旧版本响应，继续显示较新的服务器权威状态。");
@@ -264,10 +387,10 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       setInitialLoadState({ kind: "ready" });
       setDataFreshness("FRESH");
       setOnline(true);
-      const hasPendingCommand = localStorage.getItem(pendingKey) !== null;
+      const pendingRead = readPendingCommand(safeStorage("local"), pendingKey);
       setSyncState((current) => current === "SUBMITTING"
         ? current
-        : hasPendingCommand
+        : pendingRead.kind !== "NONE"
           ? "UNKNOWN"
           : control
             ? "SYNCED"
@@ -358,10 +481,10 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         }));
         const renewed = { ...control, expiresAt: body.expiresAt };
         setControl(renewed);
-        sessionStorage.setItem(storageKey, JSON.stringify(renewed));
+        writeStoredValue(safeStorage("session"), storageKey, JSON.stringify(renewed));
       } catch (error) {
         setControl(null);
-        sessionStorage.removeItem(storageKey);
+        removeStoredValue(safeStorage("session"), storageKey);
         setSyncState("READ_ONLY");
         setMessageTone("error");
         setMessage(error instanceof Error ? error.message : "心跳失败，已切换只读。");
@@ -425,7 +548,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         body: JSON.stringify(body),
       })) as SessionControl;
       setControl(result);
-      sessionStorage.setItem(storageKey, JSON.stringify(result));
+      writeStoredValue(safeStorage("session"), storageKey, JSON.stringify(result));
       await refresh(true);
       setSyncState("SYNCED");
       setActionSheet(null);
@@ -445,7 +568,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   function makeEnvelope(type: MatchCommand["type"], payload: MatchCommand["payload"]): Envelope {
     if (!control || !state) throw new Error("当前没有有效控制会话。");
     return {
-      commandId: crypto.randomUUID(),
+      commandId: createCommandId(currentCrypto(), currentSecureContext()),
       occurredAt: new Date().toISOString(),
       expectedVersion: state.version,
       scoringSessionId: control.sessionId,
@@ -455,81 +578,108 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     };
   }
 
+  /** R3-003：只有可核对的明确业务拒绝才清除待确认命令；结果未知一律保留原 commandId。 */
+  function handleUnknownOutcome(outcome: Extract<CommandOutcome, { kind: "UNKNOWN" }>) {
+    setSyncState("UNKNOWN");
+    setMessageTone("error");
+    setMessage(`${outcome.message}正式状态保持最后一次服务器确认值。`);
+    if (outcome.reason === "NETWORK") setOnline(false);
+  }
+
   async function submitEnvelope(envelope: Envelope) {
     if (!control || !online || syncState === "SUBMITTING") return false;
-    const existingPending = localStorage.getItem(pendingKey);
-    if (existingPending) {
-      const pendingEnvelope = JSON.parse(existingPending) as Envelope;
-      if (pendingEnvelope.commandId !== envelope.commandId) {
-        setSyncState("UNKNOWN");
-        setMessageTone("error");
-        setMessage("仍有待确认命令；新操作已阻止。请先按原 commandId 对账。");
-        return false;
-      }
+    const localStore = safeStorage("local");
+    const pendingRead = readPendingCommand(localStore, pendingKey);
+    if (pendingRead.kind === "UNREADABLE") {
+      setSyncState("UNKNOWN");
+      setPendingResolution("UNREADABLE");
+      setMessageTone("error");
+      setMessage(pendingRead.message);
+      return false;
+    }
+    if (pendingRead.kind === "PENDING" && pendingRead.envelope.commandId !== envelope.commandId) {
+      setSyncState("UNKNOWN");
+      setMessageTone("error");
+      setMessage("仍有待确认命令；新操作已阻止。请先按原 commandId 对账。");
+      return false;
+    }
+    // 登记失败就不提交：宁可拒绝这次操作，也不要提交一条事后无法对账的命令。
+    const registered = writePendingCommand(localStore, pendingKey, envelope);
+    if (!registered.ok) {
+      setSyncState("READ_ONLY");
+      setMessageTone("error");
+      setMessage(registered.message ?? "无法登记待确认命令，已阻止本次提交。");
+      return false;
     }
     setSyncState("SUBMITTING");
     setPendingResolution(null);
     setMessage("");
-    localStorage.setItem(pendingKey, JSON.stringify(envelope));
     const abort = new AbortController();
     const timeout = window.setTimeout(() => abort.abort(), 5_000);
+    let response: Response;
+    let body: unknown;
     try {
-      const body = await responseJson(await fetch(`/api/matches/${encodeURIComponent(matchCode)}/commands`, {
+      response = await fetch(`/api/matches/${encodeURIComponent(matchCode)}/commands`, {
         method: "POST",
         signal: abort.signal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${control.controlToken}` },
         body: JSON.stringify(envelope),
-      }));
-      localStorage.removeItem(pendingKey);
-      latestVersionRef.current = Math.max(latestVersionRef.current, body.version);
-      setSnapshot((current) => current ? {
-        ...current,
-        version: body.version,
-        state: body.state,
-        events: [
-          ...(current.events ?? []).filter(
-            (event) => !body.events.some((accepted: { commandId: string }) => accepted.commandId === event.commandId),
-          ),
-          ...body.events,
-        ],
-      } : current);
-      setPendingResolution(null);
-      setSyncState("SYNCED");
-      setDataFreshness("FRESH");
-      return true;
+      });
+      body = await response.json().catch(() => null);
     } catch (error) {
-      if (error instanceof ApiRequestError) {
-        localStorage.removeItem(pendingKey);
-        setPendingResolution(null);
-        if (error.code === "not_controller" || error.status === 401 || error.status === 403) {
-          setControl(null);
-          sessionStorage.removeItem(storageKey);
-          setSyncState("READ_ONLY");
-        } else if (error.status === 409) {
-          setSyncState("CONFLICT");
-        } else {
-          setSyncState(control ? "SYNCED" : "READ_ONLY");
-        }
-        if (actionSheet) setSheetError(error.message);
-        else {
-          setMessageTone("error");
-          setMessage(error.message);
-        }
-        await refresh(true);
-        if (error.code === "not_controller" || error.status === 401 || error.status === 403) setSyncState("READ_ONLY");
-        else if (error.status === 409) setSyncState("CONFLICT");
-        return false;
-      }
-      setSyncState("UNKNOWN");
-      setMessageTone("error");
-      setMessage("命令结果未知。正式状态保持最后一次服务器确认值，正在按原 commandId 对账。");
+      window.clearTimeout(timeout);
+      handleUnknownOutcome(classifyRequestFailure(error));
       if (actionSheet) closeActionSheet();
       await refresh(true);
       await reconcilePendingCommand();
       return false;
-    } finally {
-      window.clearTimeout(timeout);
     }
+    window.clearTimeout(timeout);
+    const outcome = classifyCommandResponse({
+      ok: response.ok,
+      status: response.status,
+      body,
+      commandId: envelope.commandId,
+    });
+
+    if (outcome.kind === "UNKNOWN") {
+      // 5xx、无效 JSON、结构不符或 commandId 不符：保留原命令并按原 ID 对账。
+      handleUnknownOutcome(outcome);
+      if (actionSheet) closeActionSheet();
+      await refresh(true);
+      await reconcilePendingCommand();
+      return false;
+    }
+
+    if (outcome.kind === "DEFINITE_REJECTION") {
+      clearPendingCommand(localStore, pendingKey);
+      setPendingResolution(null);
+      const lostControl = outcome.code === "not_controller" || outcome.status === 401 || outcome.status === 403;
+      if (lostControl) {
+        setControl(null);
+        removeStoredValue(safeStorage("session"), storageKey);
+        setSyncState("READ_ONLY");
+      } else if (outcome.status === 409) {
+        setSyncState("CONFLICT");
+      } else {
+        setSyncState(control ? "SYNCED" : "READ_ONLY");
+      }
+      if (actionSheet) setSheetError(outcome.message);
+      else {
+        setMessageTone("error");
+        setMessage(outcome.message);
+      }
+      await refresh(true);
+      if (lostControl) setSyncState("READ_ONLY");
+      else if (outcome.status === 409) setSyncState("CONFLICT");
+      return false;
+    }
+
+    clearPendingCommand(localStore, pendingKey);
+    applyAuthoritativeSnapshot(body);
+    setPendingResolution(null);
+    setSyncState("SYNCED");
+    return true;
   }
 
   async function send(type: MatchCommand["type"], payload: MatchCommand["payload"]) {
@@ -537,14 +687,20 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   }
 
   async function retryPendingCommand() {
-    const raw = localStorage.getItem(pendingKey);
-    if (!raw) return reconcilePendingCommand();
+    const pendingRead = readPendingCommand(safeStorage("local"), pendingKey);
+    if (pendingRead.kind === "NONE") return reconcilePendingCommand();
+    if (pendingRead.kind === "UNREADABLE") {
+      setMessageTone("error");
+      setMessage(pendingRead.message);
+      return false;
+    }
     if (!control || !online) {
       setMessageTone("error");
       setMessage("当前离线或控制会话已失效，不能重试待确认命令。");
       return false;
     }
-    return submitEnvelope(JSON.parse(raw) as Envelope);
+    // 始终按原 commandId 重试，绝不自动生成新 ID 把同一分补发第二次。
+    return submitEnvelope(pendingRead.envelope as Envelope);
   }
 
   function openActionSheet(next: ActionSheetState) {
@@ -667,15 +823,15 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       const servingSide = correctedServingSide;
       const receivingSide = servingSide === "A" ? "B" : "A";
       const court = (servingSide === "A" ? scoreA : scoreB) % 2 === 0 ? "R" : "L";
-      await requestPreview(makeEnvelope("CORRECT_SCORE_STATE", { reason: trimmedReason, replacement: {
-        score: { A: scoreA, B: scoreB }, gamesWon: state.gamesWon, completedGames: state.completedGames,
+      // RV3-006：待办、阶段、胜局数一律由规则引擎按更正后的比分推导，
+      // 不再照搬旧 pendingObligations；服务端 applyReplacement 仍会独立校验同一结论。
+      const replacement = deriveScoreCorrectionReplacement(state, {
+        score: { A: scoreA, B: scoreB },
         servingSide,
         serverPlayerId: state.format === "DOUBLES" ? state.logicalCourts![servingSide][court] : state.players[servingSide][0],
         receiverPlayerId: state.format === "DOUBLES" ? state.logicalCourts![receivingSide][court] : state.players[receivingSide][0],
-        logicalCourts: state.logicalCourts,
-        pendingObligations: state.pendingObligations,
-        phase: state.pendingObligations.length > 0 ? "OBLIGATIONS_PENDING" : "IN_PROGRESS",
-      } }));
+      });
+      await requestPreview(makeEnvelope("CORRECT_SCORE_STATE", { reason: trimmedReason, replacement }));
     }
   }
 
@@ -710,10 +866,26 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     }
   }
 
+  // R3-005：没有密码学安全随机源就不能生成命令 ID，进入可写界面前直接保持只读。
   const canWrite = Boolean(
-    control && online && syncState === "SYNCED" &&
+    commandIdCapability.available && control && online && syncState === "SYNCED" &&
     snapshot?.control.ownedByCurrentUser && snapshot.control.sessionId === control.sessionId,
   );
+  const insecureContextAdvisory = commandIdCapability.available && commandIdCapability.source === "CRYPTO_GET_RANDOM_VALUES"
+    ? commandIdCapability.advisory
+    : null;
+  const canAcquireControl = Boolean(!control && snapshot?.access.assignedReferee);
+  const readOnlyReason = canWrite
+    ? null
+    : !commandIdCapability.available
+      ? "浏览器缺少安全随机源，只读；请改用 HTTPS 访问"
+      : syncState === "UNKNOWN"
+        ? "响应未知，只读；必须用原 commandId 对账"
+        : syncState === "CONFLICT"
+          ? "版本冲突，只读；已拉取服务器权威状态"
+          : online
+            ? "当前设备没有有效写入控制"
+            : "离线，只读；恢复后先对账";
   const syncLabel = !online
     ? "离线"
     : ({
@@ -787,7 +959,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   function flipLocalView() {
     setFlipped((current) => {
       const next = !current;
-      sessionStorage.setItem(`badminton-view-flipped:${matchCode}`, String(next));
+      writeStoredValue(safeStorage("session"), `badminton-view-flipped:${matchCode}`, String(next));
       return next;
     });
   }
@@ -833,20 +1005,35 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
           <span><i className={`sync-dot ${online ? "online" : "offline"}`} />网络<strong>{online ? "在线" : "离线"}</strong></span>
           <span>控制<strong>{canWrite ? "本机可写" : "只读"}</strong></span>
           <span>同步<strong>{syncLabel}</strong></span>
+          <span>局数<strong>第 {state.currentGame} 局</strong></span>
           <span>数据<strong>{dataFreshness === "FRESH" ? "最新" : "可能过期"}</strong></span>
           <small>服务器版本 {state.version}</small>
         </div>
       </header>
 
+      {!commandIdCapability.available ? (
+        <p className="scoring-alert" role="alert">{commandIdCapability.reason}</p>
+      ) : null}
+      {insecureContextAdvisory ? (
+        <p className="scoring-alert is-status" role="status">{insecureContextAdvisory}</p>
+      ) : null}
       {dataFreshness === "STALE" && !message ? <p className="scoring-stale" role="status">无法确认最新状态；继续显示最后一次服务器确认数据，写入保持只读。</p> : null}
       {message ? <p className={`scoring-alert ${messageTone === "status" ? "is-status" : ""}`} role={messageTone === "error" ? "alert" : "status"}>{message}</p> : null}
       {syncState === "UNKNOWN" ? (
         <section className="pending-recovery" aria-live="assertive">
           <div>
-            <strong>有一条命令结果待确认</strong>
-            <span>比分、站位和发接发保持最后一次已确认状态；在原命令解决前禁止新操作。</span>
+            <strong>{pendingResolution === "UNREADABLE" ? "本机待确认命令记录无法解析" : "有一条命令结果待确认"}</strong>
+            <span>
+              {pendingResolution === "UNREADABLE"
+                ? "记录未被清除，也不会被当作已同步。请对照比赛记录核对最近一次操作是否已生效，再决定如何恢复。"
+                : "比分、站位和发接发保持最后一次已确认状态；在原命令解决前禁止新操作。"}
+            </span>
           </div>
-          <button className="button secondary" disabled={!online || pendingResolution === "QUERYING"} onClick={() => void reconcilePendingCommand()}>
+          <button
+            className="button secondary"
+            disabled={!online || pendingResolution === "QUERYING" || pendingResolution === "UNREADABLE"}
+            onClick={() => void reconcilePendingCommand()}
+          >
             {pendingResolution === "QUERYING" ? "正在查询…" : "查询原命令结果"}
           </button>
           {pendingResolution === "NOT_FOUND" ? (
@@ -855,6 +1042,11 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
             </button>
           ) : null}
         </section>
+      ) : null}
+      {state.completedGames.length > 0 ? (
+        <div className="games-ribbon" aria-label="已完成局分">
+          {state.completedGames.map((game) => <span key={game.number}>第{game.number}局 {game.scoreA}:{game.scoreB}</span>)}
+        </div>
       ) : null}
       <CourtConsole
         busy={syncState === "SUBMITTING" || syncState === "UNKNOWN"}
@@ -870,27 +1062,18 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         state={courtState ?? state}
       />
 
-      <div className="control-strip">
-        {!control && snapshot.access.assignedReferee ? (
-          <ActionButton loading={actionRequestState === "ACQUIRING"} loadingLabel="正在取得控制…" onClick={() => void acquire()}>
-            取得本机控制权
-          </ActionButton>
-        ) : null}
-        <span>{canWrite
-          ? "所有操作等待服务器确认后更新"
-          : syncState === "UNKNOWN"
-            ? "响应未知，只读；必须用原 commandId 对账"
-            : syncState === "CONFLICT"
-              ? "版本冲突，只读；已拉取服务器权威状态"
-              : online
-                ? "当前设备没有有效写入控制"
-                : "离线，只读；恢复后先对账"}</span>
-      </div>
+      {/* 本机可写且无异常时不再重复说明；只读或异常原因必须保留，不能为了简洁隐藏。 */}
+      {canAcquireControl || readOnlyReason ? (
+        <div className="control-strip">
+          {canAcquireControl ? (
+            <ActionButton loading={actionRequestState === "ACQUIRING"} loadingLabel="正在取得控制…" onClick={() => void acquire()}>
+              取得本机控制权
+            </ActionButton>
+          ) : null}
+          {readOnlyReason ? <span>{readOnlyReason}</span> : null}
+        </div>
+      ) : null}
 
-      <div className="games-ribbon">
-        <strong>第 {state.currentGame} 局</strong>
-        {state.completedGames.map((game) => <span key={game.number}>第{game.number}局 {game.scoreA}:{game.scoreB}</span>)}
-      </div>
       {state.specialOutcome ? (
         <section className="special-outcome-summary" aria-labelledby="special-outcome-title">
           <div>
@@ -935,10 +1118,13 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       <PhaseActions
         canWrite={canWrite}
         chief={snapshot.access.chiefReferee}
+        flipped={flipped}
         scope="URGENT"
+        sideName={(side) => sideName(side) ?? `${side} 方`}
         state={state}
         onSend={send}
         onCorrection={() => openActionSheet({ kind: "SCORE" })}
+        onEndingUndo={(side) => openActionSheet({ kind: "UNDO", side })}
         onReasonCommand={(title, type, payload) => openActionSheet({ kind: "REASON_COMMAND", title, type, payload })}
         onServiceOrder={() => openActionSheet({ kind: "SERVICE_ORDER" })}
         onSpecial={() => openActionSheet({ kind: "SPECIAL" })}
@@ -961,10 +1147,13 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
           <PhaseActions
             canWrite={canWrite}
             chief={snapshot.access.chiefReferee}
+            flipped={flipped}
             scope="SECONDARY"
+            sideName={(side) => sideName(side) ?? `${side} 方`}
             state={state}
             onSend={send}
             onCorrection={() => openActionSheet({ kind: "SCORE" })}
+            onEndingUndo={(side) => openActionSheet({ kind: "UNDO", side })}
             onReasonCommand={(title, type, payload) => openActionSheet({ kind: "REASON_COMMAND", title, type, payload })}
             onServiceOrder={() => openActionSheet({ kind: "SERVICE_ORDER" })}
             onSpecial={() => openActionSheet({ kind: "SPECIAL" })}
@@ -1196,13 +1385,16 @@ function WorkbenchActionSheet({
  * - URGENT：时机敏感、误藏会影响执裁的操作（抛币、间歇/换边待办、暂停后恢复），保持首屏可见。
  * - SECONDARY：更正、异常结果、提交/复核等次要操作，收进折叠抽屉。
  */
-function PhaseActions({ canWrite, chief, scope, state, onSend, onCorrection, onReasonCommand, onServiceOrder, onSpecial }: {
+function PhaseActions({ canWrite, chief, flipped, scope, sideName, state, onSend, onCorrection, onEndingUndo, onReasonCommand, onServiceOrder, onSpecial }: {
   canWrite: boolean;
   chief: boolean;
+  flipped: boolean;
   scope: "URGENT" | "SECONDARY";
+  sideName: (side: Side) => string;
   state: MatchState;
   onSend: (type: MatchCommand["type"], payload: MatchCommand["payload"]) => Promise<unknown>;
   onCorrection: () => void;
+  onEndingUndo: (side: Side) => void;
   onReasonCommand: (title: string, type: MatchCommand["type"], payload: MatchCommand["payload"]) => void;
   onServiceOrder: () => void;
   onSpecial: () => void;
@@ -1211,13 +1403,9 @@ function PhaseActions({ canWrite, chief, scope, state, onSend, onCorrection, onR
   const secondary = scope === "SECONDARY";
   return (
     <section className={`phase-actions ${urgent ? "phase-actions-urgent" : "phase-actions-secondary"}`} aria-label={urgent ? "需要立即处理的阶段操作" : "次要阶段操作"}>
-      {urgent && state.phase === "AWAITING_COIN_TOSS" ? <>
-        {(["A", "B"] as const).flatMap((side) => [
-          <button className="button" disabled={!canWrite} key={`${side}-serve`} onClick={() => void onSend("RECORD_COIN_TOSS", { valid: true, winnerSide: side, winnerChoice: { kind: "SERVICE", decision: "SERVE" }, loserChoice: { kind: "END", end: "END_2" } })}>{side} 方胜并选先发</button>,
-          <button className="button secondary" disabled={!canWrite} key={`${side}-receive`} onClick={() => void onSend("RECORD_COIN_TOSS", { valid: true, winnerSide: side, winnerChoice: { kind: "SERVICE", decision: "RECEIVE" }, loserChoice: { kind: "END", end: "END_2" } })}>{side} 方胜并选先接</button>,
-          <button className="button secondary" disabled={!canWrite} key={`${side}-end`} onClick={() => void onSend("RECORD_COIN_TOSS", { valid: true, winnerSide: side, winnerChoice: { kind: "END", end: "END_1" }, loserChoice: { kind: "SERVICE", decision: "SERVE" } })}>{side} 方胜并选场地端</button>,
-        ])}
-      </> : null}
+      {urgent && state.phase === "AWAITING_COIN_TOSS" ? (
+        <CoinTossForm canWrite={canWrite} flipped={flipped} onSend={onSend} sideName={sideName} />
+      ) : null}
       {secondary && state.phase === "AWAITING_OPENING_SETUP" && chief ? <button className="button danger" disabled={!canWrite} onClick={() => onReasonCommand("裁判长作废抛币", "INVALIDATE_COIN_TOSS", { reason: "" })}>裁判长作废抛币</button> : null}
       {urgent ? state.pendingObligations.map((item) => item.type === "INTERVAL" ?
         <button className="button" disabled={!canWrite} key={item.id} onClick={() => void onSend("ACKNOWLEDGE_INTERVAL", { obligationId: item.id })}>确认间歇完成</button> :
@@ -1234,6 +1422,17 @@ function PhaseActions({ canWrite, chief, scope, state, onSend, onCorrection, onR
         <button className="button secondary" disabled={!canWrite} onClick={() => onReasonCommand("作废该特殊结果", "INVALIDATE_SPECIAL_OUTCOME", { reason: "" })}>作废该特殊结果</button>
         <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("提交特殊结果复核", "SUBMIT_RESULT", { reason: "" })}>提交结果复核</button>
       </> : null}
+      {/* RV3-004：结束待提交时，撤销误点的入口和“提交结果”并列，不藏在工程说明里。 */}
+      {urgent && ["GAME_COMPLETE", "AWAITING_NEXT_GAME_SETUP", "MATCH_COMPLETE_PENDING_SUBMISSION"].includes(state.phase) ? (
+        <button
+          className="button secondary"
+          data-testid="ending-undo-entry"
+          disabled={!canWrite}
+          onClick={() => onEndingUndo(state.score.A >= state.score.B ? "A" : "B")}
+        >
+          撤销刚才{state.phase === "MATCH_COMPLETE_PENDING_SUBMISSION" ? "结束本场" : "结束本局"}的得分
+        </button>
+      ) : null}
       {secondary && state.phase === "MATCH_COMPLETE_PENDING_SUBMISSION" ? <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("提交全场结果", "SUBMIT_RESULT", { reason: "" })}>提交全场结果</button> : null}
       {secondary && state.phase === "SUBMITTED" && chief ? <>
         <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("裁判长复核锁定", "CONFIRM_RESULT", { reason: "" })}>复核锁定</button>
@@ -1241,6 +1440,162 @@ function PhaseActions({ canWrite, chief, scope, state, onSend, onCorrection, onR
       </> : null}
       {secondary && state.phase === "CONFIRMED" && chief ? <button className="button danger" disabled={!canWrite} onClick={() => onReasonCommand("受控重开", "REOPEN_RESULT", { reason: "" })}>受控重开</button> : null}
     </section>
+  );
+}
+
+/**
+ * RV3-002：抛币开局表单。
+ * 引擎 deriveCoinToss 早就支持四类组合，这里只是把胜方/负方的真实选择完整收集起来，
+ * 不再把负方固定成 END_2 或 SERVE。表单没有任何随机数：刷新不会改变已选内容，
+ * 取消不提交，确认前先看摘要。场地端标签跟随本机视角，便于对照真实球场。
+ */
+function CoinTossForm({ canWrite, flipped, onSend, sideName }: {
+  canWrite: boolean;
+  flipped: boolean;
+  onSend: (type: MatchCommand["type"], payload: MatchCommand["payload"]) => Promise<unknown>;
+  sideName: (side: Side) => string;
+}) {
+  const [winnerSide, setWinnerSide] = useState<Side | null>(null);
+  const [winnerCategory, setWinnerCategory] = useState<"SERVICE" | "END" | null>(null);
+  const [serviceDecision, setServiceDecision] = useState<"SERVE" | "RECEIVE" | null>(null);
+  const [end, setEnd] = useState<PhysicalEnd | null>(null);
+
+  // END_1 在未翻转时位于画面左侧；翻转只改本机显示，不改物理事实。
+  const endLabel = (value: PhysicalEnd) => {
+    const left = flipped ? "END_2" : "END_1";
+    return `场地端 ${value === "END_1" ? "1" : "2"}（本机画面${value === left ? "左" : "右"}侧）`;
+  };
+
+  function reset() {
+    setWinnerSide(null);
+    setWinnerCategory(null);
+    setServiceDecision(null);
+    setEnd(null);
+  }
+
+  const loserSide: Side | null = winnerSide ? (winnerSide === "A" ? "B" : "A") : null;
+  const complete = Boolean(
+    winnerSide && loserSide && winnerCategory &&
+    (winnerCategory === "SERVICE" ? serviceDecision !== null && end !== null : end !== null && serviceDecision !== null),
+  );
+  const serviceChooser: Side | null = winnerCategory === "SERVICE" ? winnerSide : loserSide;
+  const servingSide = serviceChooser && serviceDecision
+    ? (serviceDecision === "SERVE" ? serviceChooser : (serviceChooser === "A" ? "B" : "A"))
+    : null;
+
+  async function submit() {
+    if (!complete || !winnerSide || !winnerCategory || !serviceDecision || !end) return;
+    const winnerChoice = winnerCategory === "SERVICE"
+      ? { kind: "SERVICE" as const, decision: serviceDecision }
+      : { kind: "END" as const, end };
+    const loserChoice = winnerCategory === "SERVICE"
+      ? { kind: "END" as const, end }
+      : { kind: "SERVICE" as const, decision: serviceDecision };
+    const accepted = await onSend("RECORD_COIN_TOSS", { valid: true, winnerSide, winnerChoice, loserChoice });
+    if (accepted) reset();
+  }
+
+  return (
+    <form className="coin-toss-form" aria-labelledby="coin-toss-title" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      <h3 id="coin-toss-title">记录抛币结果</h3>
+      <fieldset>
+        <legend>1. 抛币胜方</legend>
+        {(["A", "B"] as const).map((side) => (
+          <label key={side}>
+            <input
+              checked={winnerSide === side}
+              disabled={!canWrite}
+              name="coin-toss-winner"
+              onChange={() => { setWinnerSide(side); setWinnerCategory(null); setServiceDecision(null); setEnd(null); }}
+              type="radio"
+              value={side}
+            />
+            {sideName(side)} 胜
+          </label>
+        ))}
+      </fieldset>
+      {winnerSide ? (
+        <fieldset>
+          <legend>2. 胜方先选哪一类</legend>
+          {([["SERVICE", "选发球或接发"], ["END", "选场地端"]] as const).map(([value, label]) => (
+            <label key={value}>
+              <input
+                checked={winnerCategory === value}
+                disabled={!canWrite}
+                name="coin-toss-category"
+                onChange={() => { setWinnerCategory(value); setServiceDecision(null); setEnd(null); }}
+                type="radio"
+                value={value}
+              />
+              {label}
+            </label>
+          ))}
+        </fieldset>
+      ) : null}
+      {winnerSide && winnerCategory === "SERVICE" ? (
+        <>
+          <fieldset>
+            <legend>3. {sideName(winnerSide)} 的发球选择</legend>
+            {([["SERVE", "先发球"], ["RECEIVE", "先接发球"]] as const).map(([value, label]) => (
+              <label key={value}>
+                <input checked={serviceDecision === value} disabled={!canWrite} name="coin-toss-service" onChange={() => setServiceDecision(value)} type="radio" value={value} />
+                {label}
+              </label>
+            ))}
+          </fieldset>
+          {serviceDecision ? (
+            <fieldset>
+              <legend>4. {sideName(loserSide!)} 选择场地端</legend>
+              {(["END_1", "END_2"] as const).map((value) => (
+                <label key={value}>
+                  <input checked={end === value} disabled={!canWrite} name="coin-toss-end" onChange={() => setEnd(value)} type="radio" value={value} />
+                  {endLabel(value)}
+                </label>
+              ))}
+            </fieldset>
+          ) : null}
+        </>
+      ) : null}
+      {winnerSide && winnerCategory === "END" ? (
+        <>
+          <fieldset>
+            <legend>3. {sideName(winnerSide)} 选择场地端</legend>
+            {(["END_1", "END_2"] as const).map((value) => (
+              <label key={value}>
+                <input checked={end === value} disabled={!canWrite} name="coin-toss-end" onChange={() => setEnd(value)} type="radio" value={value} />
+                {endLabel(value)}
+              </label>
+            ))}
+          </fieldset>
+          {end ? (
+            <fieldset>
+              <legend>4. {sideName(loserSide!)} 的发球选择</legend>
+              {([["SERVE", "先发球"], ["RECEIVE", "先接发球"]] as const).map(([value, label]) => (
+                <label key={value}>
+                  <input checked={serviceDecision === value} disabled={!canWrite} name="coin-toss-service" onChange={() => setServiceDecision(value)} type="radio" value={value} />
+                  {label}
+                </label>
+              ))}
+            </fieldset>
+          ) : null}
+        </>
+      ) : null}
+      {complete && servingSide && end && winnerSide && loserSide ? (
+        <p className="coin-toss-summary" data-testid="coin-toss-summary">
+          5. 确认摘要：{sideName(winnerSide)} 胜；
+          {winnerCategory === "SERVICE"
+            ? `${sideName(winnerSide)} 选${serviceDecision === "SERVE" ? "先发球" : "先接发球"}，${sideName(loserSide)} 选${endLabel(end)}`
+            : `${sideName(winnerSide)} 选${endLabel(end)}，${sideName(loserSide)} 选${serviceDecision === "SERVE" ? "先发球" : "先接发球"}`}
+          。开球方为 <strong>{sideName(servingSide)}</strong>，
+          {sideName(winnerCategory === "SERVICE" ? loserSide : winnerSide)} 站 {endLabel(end)}。
+        </p>
+      ) : null}
+      <div className="coin-toss-actions">
+        <button className="button" disabled={!canWrite || !complete} type="submit">确认并记录抛币</button>
+        <button className="button secondary" disabled={!winnerSide} onClick={reset} type="button">取消重选</button>
+      </div>
+      <p className="coin-toss-note">这里只记录场上真实抛币结果，不代替抛币，也不生成随机结果；确认前不会发送任何命令。</p>
+    </form>
   );
 }
 
