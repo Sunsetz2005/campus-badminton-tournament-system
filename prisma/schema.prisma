@@ -12,10 +12,33 @@ enum UserStatus {
   DISABLED
 }
 
+// 平台级角色只决定「能否新建赛事」。赛事内的一切权限仍由赛事范围的 RoleAssignment 决定，
+// SYSTEM_ADMIN 不会因此自动获得任何既有赛事的访问权。
+enum SystemRole {
+  USER
+  SYSTEM_ADMIN
+}
+
 enum TournamentStatus {
   DRAFT
   PUBLISHED
   ARCHIVED
+}
+
+// 发布可见性（TournamentStatus）与赛事生命周期（TournamentPhase）是两个维度，不得合并。
+// phase 由组织者显式推进并审计，不按服务器当前时间推导。
+enum TournamentPhase {
+  PREPARING
+  REGISTRATION_OPEN
+  REGISTRATION_CLOSED
+  RUNNING
+  FINISHED
+}
+
+// 参赛者姓名与代表队的公开范围由组织者决定，默认只公开编号。
+enum NamePublicationPolicy {
+  CODES_ONLY
+  DISPLAY_NAMES
 }
 
 enum CompetitionKind {
@@ -42,6 +65,20 @@ enum TournamentRole {
   ORGANIZER
   REFEREE
   CHIEF_REFEREE
+}
+
+// 报名只是「申请」；只有 APPROVED 才会生成 Entry，进入后续编排。
+enum RegistrationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  WITHDRAWN
+}
+
+enum RegistrationSource {
+  MANUAL
+  IMPORT
+  INVITE
 }
 
 enum OfficialRole {
@@ -94,6 +131,7 @@ model User {
   emailVerified       Boolean              @default(false)
   image               String?
   status              UserStatus           @default(ACTIVE)
+  systemRole          SystemRole           @default(USER)
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
   sessions            Session[]
@@ -105,6 +143,10 @@ model User {
   resultRevisions     ResultRevision[]     @relation("ResultRevisionActor")
   reviewedRevisions   ResultRevision[]     @relation("ResultRevisionReviewer")
   auditLogs           AuditLog[]           @relation("AuditActor")
+  submittedRegistrations Registration[]    @relation("RegistrationSubmitter")
+  reviewedRegistrations  Registration[]    @relation("RegistrationReviewer")
+  createdInvites      RegistrationInvite[]
+  importBatches       RegistrationImportBatch[]
 
   @@map("users")
 }
@@ -158,20 +200,39 @@ model Verification {
 }
 
 model Tournament {
-  id                    String               @id @default(uuid()) @db.Uuid
-  slug                  String               @unique
+  id                    String                @id @default(uuid()) @db.Uuid
+  slug                  String                @unique
   name                  String
-  timezone              String               @default("Asia/Shanghai")
-  status                TournamentStatus     @default(DRAFT)
-  defaultRuleRevisionId String?              @db.Uuid
-  createdAt             DateTime             @default(now())
-  updatedAt             DateTime             @updatedAt
+  subtitle              String?
+  organizer             String?
+  venue                 String?
+  summary               String?
+  startDate             DateTime?             @db.Date
+  endDate               DateTime?             @db.Date
+  posterPath            String?
+  posterAlt             String?
+  timezone              String                @default("Asia/Shanghai")
+  status                TournamentStatus      @default(DRAFT)
+  phase                 TournamentPhase       @default(PREPARING)
+  namePolicy            NamePublicationPolicy @default(CODES_ONLY)
+  publishedAt           DateTime?
+  regulations           String?
+  registrationOpensAt   DateTime?
+  registrationClosesAt  DateTime?
+  nextParticipantSeq    Int                   @default(1)
+  defaultRuleRevisionId String?               @db.Uuid
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
   defaultRuleRevision   RuleProfileRevision? @relation("TournamentDefaultRule", fields: [defaultRuleRevisionId], references: [id], onDelete: SetNull)
   competitions          Competition[]
   courts                Court[]
   ruleProfiles          RuleProfile[]
   roleAssignments       RoleAssignment[]
   auditLogs             AuditLog[]
+  participants          Participant[]
+  registrations         Registration[]
+  registrationInvites   RegistrationInvite[]
+  importBatches         RegistrationImportBatch[]
 
   @@map("tournaments")
 }
@@ -184,27 +245,40 @@ model Competition {
   kind                  CompetitionKind
   entryType             EntryType
   ruleProfileRevisionId String?              @db.Uuid
+  nextEntrySeq          Int                  @default(1)
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
   tournament            Tournament           @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
   ruleProfileRevision   RuleProfileRevision? @relation("CompetitionRule", fields: [ruleProfileRevisionId], references: [id], onDelete: SetNull)
   stages                Stage[]
   entries               Entry[]
+  entryMembers          EntryMember[]
+  registrations         Registration[]
 
   @@unique([tournamentId, code])
   @@index([tournamentId])
   @@map("competitions")
 }
 
+// 参赛人员按赛事隔离：同一个真实的人在两个赛事里是两条记录，互不泄露。
+// 姓名不是身份；学号只在赛事内唯一，且与联系方式一样只供内部审核，不进入任何公开白名单。
 model Participant {
-  id          String        @id @default(uuid()) @db.Uuid
-  publicCode  String        @unique
-  displayName String
-  teamName    String?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  memberships EntryMember[]
+  id                  String               @id @default(uuid()) @db.Uuid
+  tournamentId        String               @db.Uuid
+  publicCode          String
+  displayName         String
+  teamName            String?
+  studentId           String?
+  contact             String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  tournament          Tournament           @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  memberships         EntryMember[]
+  registrationMembers RegistrationMember[]
 
+  @@unique([tournamentId, publicCode])
+  @@unique([tournamentId, studentId])
+  @@index([tournamentId, displayName])
   @@map("participants")
 }
 
@@ -221,24 +295,125 @@ model Entry {
   members       EntryMember[]
   matchesAsA    Match[]       @relation("MatchSideA")
   matchesAsB    Match[]       @relation("MatchSideB")
+  registration  Registration?
 
   @@unique([competitionId, code])
   @@index([competitionId])
   @@map("entries")
 }
 
+// competitionId 是 entries.competitionId 的冗余副本（由迁移中的触发器保证一致），
+// 只为让数据库用唯一索引兜底「同一人在同一项目只能出现在一个报名单位里」。
 model EntryMember {
   id            String      @id @default(uuid()) @db.Uuid
   entryId       String      @db.Uuid
+  competitionId String      @db.Uuid
   participantId String      @db.Uuid
   slot          Int
   entry         Entry       @relation(fields: [entryId], references: [id], onDelete: Cascade)
-  participant   Participant @relation(fields: [participantId], references: [id], onDelete: Restrict)
+  competition   Competition @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  participant   Participant @relation(fields: [participantId], references: [id], onDelete: NoAction)
 
   @@unique([entryId, participantId])
   @@unique([entryId, slot])
+  @@unique([competitionId, participantId])
   @@index([participantId])
   @@map("entry_members")
+}
+
+model Registration {
+  id                   String                   @id @default(uuid()) @db.Uuid
+  tournamentId         String                   @db.Uuid
+  competitionId        String                   @db.Uuid
+  referenceCode        String                   @unique
+  status               RegistrationStatus       @default(PENDING)
+  source               RegistrationSource
+  version              Int                      @default(0)
+  dedupeKey            String?
+  note                 String?
+  reviewReason         String?
+  entryId              String?                  @unique @db.Uuid
+  inviteId             String?                  @db.Uuid
+  importBatchId        String?                  @db.Uuid
+  importRowNumber      Int?
+  submittedByUserId    String?                  @db.Uuid
+  submitterFingerprint String?
+  reviewedByUserId     String?                  @db.Uuid
+  reviewedAt           DateTime?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+  tournament           Tournament               @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  competition          Competition              @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  // NoAction（语句末检查）：撤回时必须先解除关联再删 Entry；整赛事级联删除仍可在同一语句内完成。
+  entry                Entry?                   @relation(fields: [entryId], references: [id], onDelete: NoAction)
+  invite               RegistrationInvite?      @relation(fields: [inviteId], references: [id], onDelete: SetNull)
+  importBatch          RegistrationImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  submittedBy          User?                    @relation("RegistrationSubmitter", fields: [submittedByUserId], references: [id], onDelete: SetNull)
+  reviewedBy           User?                    @relation("RegistrationReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  members              RegistrationMember[]
+
+  @@index([tournamentId, status, createdAt])
+  @@index([competitionId, status])
+  @@index([inviteId, createdAt])
+  @@map("registrations")
+}
+
+// 报名时提交的人员信息原样保留，便于审核留痕；审核通过时才解析为 Participant。
+model RegistrationMember {
+  id             String       @id @default(uuid()) @db.Uuid
+  registrationId String       @db.Uuid
+  slot           Int
+  displayName    String
+  studentId      String?
+  teamName       String?
+  contact        String?
+  participantId  String?      @db.Uuid
+  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  participant    Participant? @relation(fields: [participantId], references: [id], onDelete: SetNull)
+
+  @@unique([registrationId, slot])
+  @@index([participantId])
+  @@map("registration_members")
+}
+
+// 匿名邀请链接：只保存令牌摘要，明文令牌仅在创建时返回一次。
+model RegistrationInvite {
+  id              String         @id @default(uuid()) @db.Uuid
+  tournamentId    String         @db.Uuid
+  label           String
+  tokenHash       String         @unique
+  tokenHint       String
+  expiresAt       DateTime
+  maxSubmissions  Int
+  submissionCount Int            @default(0)
+  revokedAt       DateTime?
+  createdByUserId String?        @db.Uuid
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  tournament      Tournament     @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  createdBy       User?          @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  registrations   Registration[]
+
+  @@index([tournamentId])
+  @@map("registration_invites")
+}
+
+// 导入批次只记录内容摘要与计数，不保存上传原文件。
+model RegistrationImportBatch {
+  id              String         @id @default(uuid()) @db.Uuid
+  tournamentId    String         @db.Uuid
+  contentHash     String
+  rowCount        Int
+  createdCount    Int
+  skippedCount    Int
+  createdByUserId String?        @db.Uuid
+  createdAt       DateTime       @default(now())
+  tournament      Tournament     @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  createdBy       User?          @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  registrations   Registration[]
+
+  @@unique([tournamentId, contentHash])
+  @@map("registration_import_batches")
 }
 
 model Stage {
@@ -339,6 +514,7 @@ model Match {
   scheduledAt         DateTime?
   startedAt           DateTime?
   endedAt             DateTime?
+  publishedAt         DateTime?
   version             Int                  @default(0)
   controlGeneration   Int                  @default(1)
   createdAt           DateTime             @default(now())
@@ -358,6 +534,7 @@ model Match {
 
   @@index([stageId])
   @@index([courtId, scheduledAt])
+  @@index([publishedAt, scheduledAt])
   @@map("matches")
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isPublicUiPreviewEnabled } from "@/features/public-preview/access";
+import { isPublicUiPreviewEnabled } from "@/features/public-results/access";
 
 describe("公开端界面预览门禁", () => {
   it("只在非生产环境显式开启", () => {

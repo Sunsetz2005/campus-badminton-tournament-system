@@ -1,0 +1,16 @@
+.env*
+.git
+.local
+.next
+node_modules
+artifacts
+playwright-report
+test-results
+coverage
+*.pem
+._*
+.DS_Store
+
+# 赛事海报是运行时上传的数据，必须由数据卷提供，不能烘进镜像。
+public/posters/*
+!public/posters/.gitkeep

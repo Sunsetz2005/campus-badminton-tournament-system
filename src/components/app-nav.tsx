@@ -4,22 +4,33 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
 import { authClient } from "@/lib/auth-client";
+import type { NavContext } from "@/server/auth/nav-context";
 
-const links = [
-  ["/", "首页"],
-  ["/management", "赛事管理"],
-  ["/officiating", "我的执裁"],
-  ["/public", "公开查询"],
-  ["/settings", "设置"],
-] as const;
+/**
+ * 导航只决定「显示什么」，不决定「允许什么」。
+ * 权限一律由服务端在页面和 API 内重新校验；直接访问被隐藏的地址仍会被拒绝。
+ */
+function linksFor(navContext: NavContext) {
+  const links: [string, string][] = [["/", "赛事"]];
+  if (navContext.canOfficiate) links.push(["/officiating", "我的执裁"]);
+  if (navContext.canManageTournaments) links.push(["/management", "赛事管理"]);
+  if (navContext.signedIn) links.push(["/settings", "设置"]);
+  return links;
+}
 
-export function AppNav() {
+export function AppNav({ navContext }: { navContext: NavContext }) {
   const pathname = usePathname();
   if (isPublicPreviewPath(pathname)) {
     return <PublicPreviewNav pathname={pathname} />;
   }
 
-  return <AuthenticatedAppNav compact={pathname.startsWith("/officiating/")} pathname={pathname} />;
+  return (
+    <AuthenticatedAppNav
+      compact={pathname.startsWith("/officiating/")}
+      navContext={navContext}
+      pathname={pathname}
+    />
+  );
 }
 
 function PublicPreviewNav({ pathname }: { pathname: string }) {
@@ -47,9 +58,16 @@ function PublicPreviewNav({ pathname }: { pathname: string }) {
   );
 }
 
-function AuthenticatedAppNav({ compact, pathname }: { compact: boolean; pathname: string }) {
+function AuthenticatedAppNav({
+  compact,
+  navContext,
+  pathname,
+}: {
+  compact: boolean;
+  navContext: NavContext;
+  pathname: string;
+}) {
   const router = useRouter();
-  const { data: session, isPending } = authClient.useSession();
 
   async function signOut() {
     await authClient.signOut();
@@ -66,7 +84,7 @@ function AuthenticatedAppNav({ compact, pathname }: { compact: boolean; pathname
       <nav aria-label="主导航">
         {compact ? (
           <Link aria-current="page" href="/officiating">返回我的执裁</Link>
-        ) : links.map(([href, label]) => {
+        ) : linksFor(navContext).map(([href, label]) => {
           const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
           return (
             <Link aria-current={active ? "page" : undefined} href={href} key={href}>
@@ -76,11 +94,9 @@ function AuthenticatedAppNav({ compact, pathname }: { compact: boolean; pathname
         })}
       </nav>
       <div className="session-slot">
-        {isPending ? (
-          <span>检查登录状态…</span>
-        ) : session ? (
+        {navContext.signedIn ? (
           <>
-            <span>{session.user.name}</span>
+            <span>{navContext.userName}</span>
             <button className="text-button" onClick={signOut} type="button">
               退出
             </button>
@@ -101,7 +117,7 @@ export function AppFooter() {
     <footer className="site-footer">
       {isPublicPreviewPath(pathname)
         ? "模拟数据 · 界面预览 · 未接入正式公开接口"
-        : "本机与局域网开发环境 · 正式发布状态以赛事组织方公告为准"}
+        : "公开赛程与成绩以赛事组织方正式公告为准"}
     </footer>
   );
 }

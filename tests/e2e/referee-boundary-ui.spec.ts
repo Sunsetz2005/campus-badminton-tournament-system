@@ -198,9 +198,14 @@ test.describe.serial("RV3-002 / RV3-004 裁判页边界交互", () => {
 
 /**
  * 第 7 步的局部视觉收敛：只看本轮改动的两块界面（抛币表单、局末撤销入口）。
- * 输出目录是本轮独有的，不覆盖任何既有截图证据。浏览器设备模拟不等于真机验收。
+ * 浏览器设备模拟不等于真机验收。
+ *
+ * 默认写入未提交的 `local-run/`，与 `referee-court-shots.spec.ts` 同一套做法：
+ * `shots/` 已经是 RV3 的已记账证据，普通测试运行不得覆盖它。
+ * 要重新固化证据时显式设置 `REFEREE_BOUNDARY_SHOT_DIR=shots`。
  */
-const SHOT_ROOT = path.join(process.cwd(), "artifacts", "review-70fff5e", "shots");
+const SHOT_DIR = process.env.REFEREE_BOUNDARY_SHOT_DIR ?? "local-run";
+const SHOT_ROOT = path.join(process.cwd(), "artifacts", "review-70fff5e", SHOT_DIR);
 const SHOT_VIEWPORTS = [
   { key: "phone-390x844", width: 390, height: 844 },
   { key: "narrow-320x720", width: 320, height: 720 },

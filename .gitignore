@@ -32,4 +32,10 @@ test-results/
 
 # 测试运行时生成的临时截图目录（已记账的证据目录必须显式指定才写入）
 artifacts/referee-court-v2/local-run/
+artifacts/review-70fff5e/local-run/
 artifacts/phase3-browser-simulated-local-run/
+artifacts/phase4a-registration/local-run/
+
+# 赛事海报为管理员上传的运行时文件，不进版本库（保留目录占位）。
+/public/posters/*
+!/public/posters/.gitkeep

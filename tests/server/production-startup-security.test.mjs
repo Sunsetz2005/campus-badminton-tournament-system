@@ -36,6 +36,7 @@ function productionEnvironment(port, overrides = {}) {
   };
   delete environment.DEMO_ADMIN_PASSWORD;
   delete environment.DEMO_REFEREE_PASSWORD;
+  delete environment.DEMO_PARTICIPANT_PASSWORD;
   if (!("ALLOW_DEMO_ACCOUNTS" in overrides)) delete environment.ALLOW_DEMO_ACCOUNTS;
   if (!("ENABLE_TEST_FAULT_INJECTION" in overrides)) delete environment.ENABLE_TEST_FAULT_INJECTION;
   if (!("ENABLE_PUBLIC_UI_PREVIEW" in overrides)) delete environment.ENABLE_PUBLIC_UI_PREVIEW;

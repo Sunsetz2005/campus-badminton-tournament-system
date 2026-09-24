@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
-import { PUBLIC_PREVIEW_TOURNAMENT } from "@/features/public-preview/fixtures";
+import { PUBLIC_PREVIEW_TOURNAMENT } from "@/features/public-results/fixtures";
 
 export default async function PreviewMatchLayout({
   children,

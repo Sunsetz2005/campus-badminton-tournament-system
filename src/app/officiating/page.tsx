@@ -20,6 +20,7 @@ export default async function OfficiatingPage() {
         select: {
           code: true,
           lifecycleStatus: true,
+          version: true,
           scheduledAt: true,
           sideAEntry: { select: { displayName: true } },
           sideBEntry: { select: { displayName: true } },
@@ -28,6 +29,12 @@ export default async function OfficiatingPage() {
       },
     },
     orderBy: { match: { scheduledAt: "asc" } },
+  });
+  assignments.sort((left, right) => {
+    const leftFresh = left.match.lifecycleStatus === "READY" && left.match.version === 0;
+    const rightFresh = right.match.lifecycleStatus === "READY" && right.match.version === 0;
+    if (leftFresh !== rightFresh) return leftFresh ? -1 : 1;
+    return (left.match.scheduledAt?.getTime() ?? 0) - (right.match.scheduledAt?.getTime() ?? 0);
   });
   const chiefAssignments = await prisma.roleAssignment.findMany({
     where: { userId: user.id, role: "CHIEF_REFEREE" },
@@ -59,7 +66,9 @@ export default async function OfficiatingPage() {
         <div className="card-grid">
           {assignments.map(({ match, role }) => (
             <article className="card" key={match.code}>
-              <StatusBadge tone="ok">{match.lifecycleStatus}</StatusBadge>
+              <StatusBadge tone="ok">
+                {match.lifecycleStatus === "READY" && match.version === 0 ? "全新 · 0:0" : match.lifecycleStatus}
+              </StatusBadge>
               <h2>{match.code}</h2>
               <p>{match.sideAEntry?.displayName ?? "待定"} vs {match.sideBEntry?.displayName ?? "待定"}</p>
               <small>{match.court?.name ?? "场地待定"} · {role}</small>

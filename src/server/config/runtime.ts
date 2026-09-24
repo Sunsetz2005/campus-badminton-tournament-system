@@ -19,7 +19,8 @@ export function assertRuntimeSecurity() {
   const demoConfigured =
     process.env.ALLOW_DEMO_ACCOUNTS === "true" ||
     Boolean(process.env.DEMO_ADMIN_PASSWORD) ||
-    Boolean(process.env.DEMO_REFEREE_PASSWORD);
+    Boolean(process.env.DEMO_REFEREE_PASSWORD) ||
+    Boolean(process.env.DEMO_PARTICIPANT_PASSWORD);
   if (demoConfigured) throw new Error("生产环境检测到示例账号配置，拒绝启动。");
   if (secret === INSECURE_DEVELOPMENT_AUTH_SECRET || secret.includes("请替换")) {
     throw new Error("生产环境仍在使用示例认证密钥，拒绝启动。");

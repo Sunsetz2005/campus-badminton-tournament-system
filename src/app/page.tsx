@@ -1,50 +1,102 @@
 import Link from "next/link";
 
-import { StatusBadge } from "@/ui/status-badge";
+import { TournamentPoster } from "@/components/tournament-poster";
+import { formatDateRange } from "@/features/public-results/format";
+import {
+  tournamentBucket,
+  tournamentBucketLabels,
+  tournamentPhaseLabels,
+  type PublicTournamentCard,
+  type TournamentBucket,
+} from "@/features/public-results/model";
+import { listPublicTournaments } from "@/server/services/public-tournament-service";
+import { StatusBadge, type StatusTone } from "@/ui/status-badge";
 
-const modules = [
-  { title: "赛事管理", text: "赛事、项目和规则快照的阶段 1 数据骨架。", href: "/management", state: "需管理员登录" },
-  { title: "我的执裁", text: "只展示本人真实指派；完整记分在后续阶段开发。", href: "/officiating", state: "需裁判登录" },
-  { title: "公开查询", text: "只读取服务端公开白名单，不返回账号和审计字段。", href: "/public", state: "公开只读" },
-];
+export const dynamic = "force-dynamic";
 
-export default function HomePage() {
+const bucketOrder: readonly TournamentBucket[] = ["RUNNING", "UPCOMING", "FINISHED"];
+
+const bucketCopy: Record<TournamentBucket, { eyebrow: string; empty: string }> = {
+  RUNNING: { eyebrow: "COURTS NOW", empty: "当前没有正在进行的赛事。" },
+  UPCOMING: { eyebrow: "UP NEXT", empty: "当前没有已公布的待开赛事。" },
+  FINISHED: { eyebrow: "ARCHIVE", empty: "当前没有已结束的赛事。" },
+};
+
+function phaseTone(phase: PublicTournamentCard["phase"]): StatusTone {
+  if (phase === "RUNNING") return "danger";
+  if (phase === "REGISTRATION_OPEN") return "ok";
+  if (phase === "FINISHED") return "neutral";
+  return "info";
+}
+
+function TournamentRow({ tournament }: { tournament: PublicTournamentCard }) {
+  const facts = [
+    formatDateRange(tournament.startDate, tournament.endDate),
+    tournament.venue,
+    tournament.organizer,
+  ].filter((fact): fact is string => Boolean(fact));
+
+  return (
+    <li className="tournament-row">
+      <Link aria-label={`查看 ${tournament.name}`} href={`/public/${tournament.slug}/schedule`}>
+        <TournamentPoster tournament={tournament} />
+        <div className="tournament-row-body">
+          <div className="tournament-row-heading">
+            <h3>{tournament.name}</h3>
+            <StatusBadge tone={phaseTone(tournament.phase)}>{tournamentPhaseLabels[tournament.phase]}</StatusBadge>
+          </div>
+          {tournament.subtitle ? <p className="tournament-row-subtitle">{tournament.subtitle}</p> : null}
+          <dl className="tournament-row-facts">
+            {facts.map((fact) => <div key={fact}><dd>{fact}</dd></div>)}
+          </dl>
+          <p className="tournament-row-counts">
+            <span>{tournament.publishedMatchCount} 场已公开赛程</span>
+            {tournament.liveMatchCount ? <strong>{tournament.liveMatchCount} 场进行中</strong> : null}
+          </p>
+        </div>
+      </Link>
+    </li>
+  );
+}
+
+export default async function HomePage() {
+  const tournaments = await listPublicTournaments();
+  const grouped = new Map<TournamentBucket, PublicTournamentCard[]>(
+    bucketOrder.map((bucket) => [bucket, []]),
+  );
+  tournaments.forEach((tournament) => {
+    grouped.get(tournamentBucket(tournament.phase))?.push(tournament);
+  });
+  const visibleBuckets = bucketOrder.filter((bucket) => (grouped.get(bucket)?.length ?? 0) > 0);
+
   return (
     <>
-      <section className="hero">
-        <div>
-          <StatusBadge tone="ok">阶段 1 · 工程骨架</StatusBadge>
-          <h1>把赛事数据、身份和权限先落稳</h1>
-          <p>
-            当前版本已经接入 PostgreSQL、真实登录和服务端权限校验。计分规则引擎、完整编排和裁判工作台仍未实现。
-          </p>
-          <div className="actions">
-            <Link className="button" href="/login">本地测试登录</Link>
-            <Link className="button secondary" href="/public">查看模拟公开赛事</Link>
-          </div>
-        </div>
-        <aside className="phase-card">
-          <span>当前边界</span>
-          <strong>可启动、可登录、可验证权限</strong>
-          <p>不会把页面骨架称为已完成赛事系统。</p>
-        </aside>
+      <section className="home-hero">
+        <p className="eyebrow">校园羽毛球赛事编排与成绩管理</p>
+        <h1>羽赛台</h1>
+        <p>
+          公开赛程、逐局比分与已确认结果。比分由现场主裁判在服务端权威记录，
+          页面只读取公开字段，不展示账号、联系方式或内部审计信息。
+        </p>
       </section>
-      <section>
-        <div className="section-heading">
-          <h2>阶段 1 入口</h2>
-          <p>所有入口都明确显示当前实现状态。</p>
-        </div>
-        <div className="card-grid">
-          {modules.map((module) => (
-            <article className="card" key={module.href}>
-              <StatusBadge>{module.state}</StatusBadge>
-              <h3>{module.title}</h3>
-              <p>{module.text}</p>
-              <Link href={module.href}>进入查看 →</Link>
-            </article>
-          ))}
-        </div>
-      </section>
+
+      {tournaments.length === 0 ? (
+        <p className="empty-state">当前没有已发布的赛事。赛事发布后会出现在这里。</p>
+      ) : (
+        visibleBuckets.map((bucket) => (
+          <section className="tournament-section" key={bucket}>
+            <div className="section-heading">
+              <p className="eyebrow">{bucketCopy[bucket].eyebrow}</p>
+              <h2>{tournamentBucketLabels[bucket]}</h2>
+            </div>
+            <ul className="tournament-list">
+              {grouped.get(bucket)?.map((tournament) => (
+                <TournamentRow key={tournament.slug} tournament={tournament} />
+              ))}
+            </ul>
+          </section>
+        ))
+      )}
     </>
   );
 }

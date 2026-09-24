@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { PUBLIC_PREVIEW_TOURNAMENT } from "@/features/public-preview/fixtures";
+import { PUBLIC_PREVIEW_TOURNAMENT } from "@/features/public-results/fixtures";
 
 export default function PreviewMatchNotFound() {
   return (

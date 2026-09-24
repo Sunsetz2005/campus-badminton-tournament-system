@@ -34,6 +34,8 @@ describe("测试环境模板", () => {
       "DEMO_ADMIN_PASSWORD",
       "DEMO_REFEREE_EMAIL",
       "DEMO_REFEREE_PASSWORD",
+      "DEMO_PARTICIPANT_EMAIL",
+      "DEMO_PARTICIPANT_PASSWORD",
     ]) {
       expect(keys.has(key), `缺少 ${key}`).toBe(true);
     }

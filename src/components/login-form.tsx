@@ -38,7 +38,6 @@ export function LoginForm() {
         密码
         <input
           autoComplete="current-password"
-          minLength={12}
           onChange={(event) => setPassword(event.target.value)}
           required
           type="password"

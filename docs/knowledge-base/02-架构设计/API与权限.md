@@ -1,8 +1,8 @@
 ---
 title: API 与权限
-stage: 3
+stage: 4
 status: current
-updated: 2026-09-19
+updated: 2026-09-24
 tags:
   - 羽毛球赛事管理系统
   - API
@@ -28,6 +28,21 @@ tags:
 | `/api/matches/[matchCode]/commands` | POST | 单事务执行授权、租约、幂等、版本、纯引擎、事件、快照、局分投影和审计 |
 | `/api/matches/[matchCode]/commands/preview` | POST | 使用同一引擎返回更正前后差异，不落库 |
 | `/api/matches/[matchCode]/commands/[commandId]` | GET | 响应未知或刷新后查询原命令结果 |
+| `/api/admin/tournaments` | POST | 阶段 4-A：新建赛事，需平台级 `SYSTEM_ADMIN`；创建者自动获该赛事 `ADMIN` |
+| `/api/admin/tournaments/[slug]/settings` | PATCH | 赛事 `ADMIN`：报名窗口（按赛事时区）与规程说明；开赛后拒绝 |
+| `/api/admin/tournaments/[slug]/phase` | POST | 赛事 `ADMIN`：筹备→报名中→截止，截止→重开须原因；RUNNING/FINISHED 不在 4-A |
+| `/api/admin/tournaments/[slug]/publish` | POST | 赛事 `ADMIN`：DRAFT→PUBLISHED，需日期与至少一个项目，不可撤回 |
+| `/api/admin/tournaments/[slug]/competitions` | POST | 赛事 `ADMIN`：新增项目或组别 |
+| `/api/admin/tournaments/[slug]/registrations` | POST | 赛事 `ADMIN`/`ORGANIZER`：手工录入，只生成待审核报名 |
+| `/api/admin/tournaments/[slug]/registrations/[id]/review` | POST | 赛事 `ADMIN`/`ORGANIZER`：`APPROVE`（可带逐成员身份决定）/`REJECT`/`WITHDRAW`，必须带 `expectedVersion`；驳回与撤回须原因；身份需确认时 409 并在 `error.details.candidates` 返回候选人 |
+| `/api/admin/tournaments/[slug]/registrations/batch-approve` | POST | 同上角色：逐份独立事务，最多 100 份，需人工确认的保持待审核 |
+| `/api/admin/tournaments/[slug]/participants/[publicCode]/rename` | POST | 同上角色：同一人姓名更正，须原因并审计；不是换人 |
+| `/api/admin/tournaments/[slug]/imports/template` | GET | 同上角色：CSV 模板（UTF-8 BOM） |
+| `/api/admin/tournaments/[slug]/imports/preview` | POST | 同上角色：multipart 上传，逐行返回新增/重复/错误，联系方式打码，原文件不保存 |
+| `/api/admin/tournaments/[slug]/imports/commit` | POST | 同上角色：重新上传同一文件并带预览的摘要与计数；不一致 409，有错误 422，整份单事务 |
+| `/api/admin/tournaments/[slug]/invites` | POST | 同上角色：生成邀请链接，明文令牌只在本响应中出现一次 |
+| `/api/admin/tournaments/[slug]/invites/[inviteId]/revoke` | POST | 同上角色：停用邀请链接 |
+| `/api/register/[token]` | POST | **匿名**：邀请报名提交；不登录、不建账号；令牌无效统一 404；报名窗口外 409；限流 429；需同意声明 |
 
 `requireAssignedReferee` 仍只允许拥有 `REFEREE` 且被指派的主裁判正常取得租约。裁判长不绕过流程普通取权，而是使用专用 takeover 接口；现有管理员模拟账号同时获授 `CHIEF_REFEREE`，每次敏感操作审计实际使用的裁判长角色，不依赖 `ADMIN`。
 
@@ -98,7 +113,7 @@ tags:
 
 ## 录入、公开与导出接口
 
-- 导入先上传为 `ImportBatch`，服务端解析后返回逐行 `new/duplicate/error` 预览；确认命令带批次版本和幂等 ID，不能重复建人。
+- 导入（阶段 4-A 已实现）：预览不落库，确认时重新上传同一文件并携带预览的内容摘要与新增/重复计数，服务端在赛事行锁内重算，一致才整份写入；`RegistrationImportBatch` 按内容摘要唯一，重复导入被拒；导入只生成待审核报名，人员在审核通过时才建立，因此不会重复建人。
 - 排程冲突接口以运动员内部 ID 展开组合，跨 MS/WS/MD/WD/XD 返回冲突成员和时间原因。
 - 公开查询只返回服务端白名单 DTO；没有姓名发布决定时使用公开编号/别名。
 - PDF/Excel 任务只接受授权赛事和锁定快照 ID，不接受任意 URL；生成记录保存快照、模板、哈希、版本和替代关系。
@@ -106,7 +121,9 @@ tags:
 ## 数据安全
 
 - 密码只保存强哈希，密钥只在本地/部署环境变量中，不进入 Git 或 Vault。
-- 导入文本按不可信输入处理；导出 CSV/XLSX 时中和以 `= + - @` 开头的公式载荷。
+- 导入文本按不可信输入处理：单元格只当文本，以 `= + - @` 开头（联系方式允许 `+86…`）、含换行或控制字符的内容拒绝入库；导出 CSV/XLSX 时仍需中和公式载荷。
+- 邀请令牌只存 SHA-256 摘要；来源地址只以带密钥的 HMAC 指纹保存。无反向代理时 `x-forwarded-for` 可伪造，按来源限流只是尽力而为，真正上限是按邀请的总量与每分钟窗口。
+- 报名页 `noindex` 且 `referrer: no-referrer`，避免带令牌的地址被收录或经 Referer 外泄。
 - 公开 API 使用白名单 DTO，不返回学号、电话、邮箱、登录字段和内部审计信息。
 - 错误响应不泄露 SQL、堆栈、token 或其他参赛者私密数据。
 

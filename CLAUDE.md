@@ -10,9 +10,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 阶段纪律（最容易踩的坑）
 
-本项目按 `prompt-kit/`（本机位于 `~/Downloads/prompt-kit/`，**不在仓库内**）的 0—10 阶段推进，**一次只做一个阶段**。当前停在阶段 3 收尾：S2-008、S2-009 已通过独立复验，场地图裁判工作台获独立“有条件通过”；UI-01-B 与联合总判原为“不通过”，F-001—F-005 已由 Codex 本地修复但尚待独立复判。未经用户明确要求不得进入阶段 4 或 UI-01-C。
+本项目按 `prompt-kit/`（本机位于 `~/Downloads/prompt-kit/`，**不在仓库内**）的 0—10 阶段推进，**一次只做一个阶段**。阶段 3 的收尾复判项仍未完成：UI-01-B 的 F-001—F-005 与源码审查 R3/RV3 系列已由本地修复，尚待独立复判。2026-09-22 用户明确授权进入阶段 4，并已完成**阶段 4-0 赛事门户**；2026-09-24 又完成**阶段 4-A 赛事创建与报名**（开发自测，未独立复判）。下一阶段是 **4-B 抽签编排**；未经用户明确要求不得开始 4-B 或更后面。
 
-阶段 2 纯 TypeScript 规则引擎已由阶段 3 服务端命令事务接入 PostgreSQL；心跳/接管、响应未知恢复和场地图裁判工作台已经实现。报名编排、排名、成绩册和真实公开赛程接口仍未实现，不要顺手补上。改动前先读 `docs/knowledge-base/06-开发日志/当前进度与下一步.md` 和 `01-项目规划/需求验收追踪矩阵.md`。
+阶段 2 纯 TypeScript 规则引擎已由阶段 3 服务端命令事务接入 PostgreSQL；心跳/接管、响应未知恢复和场地图裁判工作台已经实现。阶段 4-0 又补上了公开赛事门户：首页赛事列表、`/public/[slug]/schedule` 与 `/matches/[matchCode]`、逐场发布边界和姓名公开策略。阶段 4-A 补上了 `/management` 建赛向导、后台录入、CSV 导入、匿名邀请链接 `/register/[token]` 与审核生成 `Entry`（`src/domain/registration/`、`src/server/services/registration-*.ts`、`tournament-admin-service.ts`）。**抽签编排、赛程、排名、成绩册和团体赛仍未实现，不要顺手补上。** 改动前先读 `docs/knowledge-base/06-开发日志/当前进度与下一步.md` 和 `01-项目规划/需求验收追踪矩阵.md`。
 
 追踪矩阵的状态只能用「已完成/已规划/未实现/未测试/待核验/后续版本」，且**必须有真实执行证据**才能写「已完成」。
 
@@ -78,6 +78,8 @@ prisma/               schema、迁移、模拟种子
 1. `getSessionFromHeaders` / `getPageSession`（`src/server/auth/session.ts`）从 Better Auth 取数据库会话。
 2. `requireActiveUser` → `requireTournamentRole` → `requireAssignedReferee`（`src/server/auth/authorization.ts`）依次校验账号启用、赛事范围角色（`RoleAssignment`）、具体比赛指派（`OfficialAssignment`）。
 3. 失败一律抛 `AppError(status, code, 中文消息)`。
+
+平台级 `User.systemRole=SYSTEM_ADMIN` 只允许新建赛事，不授予任何既有赛事的权限；报名/导入/邀请用 `requireManagedTournament`（ADMIN/ORGANIZER），赛事设置/阶段/发布只允许 ADMIN。页面层用 `requireManagedTournamentPage` 把 AppError 转成 `notFound()`/`forbidden()`。
 
 **不要相信客户端提交的 `userId`、角色或比赛授权**，一律从会话重新解析。知道比赛 URL 不等于有权限：`requireAssignedReferee` 同时要求 `REFEREE` 赛事角色**和**该场的 `MAIN_REFEREE` 指派。
 

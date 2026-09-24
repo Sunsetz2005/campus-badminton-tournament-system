@@ -13,5 +13,11 @@ describe("公开查询白名单", () => {
       expect(text).not.toContain(forbidden);
     }
     expect(payload.competitions).toHaveLength(2);
+    const matches = payload.competitions.flatMap((competition) => competition.stages.flatMap((stage) => stage.matches));
+    expect(matches.length).toBeGreaterThanOrEqual(17);
+    expect(matches.find((match) => match.code === "MS-DONE-001")?.games).toEqual([
+      expect.objectContaining({ number: 1, scoreA: 21, scoreB: 14, completed: true }),
+      expect.objectContaining({ number: 2, scoreA: 21, scoreB: 17, completed: true }),
+    ]);
   });
 });

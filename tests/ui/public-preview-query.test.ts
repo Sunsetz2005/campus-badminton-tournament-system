@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { PUBLIC_PREVIEW_MATCHES, PUBLIC_PREVIEW_TOURNAMENT } from "@/features/public-preview/fixtures";
-import { filterPreviewMatches, parseScheduleQuery, preserveScheduleParams, withScheduleQuery } from "@/features/public-preview/query";
+import { PUBLIC_PREVIEW_MATCHES, PUBLIC_PREVIEW_TOURNAMENT } from "@/features/public-results/fixtures";
+import { filterPreviewMatches, parseScheduleQuery, preserveScheduleParams, withScheduleQuery } from "@/features/public-results/query";
 
 const dates = PUBLIC_PREVIEW_TOURNAMENT.dates.map((item) => item.date);
 const options = {

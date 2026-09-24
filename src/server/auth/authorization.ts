@@ -92,3 +92,31 @@ export async function requireChiefReferee(userId: string, matchCode: string) {
   }
   return access;
 }
+
+/** 平台级角色只允许「新建赛事」，不授予任何既有赛事的访问权。 */
+export async function requireSystemAdmin(userId: string) {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { systemRole: true, status: true } });
+  if (!user || user.status !== "ACTIVE" || user.systemRole !== "SYSTEM_ADMIN") {
+    throw new AppError(403, "system_admin_required", "只有平台管理员可以新建赛事。");
+  }
+}
+
+export const TOURNAMENT_MANAGER_ROLES: TournamentRole[] = ["ADMIN", "ORGANIZER"];
+
+/**
+ * 按 slug 取得赛事并校验赛事范围角色。
+ * 报名审核、导入和邀请链接允许 ADMIN/ORGANIZER；赛事设置、阶段推进和发布只允许 ADMIN。
+ */
+export async function requireManagedTournament(
+  userId: string,
+  slug: string,
+  allowedRoles: TournamentRole[] = TOURNAMENT_MANAGER_ROLES,
+) {
+  const tournament = await prisma.tournament.findUnique({
+    where: { slug },
+    select: { id: true, slug: true, name: true, phase: true, status: true, timezone: true },
+  });
+  if (!tournament) throw new AppError(404, "tournament_not_found", "赛事不存在。");
+  const assignment = await requireTournamentRole(userId, tournament.id, allowedRoles);
+  return { tournament, role: assignment.role };
+}

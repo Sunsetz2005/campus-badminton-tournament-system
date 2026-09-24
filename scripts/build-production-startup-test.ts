@@ -18,6 +18,8 @@ const build = spawnSync("pnpm", ["run", "build"], {
     DEMO_ADMIN_PASSWORD: "",
     DEMO_REFEREE_EMAIL: "",
     DEMO_REFEREE_PASSWORD: "",
+    DEMO_PARTICIPANT_EMAIL: "",
+    DEMO_PARTICIPANT_PASSWORD: "",
     ENABLE_PUBLIC_UI_PREVIEW: "false",
     ENABLE_TEST_FAULT_INJECTION: "false",
   },

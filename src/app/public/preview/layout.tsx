@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
-import { isPublicUiPreviewEnabled } from "@/features/public-preview/access";
+import { isPublicUiPreviewEnabled } from "@/features/public-results/access";
 
 export const dynamic = "force-dynamic";
 

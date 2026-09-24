@@ -1,9 +1,13 @@
 import { notFound } from "next/navigation";
 
-import { getPreviewMatch, PUBLIC_PREVIEW_QUERY_OPTIONS } from "@/features/public-preview/fixtures";
-import { MatchDetailPreview } from "@/features/public-preview/match-detail-preview";
-import type { PreviewScenario } from "@/features/public-preview/model";
-import { preserveScheduleParams } from "@/features/public-preview/query";
+import {
+  getPreviewMatch,
+  PUBLIC_PREVIEW_QUERY_OPTIONS,
+  PUBLIC_PREVIEW_TOURNAMENT,
+} from "@/features/public-results/fixtures";
+import { MatchDetailView } from "@/features/public-results/match-detail-view";
+import type { PreviewScenario } from "@/features/public-results/model";
+import { preserveScheduleParams } from "@/features/public-results/query";
 
 type SearchRecord = Record<string, string | string[] | undefined>;
 
@@ -33,5 +37,14 @@ export default async function PublicMatchPreviewPage({
     ? rawScenario
     : "ready";
   const preservedQuery = preserveScheduleParams(input, PUBLIC_PREVIEW_QUERY_OPTIONS).toString();
-  return <MatchDetailPreview match={match} preservedQuery={preservedQuery} scenario={scenario} />;
+  return (
+    <MatchDetailView
+      basePath={`/public/preview/${PUBLIC_PREVIEW_TOURNAMENT.slug}`}
+      match={match}
+      mode="preview"
+      preservedQuery={preservedQuery}
+      scenario={scenario}
+      tournament={PUBLIC_PREVIEW_TOURNAMENT}
+    />
+  );
 }

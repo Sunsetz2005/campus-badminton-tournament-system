@@ -7,6 +7,8 @@ export class AppError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** 供界面继续操作的结构化信息（如身份候选人）；只放调用者本就有权看到的数据。 */
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -20,7 +22,7 @@ export function errorResponse(error: unknown, fields: Record<string, unknown> = 
       code: error.code,
     });
     return NextResponse.json(
-      { error: { code: error.code, message: error.message } },
+      { error: { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) } },
       { status: error.status },
     );
   }
