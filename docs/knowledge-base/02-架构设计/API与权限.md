@@ -2,7 +2,7 @@
 title: API 与权限
 stage: 4
 status: current
-updated: 2026-09-24
+updated: 2026-09-25
 tags:
   - 羽毛球赛事管理系统
   - API
@@ -43,6 +43,22 @@ tags:
 | `/api/admin/tournaments/[slug]/invites` | POST | 同上角色：生成邀请链接，明文令牌只在本响应中出现一次 |
 | `/api/admin/tournaments/[slug]/invites/[inviteId]/revoke` | POST | 同上角色：停用邀请链接 |
 | `/api/register/[token]` | POST | **匿名**：邀请报名提交；不登录、不建账号；令牌无效统一 404；报名窗口外 409；限流 429；需同意声明 |
+| `/api/admin/tournaments/[slug]/teams` | POST | 阶段 4-B，赛事 `ADMIN`/`ORGANIZER`：新建队伍（学院），名称规范化后赛事内唯一 |
+| `/api/admin/tournaments/[slug]/teams/[teamId]/managers` | POST | 仅赛事 `ADMIN`：开通或绑定负责人；新邮箱建账号并在本响应返回一次性初始口令（`no-store`），已有账号只绑定 |
+| `/api/admin/tournaments/[slug]/teams/[teamId]/managers/[userId]/reset-password` | POST | 仅赛事 `ADMIN`：只允许本赛事开通、无任何赛事角色、非平台管理员的负责人账号；新口令只返回一次，注销该账号全部会话 |
+| `/api/admin/tournaments/[slug]/teams/[teamId]/managers/[userId]/remove` | POST | 仅赛事 `ADMIN`：解除绑定；本赛事专用账号再无绑定与角色时停用并注销会话 |
+| `/api/admin/tournaments/[slug]/teams/[teamId]/roster` | POST | 赛事 `ADMIN`/`ORGANIZER`：代录团体名单，与负责人提交共用服务与校验 |
+| `/api/team/[slug]/teams/[teamId]/roster` | POST | **队伍负责人**：只能提交本人负责的队伍；未修改初始口令 403；报名窗口外 409；待审核名单修改须带 `expectedVersion`；已通过 409 |
+| `/api/team/[slug]/registrations/[registrationId]/withdraw` | POST | 队伍负责人：撤回本队待审核名单 |
+| `/api/account/password` | POST | 已登录用户改本人口令（经 Better Auth，注销其他会话、轮换当前会话）；清除首次改口令标记 |
+| `/api/admin/tournaments/[slug]/competitions/[code]/draws` | POST | 赛事 `ADMIN`/`ORGANIZER`：生成新草稿；随机种子由服务端生成，客户端不能指定；已发布时 409 |
+| `/api/admin/tournaments/[slug]/competitions/[code]/draws/[drawId]/adjust` | POST | 同上：交换/移组，须原因；`drawId` 不是当前草稿时 409（防并发覆盖） |
+| `/api/admin/tournaments/[slug]/competitions/[code]/draws/[drawId]/publish` | POST | 同上：须 `{confirm:true}`、报名截止、无待审核、名单未变且结果可复现 |
+| `/api/admin/tournaments/[slug]/competitions/[code]/draws/revoke` | POST | **仅本赛事 `CHIEF_REFEREE`**：须原因；任一比赛已开始或有事件/控制会话/成绩修订即 409 |
+| `/api/team/[slug]/fixtures/[fixtureId]/lineup` | POST | 阶段 4-D，**队伍负责人**：本队是哪一方由服务端按 `TeamManager` 绑定判定（请求里的 `side` 被忽略）；未改初始口令 403；不在本对抗 403；本方未确定 409；已公开 `lineup_locked`；修改须带 `expectedVersion`；只允许报名截止或进行中阶段 |
+| `/api/admin/tournaments/[slug]/fixtures/[fixtureId]/lineup` | POST | 赛事 `ADMIN`/`ORGANIZER`：代交，须指定 `side`；其余规则同上 |
+| `/api/admin/tournaments/[slug]/fixtures/[fixtureId]/lineup/amend` | POST | **仅本赛事 `CHIEF_REFEREE`**：名单公开后修改一个尚未开始、无事件、无有效控制会话的小场；原因必填 |
+| `/api/admin/tournaments/[slug]/competitions/[code]/groups/[groupCode]/ranking` | POST | **仅本赛事 `CHIEF_REFEREE`**：组内全部结束才可确认；须抽签时须给完整顺序与说明；确认后回填「某组第几名」 |
 
 `requireAssignedReferee` 仍只允许拥有 `REFEREE` 且被指派的主裁判正常取得租约。裁判长不绕过流程普通取权，而是使用专用 takeover 接口；现有管理员模拟账号同时获授 `CHIEF_REFEREE`，每次敏感操作审计实际使用的裁判长角色，不依赖 `ADMIN`。
 
@@ -109,12 +125,18 @@ tags:
 | 成绩复核、解锁、追溯修订 | 提交/申请 | 批准处理 | 不得直接改分 |
 | 发布成绩册 | 查看已发布版 | 审核锁定数据 | 发布已复核快照 |
 
+出场名单盲交（4-D）在服务端裁剪：负责人页面只下发本方名单，对方名单与后台视图在双方交齐前只有「已提交/未提交」状态，不含任何队员；计分命令 `CONFIRM_RESULT`/`REOPEN_RESULT` 在同一事务内结算团体对抗，后续轮次已开赛时整条命令以 `downstream_started` 拒绝。
+
+赛程与裁判排班（4-C）：设置、草稿、建议、发布走 `/api/admin/tournaments/[slug]/schedule/**`，只允许本赛事 `ADMIN`/`ORGANIZER`（`requireManagedTournament`）；裁判员不能排程。临时更换已发布比赛的主裁判 `POST .../schedule/matches/[matchCode]/referee` 只认本赛事 `CHIEF_REFEREE`，原因必填；同一事务停用原指派、启用新指派、吊销该场全部活动控制会话（`REFEREE_REPLACED`），被换下的裁判此后连读取该场执裁状态都 403，新裁判取得控制时代次递增。发布赛程时若改派了裁判，被换下者的活动会话同样吊销（`REFEREE_REASSIGNED`）。指派只能选本赛事持有 `REFEREE` 角色的启用账号。裁判长现场看板 `/officiating/board/[slug]` 只认 `CHIEF_REFEREE`，管理员身份不因此获得该页权限。出场名单截止后，负责人提交返回 `409 lineup_deadline_passed`，管理员代交仍可提交并记为逾期。
+
+队伍负责人（4-B）不是赛事角色：只由 `TeamManager` 绑定授权，只能查看与提交本队名单，访问 `/management/**` 与全部管理接口一律 403；赛事管理员身份也不会让人自动成为任何队伍的负责人。抽签的生成、调签与发布属于管理员/编排员；撤销已发布抽签属于裁判长。
+
 同一使用者可以兼任角色，但每次敏感操作记录实际身份和所用角色；不能伪造两人独立复核。管理员授予角色、撤销角色和紧急访问也要审计。
 
 ## 录入、公开与导出接口
 
 - 导入（阶段 4-A 已实现）：预览不落库，确认时重新上传同一文件并携带预览的内容摘要与新增/重复计数，服务端在赛事行锁内重算，一致才整份写入；`RegistrationImportBatch` 按内容摘要唯一，重复导入被拒；导入只生成待审核报名，人员在审核通过时才建立，因此不会重复建人。
-- 排程冲突接口以运动员内部 ID 展开组合，跨 MS/WS/MD/WD/XD 返回冲突成员和时间原因。
+- 排程冲突检查（阶段 4-C 已实现）以运动员内部 ID 展开单打成员、双打组合与团体小场上场队员，跨全部项目返回冲突的比赛与原因；尚未公开的出场名单造成的冲突只说明存在、不写姓名。草稿保存 `PATCH .../schedule/slots/[matchCode]` 立即返回这一场的复检结果；发布 `POST .../schedule/publish` 必须带与当前警告一致的摘要，硬冲突 `409 schedule_has_conflicts`（附前 50 条），警告变化 `409 warnings_changed`。
 - 公开查询只返回服务端白名单 DTO；没有姓名发布决定时使用公开编号/别名。
 - PDF/Excel 任务只接受授权赛事和锁定快照 ID，不接受任意 URL；生成记录保存快照、模板、哈希、版本和替代关系。
 

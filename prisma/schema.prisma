@@ -41,6 +41,7 @@ enum NamePublicationPolicy {
   DISPLAY_NAMES
 }
 
+// TEAM 是团体赛（学院对抗）：报名单位是一支队伍，每场对抗由若干单打/双打「小场」组成。
 enum CompetitionKind {
   MS
   WS
@@ -48,11 +49,19 @@ enum CompetitionKind {
   WD
   XD
   CUSTOM
+  TEAM
 }
 
 enum EntryType {
   SINGLES
   DOUBLES
+  TEAM
+}
+
+// 性别只用于核对团体名单能否组成男/女/混合小场，由负责人明确填写，不从姓名或证件推断。
+enum Gender {
+  MALE
+  FEMALE
 }
 
 enum StageType {
@@ -79,6 +88,48 @@ enum RegistrationSource {
   MANUAL
   IMPORT
   INVITE
+  TEAM_MANAGER
+}
+
+// 抽签：草稿可多次生成/调签；正式发布后生成阶段、小组、对阵与比赛并冻结报名单位。
+// 每个项目同时最多一个草稿、一个已发布版本；被替代或撤销的版本保留备查。
+enum DrawStatus {
+  DRAFT
+  PUBLISHED
+  SUPERSEDED
+  REVOKED
+}
+
+enum DrawFormat {
+  ROUND_ROBIN
+  GROUPS_KNOCKOUT
+  KNOCKOUT
+}
+
+enum FixtureKind {
+  GROUP
+  KNOCKOUT
+  THIRD_PLACE
+}
+
+// 对阵一侧的来源：确定的报名单位、某组第几名、某场对阵的胜者/负者。未决来源不虚构参赛者。
+enum FixtureSourceType {
+  ENTRY
+  GROUP_RANK
+  FIXTURE_WINNER
+  FIXTURE_LOSER
+}
+
+// 团体对抗的一侧（与比赛计分的 A/B 同义）。
+enum MatchSide {
+  A
+  B
+}
+
+// 出场名单的提交途径：队伍负责人本人，或赛事管理员代交。
+enum LineupSource {
+  TEAM_MANAGER
+  ADMIN
 }
 
 enum OfficialRole {
@@ -125,28 +176,42 @@ enum ResultRevisionStatus {
 }
 
 model User {
-  id                  String               @id @default(uuid()) @db.Uuid
-  name                String
-  email               String               @unique
-  emailVerified       Boolean              @default(false)
-  image               String?
-  status              UserStatus           @default(ACTIVE)
-  systemRole          SystemRole           @default(USER)
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
-  sessions            Session[]
-  accounts            Account[]
-  roleAssignments     RoleAssignment[]
-  officialAssignments OfficialAssignment[]
-  scoringSessions     ScoringSession[]
-  matchEvents         MatchEvent[]         @relation("MatchEventActor")
-  resultRevisions     ResultRevision[]     @relation("ResultRevisionActor")
-  reviewedRevisions   ResultRevision[]     @relation("ResultRevisionReviewer")
-  auditLogs           AuditLog[]           @relation("AuditActor")
-  submittedRegistrations Registration[]    @relation("RegistrationSubmitter")
-  reviewedRegistrations  Registration[]    @relation("RegistrationReviewer")
-  createdInvites      RegistrationInvite[]
-  importBatches       RegistrationImportBatch[]
+  id                         String                    @id @default(uuid()) @db.Uuid
+  name                       String
+  email                      String                    @unique
+  emailVerified              Boolean                   @default(false)
+  image                      String?
+  status                     UserStatus                @default(ACTIVE)
+  systemRole                 SystemRole                @default(USER)
+  // 由赛事管理员开通的队伍负责人账号：初始口令只显示一次，首次登录必须修改。
+  mustChangePassword         Boolean                   @default(false)
+  provisionedForTournamentId String?                   @db.Uuid
+  createdAt                  DateTime                  @default(now())
+  updatedAt                  DateTime                  @updatedAt
+  sessions                   Session[]
+  accounts                   Account[]
+  roleAssignments            RoleAssignment[]
+  officialAssignments        OfficialAssignment[]
+  scoringSessions            ScoringSession[]
+  matchEvents                MatchEvent[]              @relation("MatchEventActor")
+  resultRevisions            ResultRevision[]          @relation("ResultRevisionActor")
+  reviewedRevisions          ResultRevision[]          @relation("ResultRevisionReviewer")
+  auditLogs                  AuditLog[]                @relation("AuditActor")
+  submittedRegistrations     Registration[]            @relation("RegistrationSubmitter")
+  reviewedRegistrations      Registration[]            @relation("RegistrationReviewer")
+  createdInvites             RegistrationInvite[]
+  importBatches              RegistrationImportBatch[]
+  provisionedForTournament   Tournament?               @relation("ProvisionedUsers", fields: [provisionedForTournamentId], references: [id], onDelete: SetNull)
+  teamManagerships           TeamManager[]             @relation("TeamManagerUser")
+  createdTeamManagers        TeamManager[]             @relation("TeamManagerCreator")
+  createdDraws               Draw[]                    @relation("DrawCreator")
+  publishedDraws             Draw[]                    @relation("DrawPublisher")
+  revokedDraws               Draw[]                    @relation("DrawRevoker")
+  submittedLineups           FixtureLineup[]           @relation("LineupSubmitter")
+  confirmedGroupRankings     Group[]                   @relation("GroupRankingConfirmer")
+  draftScheduleSlots         ScheduleSlot[]            @relation("ScheduleSlotReferee")
+  editedScheduleSlots        ScheduleSlot[]            @relation("ScheduleSlotEditor")
+  schedulePublications       SchedulePublication[]     @relation("SchedulePublisher")
 
   @@map("users")
 }
@@ -200,30 +265,30 @@ model Verification {
 }
 
 model Tournament {
-  id                    String                @id @default(uuid()) @db.Uuid
-  slug                  String                @unique
+  id                    String                    @id @default(uuid()) @db.Uuid
+  slug                  String                    @unique
   name                  String
   subtitle              String?
   organizer             String?
   venue                 String?
   summary               String?
-  startDate             DateTime?             @db.Date
-  endDate               DateTime?             @db.Date
+  startDate             DateTime?                 @db.Date
+  endDate               DateTime?                 @db.Date
   posterPath            String?
   posterAlt             String?
-  timezone              String                @default("Asia/Shanghai")
-  status                TournamentStatus      @default(DRAFT)
-  phase                 TournamentPhase       @default(PREPARING)
-  namePolicy            NamePublicationPolicy @default(CODES_ONLY)
+  timezone              String                    @default("Asia/Shanghai")
+  status                TournamentStatus          @default(DRAFT)
+  phase                 TournamentPhase           @default(PREPARING)
+  namePolicy            NamePublicationPolicy     @default(CODES_ONLY)
   publishedAt           DateTime?
   regulations           String?
   registrationOpensAt   DateTime?
   registrationClosesAt  DateTime?
-  nextParticipantSeq    Int                   @default(1)
-  defaultRuleRevisionId String?               @db.Uuid
-  createdAt             DateTime              @default(now())
-  updatedAt             DateTime              @updatedAt
-  defaultRuleRevision   RuleProfileRevision? @relation("TournamentDefaultRule", fields: [defaultRuleRevisionId], references: [id], onDelete: SetNull)
+  nextParticipantSeq    Int                       @default(1)
+  defaultRuleRevisionId String?                   @db.Uuid
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  defaultRuleRevision   RuleProfileRevision?      @relation("TournamentDefaultRule", fields: [defaultRuleRevisionId], references: [id], onDelete: SetNull)
   competitions          Competition[]
   courts                Court[]
   ruleProfiles          RuleProfile[]
@@ -233,6 +298,13 @@ model Tournament {
   registrations         Registration[]
   registrationInvites   RegistrationInvite[]
   importBatches         RegistrationImportBatch[]
+  teams                 Team[]
+  teamManagers          TeamManager[]
+  provisionedUsers      User[]                    @relation("ProvisionedUsers")
+  scheduleConfig        ScheduleConfig?
+  scheduleDays          ScheduleDay[]
+  scheduleSlots         ScheduleSlot[]
+  schedulePublications  SchedulePublication[]
 
   @@map("tournaments")
 }
@@ -246,6 +318,15 @@ model Competition {
   entryType             EntryType
   ruleProfileRevisionId String?              @db.Uuid
   nextEntrySeq          Int                  @default(1)
+  // 仅团体项目：每场对抗的小场顺序与名单人数要求。非团体项目必须为空（迁移中的 CHECK 兜底）。
+  teamRubbers           CompetitionKind[]    @default([])
+  teamRosterMin         Int?
+  teamRosterMax         Int?
+  teamMinMale           Int?
+  teamMinFemale         Int?
+  // 仅团体项目：同一队员在一场对抗里最多上几个小场（按性别）；为空表示不设上限。
+  teamMaxRubbersMale    Int?
+  teamMaxRubbersFemale  Int?
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
   tournament            Tournament           @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
@@ -254,6 +335,8 @@ model Competition {
   entries               Entry[]
   entryMembers          EntryMember[]
   registrations         Registration[]
+  draws                 Draw[]
+  fixtures              Fixture[]
 
   @@unique([tournamentId, code])
   @@index([tournamentId])
@@ -270,11 +353,13 @@ model Participant {
   teamName            String?
   studentId           String?
   contact             String?
+  gender              Gender?
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
   tournament          Tournament           @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
   memberships         EntryMember[]
   registrationMembers RegistrationMember[]
+  matchAppearances    MatchPlayer[]
 
   @@unique([tournamentId, publicCode])
   @@unique([tournamentId, studentId])
@@ -282,22 +367,31 @@ model Participant {
   @@map("participants")
 }
 
+// 抽签发布时设置 frozenAt：此后不能通过、撤回或换人。团体报名单位额外挂在一个 Team 上。
 model Entry {
-  id            String        @id @default(uuid()) @db.Uuid
-  competitionId String        @db.Uuid
+  id            String          @id @default(uuid()) @db.Uuid
+  competitionId String          @db.Uuid
   code          String
   displayName   String
   entryType     EntryType
+  teamId        String?         @db.Uuid
   frozenAt      DateTime?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-  competition   Competition   @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  competition   Competition     @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  team          Team?           @relation(fields: [teamId], references: [id], onDelete: NoAction)
   members       EntryMember[]
-  matchesAsA    Match[]       @relation("MatchSideA")
-  matchesAsB    Match[]       @relation("MatchSideB")
+  matchesAsA    Match[]         @relation("MatchSideA")
+  matchesAsB    Match[]         @relation("MatchSideB")
+  fixturesAsA   Fixture[]       @relation("FixtureSideAEntry")
+  fixturesAsB   Fixture[]       @relation("FixtureSideBEntry")
+  fixturesWon   Fixture[]       @relation("FixtureWinner")
+  lineups       FixtureLineup[]
+  matchPlayers  MatchPlayer[]
   registration  Registration?
 
   @@unique([competitionId, code])
+  @@unique([competitionId, teamId])
   @@index([competitionId])
   @@map("entries")
 }
@@ -305,14 +399,16 @@ model Entry {
 // competitionId 是 entries.competitionId 的冗余副本（由迁移中的触发器保证一致），
 // 只为让数据库用唯一索引兜底「同一人在同一项目只能出现在一个报名单位里」。
 model EntryMember {
-  id            String      @id @default(uuid()) @db.Uuid
-  entryId       String      @db.Uuid
-  competitionId String      @db.Uuid
-  participantId String      @db.Uuid
+  id            String            @id @default(uuid()) @db.Uuid
+  entryId       String            @db.Uuid
+  competitionId String            @db.Uuid
+  participantId String            @db.Uuid
   slot          Int
-  entry         Entry       @relation(fields: [entryId], references: [id], onDelete: Cascade)
-  competition   Competition @relation(fields: [competitionId], references: [id], onDelete: Cascade)
-  participant   Participant @relation(fields: [participantId], references: [id], onDelete: NoAction)
+  // 仅团体报名单位：审核通过时从名单复制的报项，个人项目必须为空（触发器兜底）。
+  rubberKinds   CompetitionKind[] @default([])
+  entry         Entry             @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  competition   Competition       @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  participant   Participant       @relation(fields: [participantId], references: [id], onDelete: NoAction)
 
   @@unique([entryId, participantId])
   @@unique([entryId, slot])
@@ -328,6 +424,7 @@ model Registration {
   referenceCode        String                   @unique
   status               RegistrationStatus       @default(PENDING)
   source               RegistrationSource
+  teamId               String?                  @db.Uuid
   version              Int                      @default(0)
   dedupeKey            String?
   note                 String?
@@ -348,6 +445,7 @@ model Registration {
   entry                Entry?                   @relation(fields: [entryId], references: [id], onDelete: NoAction)
   invite               RegistrationInvite?      @relation(fields: [inviteId], references: [id], onDelete: SetNull)
   importBatch          RegistrationImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  team                 Team?                    @relation(fields: [teamId], references: [id], onDelete: NoAction)
   submittedBy          User?                    @relation("RegistrationSubmitter", fields: [submittedByUserId], references: [id], onDelete: SetNull)
   reviewedBy           User?                    @relation("RegistrationReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
   members              RegistrationMember[]
@@ -360,16 +458,19 @@ model Registration {
 
 // 报名时提交的人员信息原样保留，便于审核留痕；审核通过时才解析为 Participant。
 model RegistrationMember {
-  id             String       @id @default(uuid()) @db.Uuid
-  registrationId String       @db.Uuid
+  id             String            @id @default(uuid()) @db.Uuid
+  registrationId String            @db.Uuid
   slot           Int
   displayName    String
   studentId      String?
   teamName       String?
   contact        String?
-  participantId  String?      @db.Uuid
-  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
-  participant    Participant? @relation(fields: [participantId], references: [id], onDelete: SetNull)
+  gender         Gender?
+  // 仅团体名单：该队员报了哪些小场（男单/女单/男双/女双/混双），排出场名单时只能从报了该项的队员里选。
+  rubberKinds    CompetitionKind[] @default([])
+  participantId  String?           @db.Uuid
+  registration   Registration      @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  participant    Participant?      @relation(fields: [participantId], references: [id], onDelete: SetNull)
 
   @@unique([registrationId, slot])
   @@index([participantId])
@@ -424,41 +525,56 @@ model Stage {
   type                  StageType
   order                 Int
   ruleProfileRevisionId String?              @db.Uuid
+  drawId                String?              @db.Uuid
   frozenAt              DateTime?
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
   competition           Competition          @relation(fields: [competitionId], references: [id], onDelete: Cascade)
   ruleProfileRevision   RuleProfileRevision? @relation("StageRule", fields: [ruleProfileRevisionId], references: [id], onDelete: SetNull)
+  draw                  Draw?                @relation(fields: [drawId], references: [id], onDelete: NoAction)
   groups                Group[]
   matches               Match[]
+  fixtures              Fixture[]
 
   @@unique([competitionId, code])
   @@map("stages")
 }
 
 model Group {
-  id        String   @id @default(uuid()) @db.Uuid
-  stageId   String   @db.Uuid
-  code      String
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  stage     Stage    @relation(fields: [stageId], references: [id], onDelete: Cascade)
-  matches   Match[]
+  id                       String    @id @default(uuid()) @db.Uuid
+  stageId                  String    @db.Uuid
+  code                     String
+  name                     String
+  // 小组名次经裁判长确认后固定（含无法区分时的抽签顺序），并据此回填淘汰签位。
+  ranking                  Json?
+  rankingConfirmedAt       DateTime?
+  rankingConfirmedByUserId String?   @db.Uuid
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+  stage                    Stage     @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  rankingConfirmedBy       User?     @relation("GroupRankingConfirmer", fields: [rankingConfirmedByUserId], references: [id], onDelete: SetNull)
+  matches                  Match[]
+  fixtures                 Fixture[] @relation("FixtureGroup")
+  sourceForSideA           Fixture[] @relation("FixtureSideAGroup")
+  sourceForSideB           Fixture[] @relation("FixtureSideBGroup")
 
   @@unique([stageId, code])
   @@map("competition_groups")
 }
 
+// 场地关闭（active=false）后不能再排新比赛；已排在它上面的比赛在赛程检查中是硬冲突。
 model Court {
-  id           String     @id @default(uuid()) @db.Uuid
-  tournamentId String     @db.Uuid
-  code         String
-  name         String
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
-  matches      Match[]
+  id            String         @id @default(uuid()) @db.Uuid
+  tournamentId  String         @db.Uuid
+  code          String
+  name          String
+  active        Boolean        @default(true)
+  sortOrder     Int            @default(0)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  tournament    Tournament     @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  matches       Match[]
+  scheduleSlots ScheduleSlot[]
 
   @@unique([tournamentId, code])
   @@map("courts")
@@ -508,10 +624,20 @@ model Match {
   courtId             String?              @db.Uuid
   sideAEntryId        String?              @db.Uuid
   sideBEntryId        String?              @db.Uuid
+  // 抽签生成的比赛挂在对阵上；团体对抗的每个小场是一场独立比赛，按 rubberOrder 排序。
+  fixtureId           String?              @db.Uuid
+  rubberKind          CompetitionKind?
+  rubberOrder         Int?
+  // 淘汰赛团体对抗胜负已定后，尚未开始的小场不再进行（不是弃权、不记比分）。
+  notPlayedAt         DateTime?
   lifecycleStatus     MatchLifecycleStatus @default(SCHEDULED)
   outcomeType         MatchOutcomeType?
   verificationStatus  VerificationStatus   @default(UNVERIFIED)
+  // 已发布赛程的计划开始/结束（结束 = 开始 + 预计时长，不是保证时长）；实际开始/结束另记。
   scheduledAt         DateTime?
+  scheduledEndAt      DateTime?
+  // 计划时间是「接上一场之后」推算的预计值，而不是固定开赛时刻。
+  scheduleEstimated   Boolean              @default(false)
   startedAt           DateTime?
   endedAt             DateTime?
   publishedAt         DateTime?
@@ -524,6 +650,7 @@ model Match {
   court               Court?               @relation(fields: [courtId], references: [id], onDelete: SetNull)
   sideAEntry          Entry?               @relation("MatchSideA", fields: [sideAEntryId], references: [id], onDelete: Restrict)
   sideBEntry          Entry?               @relation("MatchSideB", fields: [sideBEntryId], references: [id], onDelete: Restrict)
+  fixture             Fixture?             @relation(fields: [fixtureId], references: [id], onDelete: Restrict)
   games               Game[]
   ruleSnapshot        MatchRuleSnapshot?
   events              MatchEvent[]
@@ -531,8 +658,12 @@ model Match {
   scoringSessions     ScoringSession[]
   resultRevisions     ResultRevision[]
   officialAssignments OfficialAssignment[]
+  players             MatchPlayer[]
+  scheduleSlot        ScheduleSlot?
 
+  @@unique([fixtureId, rubberOrder])
   @@index([stageId])
+  @@index([fixtureId])
   @@index([courtId, scheduledAt])
   @@index([publishedAt, scheduledAt])
   @@map("matches")
@@ -705,4 +836,238 @@ model AuditLog {
   @@index([tournamentId, occurredAt])
   @@index([actorUserId, occurredAt])
   @@map("audit_logs")
+}
+
+// 代表队（校内联赛中通常是一个学院）。按赛事隔离；团体报名单位挂在队伍上。
+model Team {
+  id            String         @id @default(uuid()) @db.Uuid
+  tournamentId  String         @db.Uuid
+  code          String
+  name          String
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  tournament    Tournament     @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  managers      TeamManager[]
+  registrations Registration[]
+  entries       Entry[]
+
+  @@unique([tournamentId, code])
+  @@unique([tournamentId, name])
+  @@map("teams")
+}
+
+// 队伍负责人：只能查看和提交本队名单，不获得任何赛事管理、执裁或审核权限。
+model TeamManager {
+  id              String     @id @default(uuid()) @db.Uuid
+  teamId          String     @db.Uuid
+  tournamentId    String     @db.Uuid
+  userId          String     @db.Uuid
+  createdByUserId String?    @db.Uuid
+  createdAt       DateTime   @default(now())
+  team            Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  tournament      Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  user            User       @relation("TeamManagerUser", fields: [userId], references: [id], onDelete: Cascade)
+  createdBy       User?      @relation("TeamManagerCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([teamId, userId])
+  @@index([userId, tournamentId])
+  @@map("team_managers")
+}
+
+// 一次抽签：保存输入名单快照、设置、随机种子、算法版本、手动调签与结果，足以完整复现。
+model Draw {
+  id                String      @id @default(uuid()) @db.Uuid
+  competitionId     String      @db.Uuid
+  version           Int
+  status            DrawStatus  @default(DRAFT)
+  format            DrawFormat
+  algorithmVersion  String
+  randomSeed        String
+  inputHash         String
+  input             Json
+  settings          Json
+  adjustments       Json
+  result            Json
+  conflictCount     Int
+  createdByUserId   String?     @db.Uuid
+  createdAt         DateTime    @default(now())
+  publishedByUserId String?     @db.Uuid
+  publishedAt       DateTime?
+  revokedByUserId   String?     @db.Uuid
+  revokedAt         DateTime?
+  revokeReason      String?
+  competition       Competition @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  createdBy         User?       @relation("DrawCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  publishedBy       User?       @relation("DrawPublisher", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  revokedBy         User?       @relation("DrawRevoker", fields: [revokedByUserId], references: [id], onDelete: SetNull)
+  stages            Stage[]
+  fixtures          Fixture[]
+
+  @@unique([competitionId, version])
+  @@map("draws")
+}
+
+// 对阵：个人项目对应 1 场比赛，团体项目对应 1 场学院对抗（若干小场比赛）。
+// 两侧来源由 CHECK 与触发器保证自洽、同项目、且只引用更早的轮次（无环）。
+model Fixture {
+  id                String            @id @default(uuid()) @db.Uuid
+  drawId            String            @db.Uuid
+  competitionId     String            @db.Uuid
+  stageId           String            @db.Uuid
+  groupId           String?           @db.Uuid
+  code              String
+  kind              FixtureKind
+  round             Int
+  sequence          Int
+  label             String
+  sideASource       FixtureSourceType
+  sideAEntryId      String?           @db.Uuid
+  sideAGroupId      String?           @db.Uuid
+  sideARank         Int?
+  sideAFixtureId    String?           @db.Uuid
+  sideBSource       FixtureSourceType
+  sideBEntryId      String?           @db.Uuid
+  sideBGroupId      String?           @db.Uuid
+  sideBRank         Int?
+  sideBFixtureId    String?           @db.Uuid
+  // 团体对抗：双方出场名单都交齐的时刻（此前双方互相看不到，此后锁定）。
+  lineupsRevealedAt DateTime?
+  // 对抗胜负：由已锁定的小场结果推导，随结果重开自动撤回。
+  winnerEntryId     String?           @db.Uuid
+  decidedAt         DateTime?
+  createdAt         DateTime          @default(now())
+  draw              Draw              @relation(fields: [drawId], references: [id], onDelete: Cascade)
+  competition       Competition       @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  stage             Stage             @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  group             Group?            @relation("FixtureGroup", fields: [groupId], references: [id], onDelete: Cascade)
+  sideAEntry        Entry?            @relation("FixtureSideAEntry", fields: [sideAEntryId], references: [id], onDelete: NoAction)
+  sideBEntry        Entry?            @relation("FixtureSideBEntry", fields: [sideBEntryId], references: [id], onDelete: NoAction)
+  sideAGroup        Group?            @relation("FixtureSideAGroup", fields: [sideAGroupId], references: [id], onDelete: NoAction)
+  sideBGroup        Group?            @relation("FixtureSideBGroup", fields: [sideBGroupId], references: [id], onDelete: NoAction)
+  sideAFixture      Fixture?          @relation("FixtureSideAFixture", fields: [sideAFixtureId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  sideBFixture      Fixture?          @relation("FixtureSideBFixture", fields: [sideBFixtureId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  feedsSideA        Fixture[]         @relation("FixtureSideAFixture")
+  feedsSideB        Fixture[]         @relation("FixtureSideBFixture")
+  winnerEntry       Entry?            @relation("FixtureWinner", fields: [winnerEntryId], references: [id], onDelete: NoAction)
+  matches           Match[]
+  lineups           FixtureLineup[]
+
+  @@unique([competitionId, code])
+  @@index([drawId])
+  @@index([stageId])
+  @@map("fixtures")
+}
+
+// 一支队伍在一场团体对抗里的出场名单（表头）。双方盲交：交齐前只有本方看得到。
+model FixtureLineup {
+  id                String       @id @default(uuid()) @db.Uuid
+  fixtureId         String       @db.Uuid
+  side              MatchSide
+  entryId           String       @db.Uuid
+  source            LineupSource
+  // 截止时间（首个小场计划开始前若干分钟）之后由管理员代交。
+  submittedLate     Boolean      @default(false)
+  version           Int          @default(1)
+  submittedByUserId String?      @db.Uuid
+  submittedAt       DateTime     @default(now())
+  fixture           Fixture      @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+  // 名单依附于报名单位（抽签发布后报名单位冻结，应用内不会删除）；整赛事删除时随之级联。
+  entry             Entry        @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  submittedBy       User?        @relation("LineupSubmitter", fields: [submittedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([fixtureId, side])
+  @@map("fixture_lineups")
+}
+
+// 团体小场的上场队员：一侧 1 人（单打）或 2 人（双打），必须是该侧队伍名单里报了该项的队员。
+model MatchPlayer {
+  id            String      @id @default(uuid()) @db.Uuid
+  matchId       String      @db.Uuid
+  side          MatchSide
+  slot          Int
+  entryId       String      @db.Uuid
+  participantId String      @db.Uuid
+  createdAt     DateTime    @default(now())
+  match         Match       @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  entry         Entry       @relation(fields: [entryId], references: [id], onDelete: NoAction)
+  participant   Participant @relation(fields: [participantId], references: [id], onDelete: NoAction)
+
+  @@unique([matchId, side, slot])
+  @@unique([matchId, participantId])
+  @@index([participantId])
+  @@map("match_players")
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 4-C：赛程与裁判排班
+// ---------------------------------------------------------------------------
+
+// 每个赛事一份赛程设置。时长是预计值，只用于排程与推算延误，不是保证时长。
+model ScheduleConfig {
+  tournamentId          String     @id @db.Uuid
+  matchMinutes          Int        @default(30)
+  rubberMinutes         Int        @default(25)
+  changeoverMinutes     Int        @default(5)
+  // 淘汰赛一场团体对抗同时占用几块场地（小组赛固定一组一块场地）。
+  knockoutTieCourts     Int        @default(2)
+  lineupDeadlineMinutes Int        @default(30)
+  updatedAt             DateTime   @updatedAt
+  tournament            Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  @@map("schedule_configs")
+}
+
+// 比赛日与开放时段（赛事时区下当天的第几分钟），自动建议只在这些时段内排比赛。
+model ScheduleDay {
+  id           String     @id @default(uuid()) @db.Uuid
+  tournamentId String     @db.Uuid
+  day          DateTime   @db.Date
+  startMinute  Int
+  endMinute    Int
+  createdAt    DateTime   @default(now())
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  @@unique([tournamentId, day])
+  @@map("schedule_days")
+}
+
+// 草稿赛程：一行覆盖一场比赛的已发布安排；没有草稿行的比赛沿用已发布值。发布后清空。
+model ScheduleSlot {
+  id              String     @id @default(uuid()) @db.Uuid
+  tournamentId    String     @db.Uuid
+  matchId         String     @unique @db.Uuid
+  courtId         String?    @db.Uuid
+  startsAt        DateTime?
+  durationMinutes Int
+  estimated       Boolean    @default(false)
+  refereeUserId   String?    @db.Uuid
+  updatedByUserId String?    @db.Uuid
+  updatedAt       DateTime   @updatedAt
+  tournament      Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  match           Match      @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  court           Court?     @relation(fields: [courtId], references: [id], onDelete: NoAction)
+  referee         User?      @relation("ScheduleSlotReferee", fields: [refereeUserId], references: [id], onDelete: SetNull)
+  updatedBy       User?      @relation("ScheduleSlotEditor", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([tournamentId])
+  @@map("schedule_slots")
+}
+
+// 赛程发布版本：保存发布时的完整安排、与上一版的差异，以及发布者确认过的警告。
+model SchedulePublication {
+  id                String     @id @default(uuid()) @db.Uuid
+  tournamentId      String     @db.Uuid
+  version           Int
+  publishedAt       DateTime   @default(now())
+  publishedByUserId String?    @db.Uuid
+  matchCount        Int
+  snapshot          Json
+  changes           Json
+  warnings          Json
+  note              String?
+  tournament        Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  publishedBy       User?      @relation("SchedulePublisher", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([tournamentId, version])
+  @@map("schedule_publications")
 }

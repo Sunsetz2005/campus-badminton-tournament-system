@@ -83,6 +83,45 @@ function scoreA(page: Page) {
   return page.locator('[data-scoreboard-side="A"] .court-score-number');
 }
 
+/**
+ * 拦截"按原 commandId 查询结果"的请求：注入期间一律答 404，并记下每次查询的 commandId。
+ *
+ * 5xx/结构不符之后，工作台会先刷新权威状态、再自动发起一次对账查询。开关必须在
+ * 这次自动查询**被注入的 404 答复之后**才能关闭——路由处理器在请求到达时才读开关，
+ * 提前关闭会让自动查询直达真实服务器并核销命令，恢复面板随即消失（旧版的偶发失败）。
+ */
+async function interceptCommandLookups(page: Page) {
+  const lookup = { inject: true, injected: 0, commandIds: [] as string[] };
+  await page.route(`**/api/matches/${MATCH_CODE}/commands/*`, async (route) => {
+    const commandId = decodeURIComponent(new URL(route.request().url()).pathname.split("/").pop()!);
+    if (commandId === "preview") return route.continue();
+    lookup.commandIds.push(commandId);
+    if (!lookup.inject) return route.continue();
+    lookup.injected += 1;
+    await route.fulfill({
+      body: JSON.stringify({ error: { code: "command_not_found", message: "故障注入期间暂不返回命令结果。" } }),
+      contentType: "application/json",
+      status: 404,
+    });
+  });
+  return lookup;
+}
+
+/** 等到自动对账查询已被注入的 404 答复，界面进入"未找到、只能按原命令处理"的受控状态。 */
+async function expectUnresolvedAfterLookup(page: Page, lookup: { injected: number }) {
+  const recovery = page.locator(".pending-recovery");
+  await expect.poll(() => lookup.injected).toBeGreaterThan(0);
+  await expect(recovery.getByRole("button", { name: "以原命令重试" })).toBeVisible();
+  await expect(page.locator(".scoring-alert")).toContainText("服务器暂未找到这条待确认命令");
+  await expect(page.locator(".status-facts")).toContainText("响应待确认");
+  await expect(page.locator(".status-facts")).not.toContainText("已同步");
+  await expect(page.locator(".score-adjust.plus").first()).toBeDisabled();
+  await expect(page.locator(".score-adjust.plus").last()).toBeDisabled();
+  const pending = await page.evaluate((key) => localStorage.getItem(key), PENDING_KEY);
+  expect(pending).not.toBeNull();
+  return JSON.parse(pending!).commandId as string;
+}
+
 test.describe.serial("R3-002/R3-003 响应竞态与结果未知的浏览器注入回归", () => {
   test.beforeEach(resetMatch);
   test.afterEach(resetMatch);
@@ -162,27 +201,16 @@ test.describe.serial("R3-002/R3-003 响应竞态与结果未知的浏览器注�
         status: 502,
       });
     });
-    await page.route(`**/api/matches/${MATCH_CODE}/commands/*`, async (route) => {
-      if (!injectGatewayError) return route.continue();
-      await route.fulfill({
-        body: JSON.stringify({ error: { code: "command_not_found", message: "故障注入期间暂不返回命令结果。" } }),
-        contentType: "application/json",
-        status: 404,
-      });
-    });
+    const lookup = await interceptCommandLookups(page);
 
     const addPoint = page.getByRole("button", { name: "模拟选手 01 赢得一分" });
     await addPoint.click();
 
     const recovery = page.locator(".pending-recovery");
     await expect(recovery).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator(".status-facts")).toContainText("响应待确认");
-    // 关键断言：待确认命令没有被 5xx 直接删除。
-    const pending = await page.evaluate((key) => localStorage.getItem(key), PENDING_KEY);
-    expect(pending).not.toBeNull();
-    const pendingCommandId = JSON.parse(pending!).commandId as string;
-    await expect(page.locator(".score-adjust.plus").first()).toBeDisabled();
-    await expect(page.locator(".score-adjust.plus").last()).toBeDisabled();
+    // 关键断言：待确认命令没有被 5xx 直接删除，自动对账查不到结果时也不显示已同步。
+    const pendingCommandId = await expectUnresolvedAfterLookup(page, lookup);
+    expect(new Set(lookup.commandIds)).toEqual(new Set([pendingCommandId]));
 
     // 命令确实落了库，而且只落了一次；恢复后按原 ID 对账而不是新建一条。
     await expect.poll(() => prisma.matchEvent.count({
@@ -190,8 +218,11 @@ test.describe.serial("R3-002/R3-003 响应竞态与结果未知的浏览器注�
     })).toBe(1);
 
     injectGatewayError = false;
+    lookup.inject = false;
+    const queriesBefore = lookup.commandIds.length;
     await recovery.getByRole("button", { name: "查询原命令结果" }).click();
     await expect(recovery).toBeHidden();
+    expect(lookup.commandIds.slice(queriesBefore)).toEqual([pendingCommandId]);
     await expect(scoreA(page)).toHaveText("1");
     await expect(page.evaluate((key) => localStorage.getItem(key), PENDING_KEY)).resolves.toBeNull();
     await expect.poll(() => prisma.matchEvent.count({
@@ -215,25 +246,25 @@ test.describe.serial("R3-002/R3-003 响应竞态与结果未知的浏览器注�
         status: 200,
       });
     });
-    await page.route(`**/api/matches/${MATCH_CODE}/commands/*`, async (route) => {
-      if (!injectMalformed) return route.continue();
-      await route.fulfill({
-        body: JSON.stringify({ error: { code: "command_not_found", message: "故障注入期间暂不返回命令结果。" } }),
-        contentType: "application/json",
-        status: 404,
-      });
-    });
+    const lookup = await interceptCommandLookups(page);
 
     await page.getByRole("button", { name: "模拟选手 01 赢得一分" }).click();
     const recovery = page.locator(".pending-recovery");
     await expect(recovery).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator(".status-facts")).toContainText("响应待确认");
-    await expect(page.evaluate((key) => localStorage.getItem(key), PENDING_KEY)).resolves.not.toBeNull();
+    const pendingCommandId = await expectUnresolvedAfterLookup(page, lookup);
+    expect(new Set(lookup.commandIds)).toEqual(new Set([pendingCommandId]));
 
     injectMalformed = false;
+    lookup.inject = false;
+    const queriesBefore = lookup.commandIds.length;
     await recovery.getByRole("button", { name: "查询原命令结果" }).click();
     await expect(recovery).toBeHidden();
+    expect(lookup.commandIds.slice(queriesBefore)).toEqual([pendingCommandId]);
     await expect(scoreA(page)).toHaveText("1");
+    await expect(page.evaluate((key) => localStorage.getItem(key), PENDING_KEY)).resolves.toBeNull();
+    await expect.poll(() => prisma.matchEvent.count({
+      where: { match: { code: MATCH_CODE }, commandId: pendingCommandId },
+    })).toBe(1);
   });
 
   test("R3-003：本机待确认记录损坏时进入受控恢复，不清空也不假成功", async ({ page }) => {

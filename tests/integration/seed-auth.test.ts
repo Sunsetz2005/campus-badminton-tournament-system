@@ -33,13 +33,16 @@ describe("模拟身份种子口令轮换", () => {
     await runSeed(originalPassword);
   });
 
+  // 只统计种子身份：其他并行用例会临时开通队伍负责人账号（provisionedForTournamentId 非空）。
+  const credentialScope = { providerId: "credential", user: { provisionedForTournamentId: null } };
+
   it("重跑种子后使用新口令并拒绝旧口令", async () => {
-    const before = await prisma.account.count({ where: { providerId: "credential" } });
+    const before = await prisma.account.count({ where: credentialScope });
     await runSeed(rotatedPassword);
     const account = await refereeCredential();
     expect(account.password).toBeTruthy();
     await expect(verifyPassword({ hash: account.password!, password: rotatedPassword })).resolves.toBe(true);
     await expect(verifyPassword({ hash: account.password!, password: originalPassword })).resolves.toBe(false);
-    await expect(prisma.account.count({ where: { providerId: "credential" } })).resolves.toBe(before);
+    await expect(prisma.account.count({ where: credentialScope })).resolves.toBe(before);
   }, 40_000);
 });

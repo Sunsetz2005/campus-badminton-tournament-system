@@ -5,6 +5,7 @@ import { prisma } from "@/db/client";
 import { requireAssignedReferee, requireChiefReferee } from "@/server/auth/authorization";
 import { logServerEvent } from "@/server/logging";
 import { AppError } from "@/server/services/errors";
+import { transactWithRetry } from "@/server/services/transaction-retry";
 
 export const SESSION_LIFETIME_MS = 2 * 60 * 1000;
 const DENIED_AUDIT_WINDOW_MS = 60 * 1000;
@@ -78,7 +79,8 @@ export async function acquireScoringSession(userId: string, matchCode: string, d
   const expiresAt = new Date(now.getTime() + SESSION_LIFETIME_MS);
   const { controlToken, tokenHash } = createControlToken();
   try {
-    return await prisma.$transaction(async (transaction) => {
+    // 可串行化冲突（P2034/40001）时整段重跑：事务已整体回滚，重跑仍按「同一设备续用、其他设备 controller_exists」判定。
+    return await transactWithRetry(() => prisma.$transaction(async (transaction) => {
       await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${match.id}::uuid FOR UPDATE`;
       await transaction.scoringSession.updateMany({
         where: { matchId: match.id, status: "ACTIVE", expiresAt: { lte: now } },
@@ -116,7 +118,7 @@ export async function acquireScoringSession(userId: string, matchCode: string, d
         },
       });
       return { status: "acquired" as const, ...sessionResponse(created, controlToken), matchVersion: match.version };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   } catch (error) {
     if (error instanceof AppError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
@@ -169,7 +171,7 @@ export async function takeoverScoringSession(userId: string, matchCode: string, 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_LIFETIME_MS);
   const { controlToken, tokenHash } = createControlToken();
-  return prisma.$transaction(async (transaction) => {
+  return transactWithRetry(() => prisma.$transaction(async (transaction) => {
     await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${match.id}::uuid FOR UPDATE`;
     const previous = await transaction.scoringSession.findFirst({ where: { matchId: match.id, status: "ACTIVE" } });
     await transaction.scoringSession.updateMany({
@@ -201,5 +203,5 @@ export async function takeoverScoringSession(userId: string, matchCode: string, 
       },
     });
     return { status: "taken_over" as const, ...sessionResponse(created, controlToken), matchVersion: match.version };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

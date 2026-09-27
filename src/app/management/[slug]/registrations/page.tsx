@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import type { RegistrationStatus } from "@/generated/prisma/enums";
 import { prisma } from "@/db/client";
+import { GENDER_LABEL } from "@/domain/registration/team-roster";
 import { formatZoned } from "@/domain/time/zoned-time";
 import {
   entryTypeLabel,
@@ -67,6 +68,7 @@ export default async function RegistrationsPage({
         importRowNumber: true,
         competition: { select: { id: true, code: true, name: true, entryType: true } },
         entry: { select: { code: true } },
+        team: { select: { name: true } },
         invite: { select: { label: true } },
         reviewedBy: { select: { name: true } },
         members: {
@@ -76,6 +78,7 @@ export default async function RegistrationsPage({
             studentId: true,
             teamName: true,
             contact: true,
+            gender: true,
             participant: { select: { publicCode: true } },
           },
           orderBy: { slot: "asc" },
@@ -192,6 +195,7 @@ export default async function RegistrationsPage({
                       {registration.importRowNumber ? ` 第 ${registration.importRowNumber} 行` : ""}
                     </span>
                     <span>{formatZoned(registration.createdAt, tournament.timezone)}</span>
+                    {registration.team ? <span>队伍「{registration.team.name}」· {registration.members.length} 人</span> : null}
                   </div>
                   <ul className={styles.members}>
                     {registration.members.map((member) => (
@@ -199,6 +203,7 @@ export default async function RegistrationsPage({
                         <b>{member.displayName}</b>
                         {member.participant ? <span>{member.participant.publicCode}</span> : null}
                         <span>学号 {member.studentId ?? "未填"}</span>
+                        {member.gender ? <span>{GENDER_LABEL[member.gender]}</span> : null}
                         {member.teamName ? <span>{member.teamName}</span> : null}
                         {member.contact ? <span>联系 {member.contact}</span> : null}
                       </li>
@@ -245,9 +250,12 @@ export default async function RegistrationsPage({
           <section aria-labelledby="manual-title" className={styles.section}>
             <div className={styles.sectionTitle}>
               <h2 id="manual-title">后台手工录入</h2>
-              <p>适合零散补录；批量名单请用下方导入。</p>
+              <p>适合零散补录；批量名单请用下方导入。团体赛名单在「队伍与负责人」页面按队伍录入。</p>
             </div>
-            <ManualRegistrationForm competitions={competitions} slug={tournament.slug} />
+            <ManualRegistrationForm
+              competitions={competitions.flatMap((item) => (item.entryType === "TEAM" ? [] : [{ ...item, entryType: item.entryType }]))}
+              slug={tournament.slug}
+            />
           </section>
           <section aria-labelledby="import-title" className={styles.section}>
             <div className={styles.sectionTitle}>

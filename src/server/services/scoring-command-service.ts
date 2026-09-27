@@ -9,6 +9,7 @@ import {
 } from "@/domain/rules/match-engine";
 import { getMatchAccess } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
+import { transactWithRetry } from "@/server/services/transaction-retry";
 import {
   asInputJson,
   hashMatchValue,
@@ -16,6 +17,7 @@ import {
   MATCH_ENGINE_VERSION,
 } from "@/server/services/match-state-service";
 import { verifyControlToken } from "@/server/services/scoring-session-service";
+import { settleAfterRubberChange } from "@/server/services/team-tie-service";
 
 export interface ScoringCommandEnvelope {
   commandId: string;
@@ -222,18 +224,6 @@ async function updateResultRevision(
   }
 }
 
-async function transactWithRetry<T>(work: () => Promise<T>) {
-  let attempt = 0;
-  while (true) {
-    try {
-      return await work();
-    } catch (error) {
-      attempt += 1;
-      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2034" || attempt >= 3) throw error;
-    }
-  }
-}
-
 export async function previewScoringCommand(
   actorUserId: string,
   matchCode: string,
@@ -343,6 +333,10 @@ export async function submitScoringCommand(
     });
     await updateProjections(transaction, access.id, aggregate.state, result.aggregate.state, now);
     await updateResultRevision(transaction, access.id, actorUserId, session.actingRole, command, result.aggregate.state, now);
+    // 团体小场的结果锁定或重开后，在同一事务里重新推导对抗胜负与后续对阵；后续比赛已开始时整个命令回滚。
+    if (command.type === "CONFIRM_RESULT" || command.type === "REOPEN_RESULT") {
+      await settleAfterRubberChange(transaction, access.id, actorUserId);
+    }
     await transaction.auditLog.create({
       data: {
         tournamentId: access.tournamentId,

@@ -45,10 +45,19 @@ export function importContentHash(bytes: Uint8Array) {
 }
 
 async function loadImportContext(client: Prisma.TransactionClient | typeof prisma, tournamentId: string, phase: Parameters<typeof lockedCompetitionIds>[1]) {
-  const competitions = await client.competition.findMany({
+  const allCompetitions = await client.competition.findMany({
     where: { tournamentId },
     select: { id: true, code: true, name: true, entryType: true },
   });
+  // 团体赛名单由队伍负责人（或管理员代录）逐队提交，不走表格导入。
+  const competitions = allCompetitions.flatMap((item) =>
+    item.entryType === "TEAM" ? [] : [{ ...item, entryType: item.entryType }],
+  );
+  const excludedCompetitions = new Map(
+    allCompetitions
+      .filter((item) => item.entryType === "TEAM")
+      .map((item) => [item.code, `${item.code} 是团体赛，名单请由队伍负责人在「我的队伍」提交，不能表格导入`] as const),
+  );
   const locked = await lockedCompetitionIds(client as Prisma.TransactionClient, phase, competitions.map((item) => item.id));
   const active = await client.registration.findMany({
     where: { tournamentId, status: { in: ["PENDING", "APPROVED"] } },
@@ -82,7 +91,7 @@ async function loadImportContext(client: Prisma.TransactionClient | typeof prism
   const competitionMap = new Map<string, ImportCompetition & { locked: boolean }>(
     competitions.map((item) => [item.code, { ...item, locked: locked.has(item.id) }]),
   );
-  return { competitions: competitionMap, activeDedupeKeys, activeStudentIds, activeNameSets };
+  return { competitions: competitionMap, excludedCompetitions, activeDedupeKeys, activeStudentIds, activeNameSets };
 }
 
 function planFromBytes(bytes: Uint8Array, context: Awaited<ReturnType<typeof loadImportContext>>): ImportPlan {

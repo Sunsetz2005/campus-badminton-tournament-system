@@ -15,6 +15,7 @@ import {
   traditional21Demo,
   type RuleConfig,
 } from "@/domain/rules/rule-profile";
+import { DEFAULT_TEAM_FORMAT, validateTeamFormat, type TeamFormat } from "@/domain/registration/team-roster";
 import { isValidTimeZone, zonedLocalToUtc } from "@/domain/time/zoned-time";
 import { requireManagedTournament, requireSystemAdmin } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
@@ -53,14 +54,53 @@ const localDateTime = z
   .nullish()
   .transform((value) => value || null);
 
+const teamFormatSchema = z.object({
+  rubbers: z.array(z.enum(["MS", "WS", "MD", "WD", "XD"])).min(1, "团体赛至少需要 1 个小场").max(9, "团体赛最多 9 个小场"),
+  rosterMin: z.number().int(),
+  rosterMax: z.number().int(),
+  minMale: z.number().int(),
+  minFemale: z.number().int(),
+  maxRubbersMale: z.number().int().nullish(),
+  maxRubbersFemale: z.number().int().nullish(),
+});
+
 const competitionInputSchema = z.object({
-  kind: z.enum(["MS", "WS", "MD", "WD", "XD"]),
+  kind: z.enum(["MS", "WS", "MD", "WD", "XD", "TEAM"]),
   code: z
     .string()
     .transform((value) => value.trim().toUpperCase())
     .refine((value) => COMPETITION_CODE_PATTERN.test(value), "项目代码只能是大写字母开头的字母、数字或连字符，最多 16 位"),
   name: requiredText(2, 30),
+  /** 仅团体赛：每场对抗的小场顺序与名单人数；缺省用项目默认（五个小场、4—12 人、至少 2 男 2 女）。 */
+  teamFormat: teamFormatSchema.nullish(),
 });
+
+type CompetitionInput = z.output<typeof competitionInputSchema>;
+
+/** 把项目输入转成数据库列；团体赛校验小场与名单设置，个人项目不得带团体设置。 */
+function competitionColumns(input: CompetitionInput) {
+  if (input.kind !== "TEAM") {
+    if (input.teamFormat) throw new AppError(400, "invalid_input", `${input.code} 不是团体赛，不能设置小场与名单人数。`);
+    return {
+      kind: input.kind,
+      entryType: COMPETITION_KIND_ENTRY_TYPE[input.kind as RegistrationCompetitionKind],
+    };
+  }
+  const format: TeamFormat = input.teamFormat ?? DEFAULT_TEAM_FORMAT;
+  const errors = validateTeamFormat(format);
+  if (errors.length) throw new AppError(400, "invalid_input", `${input.code}：${errors.join("；")}。`);
+  return {
+    kind: "TEAM" as const,
+    entryType: "TEAM" as const,
+    teamRubbers: format.rubbers,
+    teamRosterMin: format.rosterMin,
+    teamRosterMax: format.rosterMax,
+    teamMinMale: format.minMale,
+    teamMinFemale: format.minFemale,
+    teamMaxRubbersMale: format.maxRubbersMale ?? null,
+    teamMaxRubbersFemale: format.maxRubbersFemale ?? null,
+  };
+}
 
 export const createTournamentSchema = z.object({
   slug: z
@@ -126,6 +166,7 @@ export async function createTournament(actorUserId: string, rawInput: unknown) {
   if (input.startDate > input.endDate) throw new AppError(400, "invalid_input", "结束日期不能早于开始日期。");
   const codes = input.competitions.map((competition) => competition.code);
   if (new Set(codes).size !== codes.length) throw new AppError(400, "invalid_input", "项目代码不能重复。");
+  const competitionRows = input.competitions.map((competition) => ({ ...competition, columns: competitionColumns(competition) }));
   const window = registrationWindow(input.registrationOpensAt, input.registrationClosesAt, input.timezone);
   const preset = RULE_PRESETS[input.rulePreset];
 
@@ -165,14 +206,13 @@ export async function createTournament(actorUserId: string, rawInput: unknown) {
         where: { id: tournament.id },
         data: { defaultRuleRevisionId: revision.id },
       });
-      for (const competition of input.competitions) {
+      for (const competition of competitionRows) {
         await transaction.competition.create({
           data: {
             tournamentId: tournament.id,
             code: competition.code,
             name: competition.name,
-            kind: competition.kind,
-            entryType: COMPETITION_KIND_ENTRY_TYPE[competition.kind],
+            ...competition.columns,
           },
         });
       }
@@ -328,6 +368,7 @@ export async function addCompetition(actorUserId: string, slug: string, rawInput
     throw new AppError(409, "tournament_locked", "赛事已开赛或结束，不能再新增项目。");
   }
   const input = parseOrThrow(competitionInputSchema, rawInput);
+  const columns = competitionColumns(input);
   try {
     return await prisma.$transaction(async (transaction) => {
       const competition = await transaction.competition.create({
@@ -335,8 +376,7 @@ export async function addCompetition(actorUserId: string, slug: string, rawInput
           tournamentId: tournament.id,
           code: input.code,
           name: input.name,
-          kind: input.kind,
-          entryType: COMPETITION_KIND_ENTRY_TYPE[input.kind as RegistrationCompetitionKind],
+          ...columns,
         },
         select: { id: true, code: true },
       });

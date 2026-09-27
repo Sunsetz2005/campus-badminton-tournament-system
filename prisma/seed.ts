@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { hashPassword, verifyPassword } from "better-auth/crypto";
 
+import type { CompetitionKind } from "../src/generated/prisma/client";
 import { prisma } from "../src/db/client";
 import { assertDemoSeedDatabase } from "../src/db/database-safety";
 import {
@@ -346,6 +347,194 @@ async function seedPortalTournaments(adminId: string) {
     });
   }
   return definitions.length;
+}
+
+/**
+ * 阶段 4-B 的团体赛演示赛事：8 个学院各一支队伍、各 6 名匿名队员（3 男 3 女），名单均已审核通过，
+ * 赛事停在「报名截止」，便于直接在后台试抽签。保持草稿状态，不出现在公开首页；不预置任何抽签结果。
+ * 全部为模拟数据：学院名只是常见院系称呼，队员是「学院简称＋序号」的匿名占位。
+ */
+async function seedSunshineLeague(adminId: string, refereeId: string) {
+  const slug = "sunshine-league-2026";
+  const colleges = [
+    ["数学科学学院", "数学"],
+    ["物理与电信工程学院", "物电"],
+    ["化学学院", "化学"],
+    ["生命科学学院", "生科"],
+    ["计算机学院", "计算机"],
+    ["外国语言文化学院", "外语"],
+    ["体育科学学院", "体育"],
+    ["经济与管理学院", "经管"],
+  ] as const;
+  const tournament = await prisma.tournament.upsert({
+    where: { slug },
+    update: {},
+    create: {
+      slug,
+      name: "阳光体育羽毛球联赛（模拟）",
+      subtitle: "模拟数据 · 学院团体赛",
+      organizer: "校园羽毛球赛事管理系统（模拟）",
+      venue: "体育馆一号馆（模拟）",
+      summary: "模拟的学院团体赛：每个学院一支队伍，每场对抗含男单、女单、男双、女双、混双五个小场。",
+      startDate: new Date("2026-10-17T00:00:00.000Z"),
+      endDate: new Date("2026-10-25T00:00:00.000Z"),
+      timezone: "Asia/Shanghai",
+      status: "DRAFT",
+      phase: "REGISTRATION_CLOSED",
+      namePolicy: "CODES_ONLY",
+    },
+  });
+  await prisma.roleAssignment.upsert({
+    where: { userId_tournamentId_role: { userId: adminId, tournamentId: tournament.id, role: "ADMIN" } },
+    update: {},
+    create: { userId: adminId, tournamentId: tournament.id, role: "ADMIN" },
+  });
+  // 阶段 4-C：演示管理员兼任裁判长，演示裁判员可被排班；8 块场地、3 个比赛日，便于直接试排赛程。
+  for (const [userId, role] of [[adminId, "CHIEF_REFEREE"], [refereeId, "REFEREE"]] as const) {
+    await prisma.roleAssignment.upsert({
+      where: { userId_tournamentId_role: { userId, tournamentId: tournament.id, role } },
+      update: {},
+      create: { userId, tournamentId: tournament.id, role },
+    });
+  }
+  for (let number = 1; number <= 8; number += 1) {
+    await prisma.court.upsert({
+      where: { tournamentId_code: { tournamentId: tournament.id, code: `C${number}` } },
+      update: {},
+      create: { tournamentId: tournament.id, code: `C${number}`, name: `场地 ${number}`, sortOrder: number },
+    });
+  }
+  await prisma.scheduleConfig.upsert({ where: { tournamentId: tournament.id }, update: {}, create: { tournamentId: tournament.id } });
+  for (const day of ["2026-10-17", "2026-10-18", "2026-10-24"]) {
+    await prisma.scheduleDay.upsert({
+      where: { tournamentId_day: { tournamentId: tournament.id, day: new Date(`${day}T00:00:00.000Z`) } },
+      update: {},
+      create: { tournamentId: tournament.id, day: new Date(`${day}T00:00:00.000Z`), startMinute: 9 * 60, endMinute: 18 * 60 },
+    });
+  }
+  const profile = await prisma.ruleProfile.upsert({
+    where: { tournamentId_key: { tournamentId: tournament.id, key: "traditional-21" } },
+    update: {},
+    create: { tournamentId: tournament.id, key: "traditional-21", name: "传统 21 分（演示配置）" },
+  });
+  const revision = await prisma.ruleProfileRevision.upsert({
+    where: { ruleProfileId_revision: { ruleProfileId: profile.id, revision: 1 } },
+    update: {},
+    create: {
+      ruleProfileId: profile.id,
+      revision: 1,
+      sourceLabel: "项目演示配置（未经赛事组织者正式采纳）",
+      sourceVersion: "builtin:traditional-21",
+      config: traditional21Demo,
+      configHash: hashRuleConfig(traditional21Demo),
+    },
+  });
+  if (!tournament.defaultRuleRevisionId) {
+    await prisma.tournament.update({ where: { id: tournament.id }, data: { defaultRuleRevisionId: revision.id } });
+  }
+  const competition = await prisma.competition.upsert({
+    where: { tournamentId_code: { tournamentId: tournament.id, code: "TEAM" } },
+    update: {},
+    create: {
+      tournamentId: tournament.id,
+      code: "TEAM",
+      name: "学院团体赛",
+      kind: "TEAM",
+      entryType: "TEAM",
+      teamRubbers: ["MS", "WS", "MD", "WD", "XD"],
+      teamRosterMin: 4,
+      teamRosterMax: 12,
+      teamMinMale: 2,
+      teamMinFemale: 2,
+    },
+  });
+
+  let created = 0;
+  for (const [index, [collegeName, short]] of colleges.entries()) {
+    const teamCode = `T${String(index + 1).padStart(2, "0")}`;
+    const team = await prisma.team.upsert({
+      where: { tournamentId_code: { tournamentId: tournament.id, code: teamCode } },
+      update: {},
+      create: { tournamentId: tournament.id, code: teamCode, name: collegeName },
+    });
+    const existing = await prisma.registration.findFirst({ where: { competitionId: competition.id, teamId: team.id } });
+    if (existing) continue;
+    await prisma.$transaction(async (transaction) => {
+      const participantIds: string[] = [];
+      // 报项（4-D）：每人报两项，恰好能排满五个小场且留有替换余地。
+      const maleKinds: CompetitionKind[][] = [["MS", "MD"], ["MD", "XD"], ["MS", "XD"]];
+      const femaleKinds: CompetitionKind[][] = [["WS", "WD"], ["WD", "XD"], ["WS", "XD"]];
+      const members = [
+        ...[1, 2, 3].map((n) => ({ gender: "MALE" as const, name: `${short}男${n}`, rubberKinds: maleKinds[n - 1] })),
+        ...[1, 2, 3].map((n) => ({ gender: "FEMALE" as const, name: `${short}女${n}`, rubberKinds: femaleKinds[n - 1] })),
+      ];
+      for (const [position, member] of members.entries()) {
+        const sequence = index * members.length + position + 1;
+        const participant = await transaction.participant.upsert({
+          where: { tournamentId_studentId: { tournamentId: tournament.id, studentId: `SL26${teamCode}${position + 1}` } },
+          update: {},
+          create: {
+            tournamentId: tournament.id,
+            publicCode: `P${String(sequence).padStart(3, "0")}`,
+            displayName: member.name,
+            studentId: `SL26${teamCode}${position + 1}`,
+            gender: member.gender,
+          },
+        });
+        participantIds.push(participant.id);
+      }
+      const entry = await transaction.entry.create({
+        data: {
+          competitionId: competition.id,
+          code: `TEAM-${String(index + 1).padStart(3, "0")}`,
+          displayName: collegeName,
+          entryType: "TEAM",
+          teamId: team.id,
+          members: {
+            create: participantIds.map((participantId, position) => ({
+              slot: position + 1,
+              competitionId: competition.id,
+              participantId,
+              rubberKinds: members[position].rubberKinds,
+            })),
+          },
+        },
+      });
+      await transaction.registration.create({
+        data: {
+          tournamentId: tournament.id,
+          competitionId: competition.id,
+          teamId: team.id,
+          referenceCode: `R-SL26-${teamCode}`,
+          status: "APPROVED",
+          source: "MANUAL",
+          entryId: entry.id,
+          reviewedByUserId: adminId,
+          reviewedAt: new Date("2026-10-10T02:00:00.000Z"),
+          members: {
+            create: members.map((member, position) => ({
+              slot: position + 1,
+              displayName: member.name,
+              studentId: `SL26${teamCode}${position + 1}`,
+              gender: member.gender,
+              rubberKinds: member.rubberKinds,
+              participantId: participantIds[position],
+            })),
+          },
+        },
+      });
+    });
+    created += 1;
+  }
+  await prisma.tournament.update({
+    where: { id: tournament.id },
+    data: { nextParticipantSeq: Math.max(tournament.nextParticipantSeq, colleges.length * 6 + 1) },
+  });
+  await prisma.competition.update({
+    where: { id: competition.id },
+    data: { nextEntrySeq: Math.max(competition.nextEntrySeq, colleges.length + 1) },
+  });
+  return created;
 }
 
 async function main() {
@@ -824,6 +1013,8 @@ async function main() {
   // 另外两个赛事让首页的「进行中 / 即将开始 / 已结束」分组读起来像列表而不是单行。
   // 它们只有赛事级信息，没有项目、报名或比赛，也因此不会产生任何公开赛程。
   const extraTournaments = await seedPortalTournaments(admin.id);
+  const sunshineTeams = await seedSunshineLeague(admin.id, referee.id);
+  console.info(`团体赛演示赛事：本次新增 ${sunshineTeams} 支已审核队伍（共 8 支，未抽签；8 块场地、3 个比赛日）。`);
 
   console.info(`公开发布边界：本次补写 ${published.count} 场；额外门户赛事 ${extraTournaments} 个。`);
 

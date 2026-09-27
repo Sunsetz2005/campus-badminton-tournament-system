@@ -19,8 +19,9 @@ export const registrationSourceLabel: Record<RegistrationSource, string> = {
   MANUAL: "后台录入",
   IMPORT: "批量导入",
   INVITE: "邀请链接",
+  TEAM_MANAGER: "队伍名单",
 };
 
 export const tournamentStatusLabel = { DRAFT: "草稿（未公开）", PUBLISHED: "已发布", ARCHIVED: "已归档" } as const;
 
-export const entryTypeLabel = { SINGLES: "单打", DOUBLES: "双打" } as const;
+export const entryTypeLabel = { SINGLES: "单打", DOUBLES: "双打", TEAM: "团体" } as const;

@@ -11,12 +11,20 @@ export function ManagementSubnav({ slug }: { slug: string }) {
   const links = [
     [base, "赛事概览"],
     [`${base}/registrations`, "报名审核"],
+    [`${base}/teams`, "队伍与负责人"],
+    [`${base}/draw`, "抽签编排"],
+    [`${base}/ties`, "团体对抗"],
+    [`${base}/schedule`, "赛程排班"],
   ] as const;
   return (
     <nav aria-label="赛事后台导航" className={styles.subnav}>
       <Link href="/management">← 全部赛事</Link>
       {links.map(([href, label]) => (
-        <Link aria-current={pathname === href ? "page" : undefined} href={href} key={href}>
+        <Link
+          aria-current={pathname === href || (href !== base && pathname.startsWith(`${href}/`)) ? "page" : undefined}
+          href={href}
+          key={href}
+        >
           {label}
         </Link>
       ))}

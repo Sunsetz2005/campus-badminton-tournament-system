@@ -75,3 +75,13 @@ export function utcToZonedLocal(instant: Date, timeZone: string) {
 export function formatZoned(instant: Date, timeZone: string) {
   return `${utcToZonedLocal(instant, timeZone).replace("T", " ")}（${timeZone}）`;
 }
+
+/** 赛事时区下的简短时刻，如「10-17 09:00」，用于赛程列表。 */
+export function formatZonedShort(instant: Date, timeZone: string) {
+  return utcToZonedLocal(instant, timeZone).slice(5).replace("T", " ");
+}
+
+/** 赛事时区下的「HH:mm」。 */
+export function formatZonedClock(instant: Date, timeZone: string) {
+  return utcToZonedLocal(instant, timeZone).slice(11);
+}

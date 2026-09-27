@@ -12,6 +12,8 @@ import {
   COMPETITION_KIND_LABEL,
   type RegistrationCompetitionKind,
 } from "@/domain/registration/registration-rules";
+import { DEFAULT_TEAM_FORMAT, describeRubbers, validateTeamFormat, type TeamFormat } from "@/domain/registration/team-roster";
+import { TeamFormatEditor } from "@/features/management/team-format-editor";
 
 const STEPS = ["基本信息", "比赛项目", "规则与报名", "确认创建"] as const;
 
@@ -21,13 +23,22 @@ const RULE_OPTIONS = [
   { value: "single-game-21", label: "单局 21 分", detail: "一局定胜负，21 分、30 分封顶" },
 ] as const;
 
-const KINDS = Object.keys(COMPETITION_KIND_LABEL) as RegistrationCompetitionKind[];
+type WizardKind = RegistrationCompetitionKind | "TEAM";
+
+const KIND_LABEL: Record<WizardKind, string> = { ...COMPETITION_KIND_LABEL, TEAM: "团体赛" };
+const KINDS = Object.keys(KIND_LABEL) as WizardKind[];
+
+function kindDetail(kind: WizardKind) {
+  if (kind === "TEAM") return "学院对抗";
+  return COMPETITION_KIND_ENTRY_TYPE[kind] === "SINGLES" ? "单打" : "双打";
+}
 
 interface CompetitionDraft {
   key: number;
-  kind: RegistrationCompetitionKind;
+  kind: WizardKind;
   code: string;
   name: string;
+  teamFormat: TeamFormat;
 }
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
@@ -50,8 +61,8 @@ export function CreateTournamentWizard({ defaultTimezone }: { defaultTimezone: s
     summary: "",
   });
   const [competitions, setCompetitions] = useState<CompetitionDraft[]>([
-    { key: 1, kind: "MS", code: "MS", name: COMPETITION_KIND_LABEL.MS },
-    { key: 2, kind: "WS", code: "WS", name: COMPETITION_KIND_LABEL.WS },
+    { key: 1, kind: "MS", code: "MS", name: COMPETITION_KIND_LABEL.MS, teamFormat: DEFAULT_TEAM_FORMAT },
+    { key: 2, kind: "WS", code: "WS", name: COMPETITION_KIND_LABEL.WS, teamFormat: DEFAULT_TEAM_FORMAT },
   ]);
   const [nextKey, setNextKey] = useState(3);
   const [rules, setRules] = useState({
@@ -77,6 +88,11 @@ export function CreateTournamentWizard({ defaultTimezone }: { defaultTimezone: s
       if (new Set(codes).size !== codes.length) problems.push("项目代码不能重复。");
       if (codes.some((code) => !COMPETITION_CODE_PATTERN.test(code))) problems.push("项目代码须以大写字母开头，只含字母、数字和连字符，最多 16 位。");
       if (competitions.some((item) => [...item.name.trim()].length < 2)) problems.push("每个项目都需要至少 2 个字的名称。");
+      for (const item of competitions) {
+        if (item.kind !== "TEAM") continue;
+        const formatErrors = validateTeamFormat(item.teamFormat);
+        if (formatErrors.length) problems.push(`${item.code}：${formatErrors.join("；")}。`);
+      }
     }
     if (index === 2) {
       if (rules.registrationOpensAt && rules.registrationClosesAt && rules.registrationOpensAt >= rules.registrationClosesAt) {
@@ -99,11 +115,11 @@ export function CreateTournamentWizard({ defaultTimezone }: { defaultTimezone: s
     setStep(target);
   }
 
-  function addCompetition(kind: RegistrationCompetitionKind) {
+  function addCompetition(kind: WizardKind) {
     const taken = new Set(competitions.map((item) => item.code));
     let code: string = kind;
     for (let suffix = 2; taken.has(code); suffix += 1) code = `${kind}-${suffix}`;
-    setCompetitions([...competitions, { key: nextKey, kind, code, name: COMPETITION_KIND_LABEL[kind] }]);
+    setCompetitions([...competitions, { key: nextKey, kind, code, name: kind === "TEAM" ? "学院团体赛" : KIND_LABEL[kind], teamFormat: DEFAULT_TEAM_FORMAT }]);
     setNextKey(nextKey + 1);
   }
 
@@ -130,7 +146,12 @@ export function CreateTournamentWizard({ defaultTimezone }: { defaultTimezone: s
     const result = await sendJson<{ slug: string }>("/api/admin/tournaments", "POST", {
       ...basics,
       ...rules,
-      competitions: competitions.map(({ kind, code, name }) => ({ kind, code: code.trim().toUpperCase(), name })),
+      competitions: competitions.map(({ kind, code, name, teamFormat }) => ({
+        kind,
+        code: code.trim().toUpperCase(),
+        name,
+        ...(kind === "TEAM" ? { teamFormat } : {}),
+      })),
     });
     if (!result.ok) {
       setPending(false);
@@ -214,20 +235,21 @@ export function CreateTournamentWizard({ defaultTimezone }: { defaultTimezone: s
         <section className={styles.section} aria-labelledby={`${formId}-competitions`}>
           <div className={styles.sectionTitle}>
             <h2 id={`${formId}-competitions`}>比赛项目</h2>
-            <p>单打每个报名 1 人，双打每个报名 2 人。同一单项可建多个组别，例如 MS-A 男单甲组。</p>
+            <p>单打每个报名 1 人，双打每个报名 2 人；团体赛以学院为单位报名，每场对抗由若干小场组成。同一单项可建多个组别，例如 MS-A 男单甲组。</p>
           </div>
           <ul className={styles.list}>
             {competitions.map((competition, index) => (
-              <li className={styles.competitionRow} key={competition.key}>
+              <li className={styles.competitionItem} key={competition.key}>
+                <div className={styles.competitionRow}>
                 <label className={styles.field}>
                   <span>单项</span>
                   <select
-                    onChange={(event) => updateCompetition(competition.key, { kind: event.target.value as RegistrationCompetitionKind })}
+                    onChange={(event) => updateCompetition(competition.key, { kind: event.target.value as WizardKind })}
                     value={competition.kind}
                   >
                     {KINDS.map((kind) => (
                       <option key={kind} value={kind}>
-                        {COMPETITION_KIND_LABEL[kind]}（{COMPETITION_KIND_ENTRY_TYPE[kind] === "SINGLES" ? "单打" : "双打"}）
+                        {KIND_LABEL[kind]}（{kindDetail(kind)}）
                       </option>
                     ))}
                   </select>
@@ -253,13 +275,21 @@ export function CreateTournamentWizard({ defaultTimezone }: { defaultTimezone: s
                 >
                   删除
                 </ActionButton>
+                </div>
+                {competition.kind === "TEAM" ? (
+                  <TeamFormatEditor
+                    idPrefix={`${formId}-team-${competition.key}`}
+                    onChange={(teamFormat) => updateCompetition(competition.key, { teamFormat })}
+                    value={competition.teamFormat}
+                  />
+                ) : null}
               </li>
             ))}
           </ul>
           <div className={styles.actions}>
             {KINDS.map((kind) => (
               <ActionButton key={kind} onClick={() => addCompetition(kind)} size="sm" variant="secondary">
-                ＋ {COMPETITION_KIND_LABEL[kind]}
+                ＋ {KIND_LABEL[kind]}
               </ActionButton>
             ))}
           </div>
@@ -348,7 +378,11 @@ export function CreateTournamentWizard({ defaultTimezone }: { defaultTimezone: s
             </div>
             <div>
               <dt>项目（{competitions.length}）</dt>
-              <dd>{competitions.map((item) => `${item.code} ${item.name}`).join("、")}</dd>
+              <dd>
+                {competitions
+                  .map((item) => (item.kind === "TEAM" ? `${item.code} ${item.name}（${describeRubbers(item.teamFormat.rubbers)}）` : `${item.code} ${item.name}`))
+                  .join("、")}
+              </dd>
             </div>
           </dl>
         </section>

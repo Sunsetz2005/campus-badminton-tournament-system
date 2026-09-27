@@ -80,7 +80,7 @@ export default async function ManagementPage() {
         </div>
       )}
       <p className="notice">
-        抽签编排、赛程与裁判排班属于后续阶段，目前未实现；这里不会出现假按钮。
+        抽签编排在各赛事后台的「抽签编排」中进行；赛程、场地与裁判排班属于后续阶段，目前未实现，这里不会出现假按钮。
       </p>
     </section>
   );

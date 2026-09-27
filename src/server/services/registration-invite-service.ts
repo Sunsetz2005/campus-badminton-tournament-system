@@ -164,7 +164,9 @@ export async function resolveInvite(token: string, now = new Date()): Promise<In
           phase: true,
           registrationOpensAt: true,
           registrationClosesAt: true,
+          // 匿名邀请只接受单打/双打；团体赛名单由登录的队伍负责人提交。
           competitions: {
+            where: { entryType: { in: ["SINGLES", "DOUBLES"] } },
             select: { id: true, code: true, name: true, entryType: true },
             orderBy: { code: "asc" },
           },
@@ -195,7 +197,9 @@ export async function resolveInvite(token: string, now = new Date()): Promise<In
       registrationOpensAt: tournament.registrationOpensAt,
       registrationClosesAt: tournament.registrationClosesAt,
     },
-    competitions: tournament.competitions,
+    competitions: tournament.competitions.flatMap((competition) =>
+      competition.entryType === "TEAM" ? [] : [{ ...competition, entryType: competition.entryType }],
+    ),
   };
 }
 

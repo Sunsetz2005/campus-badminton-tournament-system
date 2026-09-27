@@ -41,6 +41,8 @@ export interface ImportCompetition {
 
 export interface ImportContext {
   competitions: ReadonlyMap<string, ImportCompetition>;
+  /** 本赛事里不接受表格导入的项目（团体赛由队伍负责人提交名单）：项目代码 → 说明。 */
+  excludedCompetitions?: ReadonlyMap<string, string>;
   /** `${competitionId}|${dedupeKey}` → 已存在的进行中/已通过报名回执号 */
   activeDedupeKeys: ReadonlyMap<string, string>;
   /** `${competitionId}|${studentId}` → 该学号所在的进行中/已通过报名回执号 */
@@ -108,7 +110,9 @@ export function planImport(records: readonly (readonly string[])[], context: Imp
     const competitionCode = cell(record, 0).trim().toUpperCase();
     const competition = context.competitions.get(competitionCode) ?? null;
     if (!competitionCode) messages.push("项目代码不能为空");
-    else if (!competition) messages.push(`项目代码 ${competitionCode} 不属于本赛事`);
+    else if (!competition) {
+      messages.push(context.excludedCompetitions?.get(competitionCode) ?? `项目代码 ${competitionCode} 不属于本赛事`);
+    }
 
     const extraCells = record.slice(IMPORT_HEADERS.length).filter((value) => value.trim() !== "");
     if (extraCells.length) messages.push("模板列之外还有内容，请删除多余列");

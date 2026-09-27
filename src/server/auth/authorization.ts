@@ -120,3 +120,39 @@ export async function requireManagedTournament(
   const assignment = await requireTournamentRole(userId, tournament.id, allowedRoles);
   return { tournament, role: assignment.role };
 }
+
+/**
+ * 队伍负责人：只按 TeamManager 绑定授权，只能访问本人负责的队伍。
+ * 赛事管理员身份不会让人自动成为任何队伍的负责人，反之亦然。
+ */
+export async function requireTeamManagerAccess(userId: string, slug: string) {
+  const tournament = await prisma.tournament.findUnique({
+    where: { slug },
+    select: {
+      id: true,
+      slug: true,
+      name: true,
+      phase: true,
+      status: true,
+      timezone: true,
+      registrationOpensAt: true,
+      registrationClosesAt: true,
+    },
+  });
+  if (!tournament) throw new AppError(404, "tournament_not_found", "赛事不存在。");
+  const managerships = await prisma.teamManager.findMany({
+    where: { userId, tournamentId: tournament.id },
+    select: { team: { select: { id: true, code: true, name: true } } },
+    orderBy: { team: { code: "asc" } },
+  });
+  if (!managerships.length) throw new AppError(403, "not_team_manager", "你不是本赛事任何队伍的负责人。");
+  return { tournament, teams: managerships.map((item) => item.team) };
+}
+
+/** 由管理员开通的账号首次登录必须先修改初始口令，才允许提交任何名单。 */
+export async function requirePasswordSettled(userId: string) {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { mustChangePassword: true } });
+  if (user?.mustChangePassword) {
+    throw new AppError(403, "password_change_required", "请先修改初始口令，再进行其他操作。");
+  }
+}

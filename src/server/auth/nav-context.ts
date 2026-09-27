@@ -12,6 +12,8 @@ import { getPageSession } from "@/server/auth/session";
 export interface NavContext {
   canManageTournaments: boolean;
   canOfficiate: boolean;
+  canManageTeams: boolean;
+  mustChangePassword: boolean;
   signedIn: boolean;
   userName: string | null;
 }
@@ -19,6 +21,8 @@ export interface NavContext {
 export const anonymousNavContext: NavContext = {
   canManageTournaments: false,
   canOfficiate: false,
+  canManageTeams: false,
+  mustChangePassword: false,
   signedIn: false,
   userName: null,
 };
@@ -35,7 +39,7 @@ export async function getNavContext(): Promise<NavContext> {
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { name: true, status: true, systemRole: true },
+    select: { name: true, status: true, systemRole: true, mustChangePassword: true },
   });
   if (!user || user.status !== "ACTIVE") return anonymousNavContext;
 
@@ -44,10 +48,13 @@ export async function getNavContext(): Promise<NavContext> {
     select: { role: true },
   });
   const roleSet = new Set(roles.map((assignment) => assignment.role));
+  const teamBindings = await prisma.teamManager.count({ where: { userId: session.user.id } });
 
   return {
     canManageTournaments: roleSet.has("ADMIN") || roleSet.has("ORGANIZER") || user.systemRole === "SYSTEM_ADMIN",
     canOfficiate: roleSet.has("REFEREE") || roleSet.has("CHIEF_REFEREE"),
+    canManageTeams: teamBindings > 0,
+    mustChangePassword: user.mustChangePassword,
     signedIn: true,
     userName: user.name,
   };

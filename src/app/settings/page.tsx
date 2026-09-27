@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { prisma } from "@/db/client";
@@ -21,7 +22,7 @@ export default async function SettingsPage() {
       <div className="section-heading">
         <p className="eyebrow">当前登录身份</p>
         <h1>设置</h1>
-        <p>阶段 1 只提供账号与授权范围的只读检查。</p>
+        <p>账号与授权范围的只读检查。<Link href="/account/password">修改口令</Link></p>
       </div>
       <dl className="details">
         <div><dt>姓名</dt><dd>{user.name}</dd></div>

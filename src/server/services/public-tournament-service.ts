@@ -14,6 +14,7 @@ import {
   publishedMatchWhere,
 } from "@/reports/public-fields";
 import { AppError } from "@/server/services/errors";
+import { loadPublishedDelays } from "@/server/services/schedule-facts";
 import {
   assertIanaTimeZone,
   isoDate,
@@ -28,7 +29,8 @@ import {
  * 不合法输入一律走公开 404，不回显内部标识。
  */
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
-const MATCH_CODE_PATTERN = /^[A-Z0-9][A-Z0-9-]{1,30}$/;
+// 抽签生成的编号形如 `K7Q2-TEAM-A-R1-1-1MS`（赛事标签-项目-对阵-小场），上限放宽到 48。
+const MATCH_CODE_PATTERN = /^[A-Z0-9][A-Z0-9-]{1,47}$/;
 const RESERVED_SLUGS = new Set(["preview", "api", "login", "board", "management", "officiating", "settings", "register"]);
 
 export function isPublicTournamentSlug(value: string): boolean {
@@ -137,6 +139,27 @@ export interface PublicScheduleResult {
 }
 
 /**
+ * 有现场事实为据的延误（按比赛编号）。只在服务端用赛事内部 ID 读取，结果只含推算时刻，不下发任何内部标识。
+ */
+async function evidencedDelaysByCode(slug: string): Promise<Map<string, Date>> {
+  const tournament = await prisma.tournament.findFirst({ where: { slug, status: "PUBLISHED" }, select: { id: true } });
+  if (!tournament) return new Map();
+  const [delays, codes] = await Promise.all([
+    loadPublishedDelays(prisma, tournament.id, new Date()),
+    prisma.match.findMany({
+      where: { stage: { competition: { tournamentId: tournament.id } }, scheduledAt: { not: null } },
+      select: { id: true, code: true },
+    }),
+  ]);
+  const result = new Map<string, Date>();
+  for (const row of codes) {
+    const delay = delays.get(row.id);
+    if (delay?.evidenced) result.set(row.code, new Date(delay.projectedStart));
+  }
+  return result;
+}
+
+/**
  * 赛事公开赛程。
  *
  * 顺序由服务端决定（计划时间 → 场地 → 比赛编号），界面不得自行按「进行中优先」重排。
@@ -153,6 +176,7 @@ export async function getPublicSchedule(slug: string): Promise<PublicScheduleRes
   if (!tournament) throw new AppError(404, "tournament_not_found", "公开赛事不存在或尚未发布。");
 
   const timeZone = assertIanaTimeZone(tournament.timezone);
+  const delays = await evidencedDelaysByCode(slug);
 
   interface Pending {
     competitionCode: string;
@@ -193,6 +217,7 @@ export async function getPublicSchedule(slug: string): Promise<PublicScheduleRes
   const unscheduled: PublicMatchPreview[] = [];
   pending.forEach((item, index) => {
     const projected = projectMatch(item.match, {
+      delayedTo: delays.get(item.match.code) ?? null,
       competitionCode: item.competitionCode,
       competitionName: item.competitionName,
       namePolicy: tournament.namePolicy,
@@ -283,9 +308,11 @@ export async function getPublicMatchDetail(slug: string, matchCode: string): Pro
     },
   });
   if (!match) throw new AppError(404, "match_not_found", "比赛不存在或尚未公开。");
+  const delays = await evidencedDelaysByCode(slug);
 
   return {
     match: projectMatch(match as MatchRow, {
+      delayedTo: delays.get(match.code) ?? null,
       competitionCode: match.stage.competition.code,
       competitionName: match.stage.competition.name,
       namePolicy: tournament.namePolicy,

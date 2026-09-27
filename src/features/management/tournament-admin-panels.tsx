@@ -10,7 +10,7 @@ import styles from "@/features/management/management.module.css";
 
 type Phase = "PREPARING" | "REGISTRATION_OPEN" | "REGISTRATION_CLOSED" | "RUNNING" | "FINISHED";
 
-function useAction() {
+export function useAction() {
   const router = useRouter();
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<{ tone: "error" | "ok"; text: string } | null>(null);
@@ -163,11 +163,13 @@ export function RegistrationSettingsForm({
   );
 }
 
-const KINDS = Object.keys(COMPETITION_KIND_LABEL) as RegistrationCompetitionKind[];
+type AddKind = RegistrationCompetitionKind | "TEAM";
+const ADD_KIND_LABEL: Record<AddKind, string> = { ...COMPETITION_KIND_LABEL, TEAM: "团体赛（学院对抗，默认五个小场）" };
+const KINDS = Object.keys(ADD_KIND_LABEL) as AddKind[];
 
 export function AddCompetitionForm({ slug }: { slug: string }) {
   const { pending, run, feedback } = useAction();
-  const [values, setValues] = useState({ kind: "MS" as RegistrationCompetitionKind, code: "", name: "" });
+  const [values, setValues] = useState({ kind: "MS" as AddKind, code: "", name: "" });
   return (
     <form
       className={styles.form}
@@ -183,8 +185,8 @@ export function AddCompetitionForm({ slug }: { slug: string }) {
       <div className={styles.fieldGrid3}>
         <label className={styles.field}>
           <span>单项</span>
-          <select onChange={(event) => setValues({ ...values, kind: event.target.value as RegistrationCompetitionKind })} value={values.kind}>
-            {KINDS.map((kind) => <option key={kind} value={kind}>{COMPETITION_KIND_LABEL[kind]}</option>)}
+          <select onChange={(event) => setValues({ ...values, kind: event.target.value as AddKind })} value={values.kind}>
+            {KINDS.map((kind) => <option key={kind} value={kind}>{ADD_KIND_LABEL[kind]}</option>)}
           </select>
         </label>
         <label className={styles.field}>

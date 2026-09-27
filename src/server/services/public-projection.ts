@@ -177,13 +177,23 @@ export function projectGames(
 // --- 时间语义 ---------------------------------------------------------------
 
 /**
- * 当前数据模型只有 `Match.scheduledAt`，因此只能产出 `FIXED` 与 `TBD`。
- * `ESTIMATED` / `DELAYED` / `AFTER_MATCH` 需要原计划时间与前序比赛引用，
- * 阶段 4-0 没有这些列，不得凭当前时间或比分猜测。
+ * 时间语义（阶段 4-C 起）：
+ * - `FIXED`：已发布的固定开赛时间；
+ * - `ESTIMATED`：已发布的计划时间是「接上一场之后」推算的预计值（`Match.scheduleEstimated`）；
+ * - `DELAYED`：有现场事实为据的延误（前面已开始的比赛超时或晚结束一路顺延），给出推算时间与原计划时间；
+ *   仅仅「过了计划时间还没开」不判为延误，不凭当前时间猜测；
+ * - `TBD`：尚未排定。`AFTER_MATCH` 仍未使用。
  */
-export function projectTime(scheduledAt: Date | null, scheduleDate: string): PublicMatchTime {
-  if (scheduledAt) return { type: "FIXED", scheduledAt: scheduledAt.toISOString() };
-  return { type: "TBD", scheduleDate };
+export function projectTime(
+  scheduledAt: Date | null,
+  scheduleDate: string,
+  options: { estimated?: boolean; delayedTo?: Date | null } = {},
+): PublicMatchTime {
+  if (!scheduledAt) return { type: "TBD", scheduleDate };
+  if (options.delayedTo && options.delayedTo.getTime() > scheduledAt.getTime()) {
+    return { type: "DELAYED", scheduledAt: options.delayedTo.toISOString(), originalScheduledAt: scheduledAt.toISOString() };
+  }
+  return { type: options.estimated ? "ESTIMATED" : "FIXED", scheduledAt: scheduledAt.toISOString() };
 }
 
 // --- 公开更正标记 -----------------------------------------------------------
@@ -253,9 +263,30 @@ export interface MatchRow {
   ruleSnapshot: { config: unknown } | null;
   snapshot: { state: unknown } | null;
   resultRevisions: readonly RevisionRow[];
+  scheduleEstimated?: boolean;
+  rubberKind?: string | null;
+  rubberOrder?: number | null;
+  fixture?: { lineupsRevealedAt: Date | null } | null;
+  players?: readonly { side: "A" | "B"; slot: number; participant: { publicCode: string; displayName: string; teamName: string | null } }[];
+}
+
+const RUBBER_TITLE: Record<string, string> = { MS: "男单", WS: "女单", MD: "男双", WD: "女双", XD: "混双" };
+
+/**
+ * 团体小场的一侧：队伍名由姓名公开策略决定；成员只取该小场的上场队员，
+ * 且只在双方出场名单交齐公开之后才给出（盲交期间、未提交时成员为空，而不是整支队伍名单）。
+ */
+function projectRubberSide(match: MatchRow, side: "A" | "B", policy: NamePublicationPolicy): PublicEntry | null {
+  const entry = side === "A" ? match.sideAEntry : match.sideBEntry;
+  if (!entry) return null;
+  const revealed = Boolean(match.fixture?.lineupsRevealedAt);
+  const players = revealed ? (match.players ?? []).filter((player) => player.side === side).sort((left, right) => left.slot - right.slot) : [];
+  return projectEntry({ code: entry.code, displayName: entry.displayName, members: players }, policy);
 }
 
 export interface MatchContext {
+  /** 推算出的有据延误（只在有现场事实时给出）。 */
+  delayedTo?: Date | null;
   competitionCode: string;
   competitionName: string;
   namePolicy: NamePublicationPolicy;
@@ -270,7 +301,9 @@ export function projectMatch(match: MatchRow, context: MatchContext): PublicMatc
   const facts = authoritativeFacts(match.snapshot?.state);
   const rule = projectRuleSummary(match.ruleSnapshot?.config);
   const scheduleDate = match.scheduledAt ? scheduleDateIn(context.timeZone, match.scheduledAt) : "";
-  const stageName = match.group ? `${context.stageName} · ${match.group.name}` : context.stageName;
+  const rubber = match.rubberKind && match.rubberOrder ? ` · 第 ${match.rubberOrder} 场${RUBBER_TITLE[match.rubberKind] ?? ""}` : "";
+  const stageName = `${match.group ? `${context.stageName} · ${match.group.name}` : context.stageName}${rubber}`;
+  const isRubber = Boolean(match.rubberKind);
 
   return {
     code: match.code,
@@ -292,12 +325,12 @@ export function projectMatch(match: MatchRow, context: MatchContext): PublicMatc
     scheduleDate,
     scheduleOrder: context.scheduleOrder,
     scoreVersion: match.version,
-    sideA: projectEntry(match.sideAEntry, context.namePolicy),
-    sideB: projectEntry(match.sideBEntry, context.namePolicy),
+    sideA: isRubber ? projectRubberSide(match, "A", context.namePolicy) : projectEntry(match.sideAEntry, context.namePolicy),
+    sideB: isRubber ? projectRubberSide(match, "B", context.namePolicy) : projectEntry(match.sideBEntry, context.namePolicy),
     stageCode: context.stageCode,
     stageName,
     startedAt: match.startedAt?.toISOString() ?? null,
-    time: projectTime(match.scheduledAt, scheduleDate),
+    time: projectTime(match.scheduledAt, scheduleDate, { estimated: match.scheduleEstimated, delayedTo: context.delayedTo }),
     verification: match.verificationStatus,
     winnerSide: facts.winnerSide,
   };

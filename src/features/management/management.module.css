@@ -70,6 +70,12 @@
 .steps li[data-done="true"]::before { background: var(--green); }
 
 .competitionRow { display: grid; grid-template-columns: 200px 130px minmax(0, 1fr) auto; gap: 10px; align-items: end; }
+.competitionItem { display: grid; gap: 12px; }
+
+.rubberList { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.rubberList li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rubberList select { min-height: 40px; padding: 6px 10px; border: 1px solid #a9b8c3; border-radius: 6px; font: inherit; }
+.rubberNo { min-width: 4.5em; color: var(--muted); font-size: .85rem; font-weight: 750; }
 
 .list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
 .list > li { padding: 16px 0; border-bottom: 1px solid var(--line); }
@@ -100,6 +106,8 @@
 .table th, .table td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 .table th { color: var(--muted); font-size: .78rem; font-weight: 800; }
 .tableWrap { overflow-x: auto; }
+/* 列多的表在窄屏横向滚动，而不是把每列压成一字一行。 */
+.tableWide { min-width: 640px; }
 .rowError td { background: #fff6f4; }
 .rowDuplicate td { background: #f7f4ea; }
 .rowMessages { margin: 0; padding-left: 18px; }
@@ -114,6 +122,69 @@
 
 .muted { color: var(--muted); }
 
+/* 团体名单编辑：桌面为一行五列，窄屏折成两列卡片。 */
+.rosterHead, .rosterRow { display: grid; grid-template-columns: 28px minmax(0, 1.2fr) minmax(0, 1.2fr) 96px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.rosterHead { color: var(--muted); font-size: .78rem; font-weight: 800; }
+.rosterRows { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.rosterNo { color: var(--muted); font-size: .85rem; font-weight: 800; text-align: right; }
+.rosterLabel { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* 报项：放在一行的第二排，跨过序号列之后的全部列。 */
+.rosterKinds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; grid-column: 2 / -1; grid-row: 2; margin: 0; padding: 0; border: 0; }
+.rosterKinds legend { float: left; margin-right: 4px; color: var(--muted); font-size: .78rem; font-weight: 800; }
+.kindChip { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 2px 10px; background: #f5f8fa; border: 1px solid var(--line); border-radius: 999px; font-size: .86rem; cursor: pointer; }
+.kindChip input { width: 16px; height: 16px; margin: 0; }
+
+.oneTime { display: grid; gap: 8px; padding: 14px; background: #fbf6ea; border: 1px solid #ead8ac; border-radius: 8px; }
+.oneTime p { margin: 0; color: #5d410e; line-height: 1.6; }
+.oneTime code { padding: 10px; overflow-wrap: anywhere; background: white; border-radius: 6px; font-size: 1.05rem; letter-spacing: .06em; }
+
+.teamCard { display: grid; gap: 12px; }
+.teamHead { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 14px; }
+.teamHead h3 { margin: 0; color: var(--blue); font-size: 1.1rem; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.chips li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; background: #f5f8fa; border: 1px solid var(--line); border-radius: 8px; font-size: .86rem; }
+
+/* 抽签：分组卡片、签表与冲突。 */
+.groupGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.groupCard { display: grid; align-content: start; gap: 8px; padding: 14px; background: #f7fafc; border: 1px solid var(--line); border-radius: 8px; }
+.groupCard h3 { margin: 0; color: var(--blue); font-size: 1rem; }
+.groupCard ol { display: grid; gap: 4px; margin: 0; padding-left: 20px; }
+.groupCard li { line-height: 1.45; overflow-wrap: anywhere; }
+.seedMark { display: inline-block; margin-left: 6px; padding: 0 6px; color: white; background: var(--blue); border-radius: 4px; font-size: .72rem; font-weight: 800; }
+.conflictMark { color: var(--danger); font-weight: 800; }
+.bracket { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.bracket li { display: grid; grid-template-columns: 3em minmax(0, 1fr); gap: 8px; padding: 6px 10px; background: #f7fafc; border-radius: 6px; }
+.bracket li:nth-child(4n+2), .bracket li:nth-child(4n+3) { background: #eef3f7; }
+.bracket li span:first-child { color: var(--muted); font-size: .82rem; text-align: right; }
+.byeSlot { color: var(--muted); font-style: italic; }
+.fixtureList { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.fixtureList li { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: .9rem; }
+.fixtureList code { color: var(--muted); font-size: .8rem; }
+.rubbers { color: var(--muted); font-size: .8rem; }
+.hint { color: var(--muted); font-size: .84rem; line-height: 1.5; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+
+/* 团体对抗：比分牌、出场名单、积分榜与名次确认。 */
+.tieHeader { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 8px 16px; padding: 16px; background: #f7fafc; border: 1px solid var(--line); border-radius: 10px; }
+.tieSide { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.tieSide strong { color: var(--blue); font-size: 1.15rem; overflow-wrap: anywhere; }
+.tieSideB { justify-content: flex-end; text-align: right; }
+.tieScore { color: var(--ink); font-size: 2rem; font-weight: 850; font-variant-numeric: tabular-nums; letter-spacing: .04em; }
+.tieMeta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: .86rem; }
+.tieHeader .alert { grid-column: 1 / -1; }
+.lineupRows { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.lineupRow { display: grid; grid-template-columns: 8em minmax(0, 1fr); align-items: center; gap: 10px; padding: 10px 12px; background: #f7fafc; border: 1px solid var(--line); border-radius: 8px; }
+.lineupRow strong { color: var(--blue); }
+.lineupSlots { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.rankOrder { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.rankOrder li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 10px; background: #f7fafc; border: 1px solid var(--line); border-radius: 8px; }
+.tieList { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.tieList li { display: grid; grid-template-columns: 7em minmax(0, 1fr) auto; align-items: center; gap: 6px 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.tieList .tieVs { min-width: 0; overflow-wrap: anywhere; }
+.tieList .tieScoreSmall { font-size: 1.1rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.rubberTable td { overflow-wrap: anywhere; }
+.champion { padding: 12px 14px; color: #5d410e; background: #fbf6ea; border: 1px solid #ead8ac; border-radius: 8px; font-weight: 800; }
+
 @media (max-width: 800px) {
   .fieldGrid, .fieldGrid3 { grid-template-columns: 1fr; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -121,4 +192,16 @@
   .competitionRow > :nth-child(3) { grid-column: 1 / -1; }
   .regCard { grid-template-columns: 1fr; }
   .regActions { flex-direction: row; flex-wrap: wrap; min-width: 0; }
+  .rosterHead { display: none; }
+  .rosterRow { grid-template-columns: 1fr 1fr; padding: 10px; background: #f7fafc; border: 1px solid var(--line); border-radius: 8px; }
+  .rosterNo { grid-column: 1 / -1; text-align: left; }
+  .rosterNo::before { content: "队员 "; }
+  .rosterLabel { position: static; width: auto; height: auto; clip: auto; color: var(--muted); font-size: .78rem; }
+  .rosterKinds { grid-column: 1 / -1; grid-row: auto; }
+  .fixtureList li { grid-template-columns: 1fr; gap: 2px; }
+  .tieHeader { grid-template-columns: 1fr; text-align: center; }
+  .tieSide, .tieSideB { justify-content: center; text-align: center; }
+  .lineupRow { grid-template-columns: 1fr; }
+  .tieList li { grid-template-columns: 1fr auto; }
+  .tieList li > :first-child { grid-column: 1 / -1; }
 }

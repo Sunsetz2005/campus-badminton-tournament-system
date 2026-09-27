@@ -66,7 +66,9 @@ describe("公开赛事门户投影", () => {
 
     it("比赛编号只接受大写安全字符", () => {
       expect(isPublicMatchCode("MS-DONE-001")).toBe(true);
-      for (const invalid of ["ms-done-001", "MS DONE", "../MS", "M", "M".repeat(40)]) {
+      // 抽签生成的编号带赛事标签与小场后缀，上限为 48 个字符。
+      expect(isPublicMatchCode("K7Q2-TEAM-A-R1-1-1MS")).toBe(true);
+      for (const invalid of ["ms-done-001", "MS DONE", "../MS", "M", "M".repeat(49)]) {
         expect(isPublicMatchCode(invalid), invalid).toBe(false);
       }
     });

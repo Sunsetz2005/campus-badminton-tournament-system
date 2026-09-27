@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { Prisma } from "@/generated/prisma/client";
+import { Prisma, type CompetitionKind, type EntryType } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
 import {
   createMatchAggregate,
@@ -12,6 +12,8 @@ import {
   type MatchEvent as DomainMatchEvent,
   type MatchState,
 } from "@/domain/rules/match-engine";
+import { COMPETITION_KIND_ENTRY_TYPE, type RegistrationCompetitionKind } from "@/domain/registration/registration-rules";
+import { RUBBER_LABEL, type RubberKind } from "@/domain/registration/team-roster";
 import { validateRuleConfig } from "@/domain/rules/rule-profile";
 import { getMatchAccess } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
@@ -36,6 +38,17 @@ export function asMatchState(value: Prisma.JsonValue): MatchState {
 
 type Transaction = Prisma.TransactionClient;
 
+/**
+ * 计分格式：个人项目取项目的单/双打类型；团体项目的每个小场按小场类型（男单/男双…）决定。
+ */
+export function matchFormatOf(competitionEntryType: EntryType, rubberKind: CompetitionKind | null): "SINGLES" | "DOUBLES" {
+  if (competitionEntryType !== "TEAM") return competitionEntryType;
+  if (!rubberKind || !(rubberKind in COMPETITION_KIND_ENTRY_TYPE)) {
+    throw new AppError(409, "match_not_ready", "团体小场缺少小场类型，不能计分。");
+  }
+  return COMPETITION_KIND_ENTRY_TYPE[rubberKind as RegistrationCompetitionKind];
+}
+
 async function loadMatchFacts(transaction: Transaction, matchId: string) {
   const match = await transaction.match.findUnique({
     where: { id: matchId },
@@ -47,6 +60,14 @@ async function loadMatchFacts(transaction: Transaction, matchId: string) {
       lifecycleStatus: true,
       verificationStatus: true,
       outcomeType: true,
+      rubberKind: true,
+      rubberOrder: true,
+      notPlayedAt: true,
+      fixture: { select: { lineupsRevealedAt: true } },
+      players: {
+        orderBy: [{ side: "asc" }, { slot: "asc" }],
+        select: { side: true, participantId: true, participant: { select: { displayName: true } } },
+      },
       scheduledAt: true,
       startedAt: true,
       endedAt: true,
@@ -77,7 +98,23 @@ async function loadMatchFacts(transaction: Transaction, matchId: string) {
   if (!match.sideAEntry || !match.sideBEntry || !match.ruleSnapshot) {
     throw new AppError(409, "match_not_ready", "比赛名单或冻结规则尚未准备完成。");
   }
-  return { ...match, sideAEntry: match.sideAEntry, sideBEntry: match.sideBEntry, ruleSnapshot: match.ruleSnapshot };
+  // 个人项目：上场队员就是报名单位成员。团体小场：上场队员来自双方已公开并锁定的出场名单。
+  let lineup: { A: { participantId: string; displayName: string }[]; B: { participantId: string; displayName: string }[] };
+  if (match.rubberKind) {
+    if (match.notPlayedAt) throw new AppError(409, "rubber_not_played", "团体对抗胜负已定，该小场不再进行。");
+    if (!match.fixture?.lineupsRevealedAt) {
+      throw new AppError(409, "match_not_ready", "双方出场名单尚未交齐，小场不能开始计分。");
+    }
+    const pick = (side: "A" | "B") =>
+      match.players.filter((item) => item.side === side).map((item) => ({ participantId: item.participantId, displayName: item.participant.displayName }));
+    lineup = { A: pick("A"), B: pick("B") };
+    if (!lineup.A.length || !lineup.B.length) throw new AppError(409, "match_not_ready", "该小场缺少上场队员。");
+  } else {
+    const pick = (entry: NonNullable<typeof match.sideAEntry>) =>
+      entry.members.map((item) => ({ participantId: item.participantId, displayName: item.participant.displayName }));
+    lineup = { A: pick(match.sideAEntry), B: pick(match.sideBEntry) };
+  }
+  return { ...match, sideAEntry: match.sideAEntry, sideBEntry: match.sideBEntry, ruleSnapshot: match.ruleSnapshot, lineup };
 }
 
 export async function ensureMatchSnapshot(transaction: Transaction, matchId: string) {
@@ -86,10 +123,10 @@ export async function ensureMatchSnapshot(transaction: Transaction, matchId: str
   const match = await loadMatchFacts(transaction, matchId);
   const initial = createMatchAggregate({
     matchId: match.id,
-    format: match.stage.competition.entryType,
+    format: matchFormatOf(match.stage.competition.entryType, match.rubberKind),
     players: {
-      A: match.sideAEntry.members.map((item) => item.participantId),
-      B: match.sideBEntry.members.map((item) => item.participantId),
+      A: match.lineup.A.map((item) => item.participantId),
+      B: match.lineup.B.map((item) => item.participantId),
     },
     ruleConfig: validateRuleConfig(match.ruleSnapshot.config),
     ruleConfigHash: match.ruleSnapshot.configHash,
@@ -206,14 +243,18 @@ export async function getAuthoritativeMatchState(userId: string, matchCode: stri
       ...common,
       match: {
         code: match.code,
-        competitionName: match.stage.competition.name,
+        // 团体小场在项目名后标出第几场什么小场，裁判台据此核对。
+        competitionName: match.rubberKind
+          ? `${match.stage.competition.name} · 第 ${match.rubberOrder} 场${RUBBER_LABEL[match.rubberKind as RubberKind]}`
+          : match.stage.competition.name,
         courtName: match.court?.name ?? null,
         scheduledAt: match.scheduledAt?.toISOString() ?? null,
         sideAName: match.sideAEntry!.displayName,
         sideBName: match.sideBEntry!.displayName,
         playerNames: Object.fromEntries(
-          [...match.sideAEntry!.members, ...match.sideBEntry!.members].map((item) => [item.participantId, item.participant.displayName]),
+          [...match.lineup.A, ...match.lineup.B].map((item) => [item.participantId, item.displayName]),
         ),
+        rubber: match.rubberKind ? { kind: match.rubberKind, order: match.rubberOrder } : null,
         lifecycleStatus: match.lifecycleStatus,
         verificationStatus: match.verificationStatus,
       },

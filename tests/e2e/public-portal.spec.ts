@@ -12,7 +12,9 @@ import { expect, test } from "@playwright/test";
 
 const SLUG = "phase-1-demo";
 const schedulePath = `/public/${SLUG}/schedule`;
-const evidenceDir = path.join(process.cwd(), "artifacts", "phase4-portal");
+// 截图默认写入未提交的 `local-run/`，普通测试运行不会改写已记账的证据。
+// 已记账的文件直接位于 `artifacts/phase4-portal/` 根目录，重新固化时显式设 `PHASE4_PORTAL_SHOT_DIR=.`。
+const evidenceDir = path.join(process.cwd(), "artifacts", "phase4-portal", process.env.PHASE4_PORTAL_SHOT_DIR ?? "local-run");
 
 test.describe.serial("阶段 4-0 赛事门户", () => {
   test("首页按生命周期分组列出赛事，并带海报与赛事信息", async ({ page }) => {

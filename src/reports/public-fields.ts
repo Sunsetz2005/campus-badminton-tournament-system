@@ -6,8 +6,11 @@
  * 以及尚未进入逐场发布边界（`Match.publishedAt`）的比赛。
  */
 
-/** 逐场公开发布边界：赛事级 `PUBLISHED` 不等于「该场可公开」。 */
-export const publishedMatchWhere = { publishedAt: { not: null } } as const;
+/**
+ * 逐场公开发布边界：赛事级 `PUBLISHED` 不等于「该场可公开」。
+ * 团体对抗胜负已定后「不再进行」的小场不进入公开赛程（它既不是待开赛，也没有比分）。
+ */
+export const publishedMatchWhere = { publishedAt: { not: null }, notPlayedAt: null } as const;
 
 /** 首页赛事卡。只有赛事级信息，不含任何比赛明细。 */
 export const publicTournamentCardSelect = {
@@ -52,6 +55,19 @@ export const publicMatchSelect = {
   outcomeType: true,
   verificationStatus: true,
   scheduledAt: true,
+  // 计划时间是否为「接上一场之后」的预计值（阶段 4-C）。
+  scheduleEstimated: true,
+  // 团体小场：小场序号与类型；上场队员只在双方出场名单交齐公开后才进入投影（盲交期间不公开）。
+  rubberKind: true,
+  rubberOrder: true,
+  fixture: { select: { lineupsRevealedAt: true } },
+  players: {
+    select: {
+      side: true,
+      slot: true,
+      participant: { select: { publicCode: true, displayName: true, teamName: true } },
+    },
+  },
   startedAt: true,
   endedAt: true,
   version: true,

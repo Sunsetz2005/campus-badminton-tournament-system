@@ -13,6 +13,7 @@ import type { NavContext } from "@/server/auth/nav-context";
 function linksFor(navContext: NavContext) {
   const links: [string, string][] = [["/", "赛事"]];
   if (navContext.canOfficiate) links.push(["/officiating", "我的执裁"]);
+  if (navContext.canManageTeams) links.push(["/team", "我的队伍"]);
   if (navContext.canManageTournaments) links.push(["/management", "赛事管理"]);
   if (navContext.signedIn) links.push(["/settings", "设置"]);
   return links;
@@ -96,6 +97,9 @@ function AuthenticatedAppNav({
       <div className="session-slot">
         {navContext.signedIn ? (
           <>
+            {navContext.mustChangePassword ? (
+              <Link className="button small" href="/account/password">修改初始口令</Link>
+            ) : null}
             <span>{navContext.userName}</span>
             <button className="text-button" onClick={signOut} type="button">
               退出

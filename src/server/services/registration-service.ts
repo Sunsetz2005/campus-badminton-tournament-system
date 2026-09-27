@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 
 import { z } from "zod";
 
-import { Prisma, type RegistrationSource, type TournamentPhase } from "@/generated/prisma/client";
+import { Prisma, type CompetitionKind, type Gender, type RegistrationSource, type TournamentPhase } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
 import {
   entryDisplayName,
@@ -69,9 +69,11 @@ async function generateReferenceCode(transaction: Tx) {
 
 export interface InsertRegistrationInput {
   tournamentId: string;
-  competition: { id: string; entryType: "SINGLES" | "DOUBLES" };
-  members: NormalizedMember[];
+  competition: { id: string; entryType: "SINGLES" | "DOUBLES" | "TEAM" };
+  members: (NormalizedMember & { gender?: Gender | null; rubberKinds?: CompetitionKind[] })[];
   source: RegistrationSource;
+  /** 团体项目必填：报名挂在哪支队伍上。 */
+  teamId?: string | null;
   note: string | null;
   submittedByUserId?: string | null;
   inviteId?: string | null;
@@ -81,40 +83,56 @@ export interface InsertRegistrationInput {
 }
 
 /**
+ * 学号在同一项目里是否已被其他进行中/已通过的报名或报名单位占用（团体项目即「是否已在别的队伍名单里」）。
+ * `excludeRegistrationId` 用于负责人修改自己仍待审核的名单。
+ */
+export async function assertStudentIdsFree(
+  transaction: Tx,
+  competitionId: string,
+  studentIds: string[],
+  excludeRegistrationId?: string,
+) {
+  if (!studentIds.length) return;
+  const holder = await transaction.registrationMember.findFirst({
+    where: {
+      studentId: { in: studentIds },
+      registration: {
+        competitionId,
+        status: { in: ["PENDING", "APPROVED"] },
+        ...(excludeRegistrationId ? { id: { not: excludeRegistrationId } } : {}),
+      },
+    },
+    select: { studentId: true, registration: { select: { referenceCode: true, team: { select: { name: true } } } } },
+  });
+  if (holder) {
+    const where = holder.registration.team
+      ? `「${holder.registration.team.name}」的名单（${holder.registration.referenceCode}）中`
+      : `报名 ${holder.registration.referenceCode} 中`;
+    throw new AppError(409, "member_already_registered", `学号 ${holder.studentId} 已在${where}报了同一项目。`);
+  }
+  const entered = await transaction.entryMember.findFirst({
+    where: { competitionId, participant: { studentId: { in: studentIds } } },
+    select: { participant: { select: { studentId: true } }, entry: { select: { code: true } } },
+  });
+  if (entered) {
+    throw new AppError(
+      409,
+      "member_already_registered",
+      `学号 ${entered.participant.studentId} 已是本项目报名单位 ${entered.entry.code} 的成员。`,
+    );
+  }
+}
+
+/**
  * 写入一份待审核报名。调用方必须已持有赛事行锁。
  *
  * 硬性去重只依据学号：同一项目内，同一学号只能出现在一份进行中/已通过的报名里；
  * 学号齐全时 A+B 与 B+A 由 `dedupeKey` 与部分唯一索引兜底。只有姓名时不在这里拒绝，交给审核。
+ * 团体名单不生成组合去重键，同队唯一由 (项目, 队伍) 的部分唯一索引兜底。
  */
 export async function insertRegistration(transaction: Tx, input: InsertRegistrationInput) {
   const studentIds = input.members.map((member) => member.studentId).filter((value): value is string => Boolean(value));
-  if (studentIds.length) {
-    const holder = await transaction.registrationMember.findFirst({
-      where: {
-        studentId: { in: studentIds },
-        registration: { competitionId: input.competition.id, status: { in: ["PENDING", "APPROVED"] } },
-      },
-      select: { studentId: true, registration: { select: { referenceCode: true } } },
-    });
-    if (holder) {
-      throw new AppError(
-        409,
-        "member_already_registered",
-        `学号 ${holder.studentId} 已在报名 ${holder.registration.referenceCode} 中报了同一项目。`,
-      );
-    }
-    const entered = await transaction.entryMember.findFirst({
-      where: { competitionId: input.competition.id, participant: { studentId: { in: studentIds } } },
-      select: { participant: { select: { studentId: true } }, entry: { select: { code: true } } },
-    });
-    if (entered) {
-      throw new AppError(
-        409,
-        "member_already_registered",
-        `学号 ${entered.participant.studentId} 已是本项目报名单位 ${entered.entry.code} 的成员。`,
-      );
-    }
-  }
+  await assertStudentIdsFree(transaction, input.competition.id, studentIds);
 
   const referenceCode = await generateReferenceCode(transaction);
   return transaction.registration.create({
@@ -123,7 +141,8 @@ export async function insertRegistration(transaction: Tx, input: InsertRegistrat
       competitionId: input.competition.id,
       referenceCode,
       source: input.source,
-      dedupeKey: registrationDedupeKey(input.members),
+      teamId: input.teamId ?? null,
+      dedupeKey: input.competition.entryType === "TEAM" ? null : registrationDedupeKey(input.members),
       note: input.note,
       submittedByUserId: input.submittedByUserId ?? null,
       inviteId: input.inviteId ?? null,
@@ -137,6 +156,8 @@ export async function insertRegistration(transaction: Tx, input: InsertRegistrat
           studentId: member.studentId,
           teamName: member.teamName,
           contact: member.contact,
+          gender: member.gender ?? null,
+          rubberKinds: member.rubberKinds ?? [],
         })),
       },
     },
@@ -185,6 +206,9 @@ export async function createManualRegistration(actorUserId: string, slug: string
     select: { id: true, entryType: true },
   });
   if (!competition) throw new AppError(404, "competition_not_found", "项目不属于本赛事。");
+  if (competition.entryType === "TEAM") {
+    throw new AppError(400, "team_competition", "团体赛名单请在「队伍与负责人」页面按队伍录入。");
+  }
   const members = validateMembersOrThrow(competition.entryType, parsed.data.members);
   const note = parseNote(parsed.data.note);
 
@@ -194,7 +218,7 @@ export async function createManualRegistration(actorUserId: string, slug: string
       await assertCompetitionEditable(transaction, tournament.phase, competition.id);
       const registration = await insertRegistration(transaction, {
         tournamentId: tournament.id,
-        competition,
+        competition: { id: competition.id, entryType: competition.entryType as "SINGLES" | "DOUBLES" },
         members,
         source: "MANUAL",
         note,
@@ -365,9 +389,44 @@ interface RegistrationMemberRow {
   studentId: string | null;
   teamName: string | null;
   contact: string | null;
+  gender: Gender | null;
+}
+
+const GENDER_TEXT: Record<Gender, string> = { MALE: "男", FEMALE: "女" };
+
+/**
+ * 性别只补空缺、不覆盖：既有人员未登记性别时写入本次填写的性别；已登记且不同即拒绝，交人工核对。
+ */
+async function reconcileGender(transaction: Tx, participantId: string, member: RegistrationMemberRow, slotLabel: string) {
+  if (!member.gender) return;
+  const participant = await transaction.participant.findUniqueOrThrow({
+    where: { id: participantId },
+    select: { gender: true, publicCode: true },
+  });
+  if (participant.gender && participant.gender !== member.gender) {
+    throw new AppError(
+      409,
+      "identity_conflict",
+      `${slotLabel}填写的性别「${GENDER_TEXT[member.gender]}」与 ${participant.publicCode} 已登记的「${GENDER_TEXT[participant.gender]}」不一致，请先核对。`,
+    );
+  }
+  if (!participant.gender) {
+    await transaction.participant.update({ where: { id: participantId }, data: { gender: member.gender } });
+  }
 }
 
 async function resolveMember(
+  transaction: Tx,
+  tournamentId: string,
+  member: RegistrationMemberRow,
+  resolution: IdentityResolution,
+): Promise<{ participantId: string; created: boolean }> {
+  const resolved = await resolveMemberIdentity(transaction, tournamentId, member, resolution);
+  if (!resolved.created) await reconcileGender(transaction, resolved.participantId, member, `第 ${member.slot} 位选手`);
+  return resolved;
+}
+
+async function resolveMemberIdentity(
   transaction: Tx,
   tournamentId: string,
   member: RegistrationMemberRow,
@@ -444,6 +503,7 @@ async function resolveMember(
       studentId: member.studentId,
       teamName: member.teamName,
       contact: member.contact,
+      gender: member.gender,
     },
     select: { id: true },
   });
@@ -471,9 +531,10 @@ async function loadRegistrationForReview(transaction: Tx, tournamentId: string, 
       version: true,
       referenceCode: true,
       entryId: true,
+      team: { select: { id: true, name: true } },
       competition: { select: { id: true, code: true, entryType: true } },
       members: {
-        select: { slot: true, displayName: true, studentId: true, teamName: true, contact: true },
+        select: { slot: true, displayName: true, studentId: true, teamName: true, contact: true, gender: true, rubberKinds: true },
         orderBy: { slot: "asc" },
       },
     },
@@ -572,12 +633,19 @@ export async function reviewRegistration(actorUserId: string, slug: string, regi
       await assertCompetitionEditable(transaction, current.phase, registration.competition.id);
       const resolutions = input.resolutions ?? {};
       const resolved: { slot: number; participantId: string; created: boolean }[] = [];
+      const kindsBySlot = new Map(registration.members.map((member) => [member.slot, member.rubberKinds]));
       for (const member of registration.members) {
         const decision = (resolutions[String(member.slot)] ?? "AUTO") as IdentityResolution;
         resolved.push({ slot: member.slot, ...(await resolveMember(transaction, tournament.id, member, decision)) });
       }
       if (new Set(resolved.map((item) => item.participantId)).size !== resolved.length) {
-        throw new AppError(409, "duplicate_member", "两个成员位被判定为同一人，同一人不能与自己组队。");
+        throw new AppError(
+          409,
+          "duplicate_member",
+          registration.competition.entryType === "TEAM"
+            ? "名单中有两名队员被判定为同一人，请核对后重新提交。"
+            : "两个成员位被判定为同一人，同一人不能与自己组队。",
+        );
       }
       const alreadyEntered = await transaction.entryMember.findFirst({
         where: {
@@ -600,17 +668,25 @@ export async function reviewRegistration(actorUserId: string, slug: string, regi
       });
       const nameById = new Map(participants.map((participant) => [participant.id, participant.displayName]));
       const code = await allocateEntryCode(transaction, registration.competition);
+      const isTeam = registration.competition.entryType === "TEAM";
+      if (isTeam && !registration.team) throw new AppError(409, "team_missing", "团体报名缺少所属队伍。");
       const entry = await transaction.entry.create({
         data: {
           competitionId: registration.competition.id,
           code,
-          displayName: entryDisplayName(resolved.map((item) => nameById.get(item.participantId) ?? "")),
+          // 团体报名单位以队伍名称显示；个人项目以成员姓名显示。
+          displayName: isTeam
+            ? (registration.team?.name as string)
+            : entryDisplayName(resolved.map((item) => nameById.get(item.participantId) ?? "")),
           entryType: registration.competition.entryType,
+          teamId: isTeam ? registration.team?.id : null,
           members: {
             create: resolved.map((item) => ({
               slot: item.slot,
               competitionId: registration.competition.id,
               participantId: item.participantId,
+              // 团体名单的报项随成员一起固化到报名单位；个人项目为空。
+              rubberKinds: isTeam ? (kindsBySlot.get(item.slot) ?? []) : [],
             })),
           },
         },
@@ -691,14 +767,16 @@ export async function renameParticipant(actorUserId: string, slug: string, publi
     await lockTournamentRow(transaction, tournament.id);
     const participant = await transaction.participant.findUnique({
       where: { tournamentId_publicCode: { tournamentId: tournament.id, publicCode } },
-      select: { id: true, displayName: true, memberships: { select: { entryId: true } } },
+      select: { id: true, displayName: true, memberships: { select: { entryId: true, entry: { select: { entryType: true } } } } },
     });
     if (!participant) throw new AppError(404, "participant_not_found", "人员不存在。");
     if (participant.displayName === member.displayName) {
       throw new AppError(409, "name_unchanged", "新姓名与原姓名相同。");
     }
     await transaction.participant.update({ where: { id: participant.id }, data: { displayName: member.displayName } });
-    for (const { entryId } of participant.memberships) {
+    for (const { entryId, entry } of participant.memberships) {
+      // 团体报名单位以队伍名称显示，队员改名不影响。
+      if (entry.entryType === "TEAM") continue;
       const members = await transaction.entryMember.findMany({
         where: { entryId },
         select: { participant: { select: { displayName: true } } },
