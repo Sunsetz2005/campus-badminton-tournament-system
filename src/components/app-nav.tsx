@@ -34,13 +34,25 @@ export function AppNav({ navContext }: { navContext: NavContext }) {
   );
 }
 
+/** 品牌标：简化的羽毛球轮廓，纯装饰。 */
+function BrandMark() {
+  return (
+    <span aria-hidden="true" className="brand-mark">
+      <svg fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
+        <circle cx="12" cy="18" r="3" />
+        <path d="M9.5 16.2 6 4.5M14.5 16.2 18 4.5M12 15V3.5M6 4.5c2-.8 4-1 6-1s4 .2 6 1M7.8 10.2h8.4" />
+      </svg>
+    </span>
+  );
+}
+
 function PublicPreviewNav({ pathname }: { pathname: string }) {
   const scheduleHref = "/public/preview/autumn-campus-2026/schedule";
 
   return (
     <header className="topbar topbar-preview">
       <Link className="brand" href={scheduleHref}>
-        羽赛台
+        <BrandMark />羽赛台
       </Link>
       <div className="preview-nav-area">
         <span className="preview-nav-scroll-hint">导航可横向滚动</span>
@@ -79,8 +91,8 @@ function AuthenticatedAppNav({
   return (
     <header className={`topbar ${compact ? "topbar-workbench" : ""}`}>
       <div className="brand-lockup">
-        <Link className="brand" href="/">羽赛台</Link>
-        {compact ? <span>裁判工作台</span> : null}
+        <Link className="brand" href="/"><BrandMark />羽赛台</Link>
+        {compact ? <span className="brand-context">裁判工作台</span> : null}
       </div>
       <nav aria-label="主导航">
         {compact ? (
@@ -100,7 +112,10 @@ function AuthenticatedAppNav({
             {navContext.mustChangePassword ? (
               <Link className="button small" href="/account/password">修改初始口令</Link>
             ) : null}
-            <span>{navContext.userName}</span>
+            <span className="session-user" title={navContext.userName ?? undefined}>
+              <span aria-hidden="true" className="avatar">{initialOf(navContext.userName)}</span>
+              <span>{navContext.userName}</span>
+            </span>
             <button className="text-button" onClick={signOut} type="button">
               退出
             </button>
@@ -124,6 +139,11 @@ export function AppFooter() {
         : "公开赛程与成绩以赛事组织方正式公告为准"}
     </footer>
   );
+}
+
+function initialOf(name: string | null | undefined) {
+  const first = [...(name ?? "").trim()][0];
+  return first ? first.toUpperCase() : "我";
 }
 
 function isPublicPreviewPath(pathname: string) {

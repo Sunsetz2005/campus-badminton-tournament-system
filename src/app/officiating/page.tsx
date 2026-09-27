@@ -11,6 +11,14 @@ import { StatusBadge } from "@/ui/status-badge";
 
 export const dynamic = "force-dynamic";
 
+const verificationLabel: Record<string, string> = {
+  UNVERIFIED: "待复核",
+  PENDING_REVIEW: "待复核",
+  DISPUTED: "有争议",
+  LOCKED: "已锁定",
+  SUPERSEDED: "已被更正",
+};
+
 export default async function OfficiatingPage() {
   const session = await getPageSession();
   if (!session) redirect("/login?next=/officiating");
@@ -83,9 +91,9 @@ export default async function OfficiatingPage() {
   return (
     <section>
       <div className="section-heading">
-        <p className="eyebrow">按真实指派读取</p>
+        <p className="eyebrow">裁判</p>
         <h1>我的执裁</h1>
-        <p>按真实指派进入场地化裁判工作台：横向模拟场地、发接发标记、换位与换边、大比分与更正。所有写入都要服务器确认。</p>
+        <p>这里只列出指派给你的比赛，全新 0:0 的比赛排在最前。进入后在场地化工作台记分；每一分都要服务器确认后才算数。</p>
       </div>
       {assignments.length ? (
         <div className="card-grid">
@@ -93,18 +101,25 @@ export default async function OfficiatingPage() {
             const label = liveLabel(match);
             const timeZone = match.stage.competition.tournament.timezone;
             return (
-              <article className="card" data-testid="assignment-card" key={match.code}>
-                <StatusBadge tone={label.tone}>{label.text}</StatusBadge>
+              <article className="card assignment-card" data-testid="assignment-card" key={match.code}>
+                <div className="assignment-head">
+                  <StatusBadge tone={label.tone}>{label.text}</StatusBadge>
+                  <span className="assignment-role">{role === "MAIN_REFEREE" ? "主裁判" : role}</span>
+                </div>
                 <h2>{match.code}</h2>
-                <p>
-                  {match.sideAEntry?.displayName ?? "待定"} vs {match.sideBEntry?.displayName ?? "待定"}
-                  {match.rubberKind && match.rubberOrder ? ` · 第 ${match.rubberOrder} 场${RUBBER_LABEL[match.rubberKind as RubberKind] ?? ""}` : ""}
+                <p className="assignment-vs">
+                  <strong>{match.sideAEntry?.displayName ?? "待定"}</strong>
+                  <span>vs</span>
+                  <strong>{match.sideBEntry?.displayName ?? "待定"}</strong>
                 </p>
-                <small>
-                  {match.scheduledAt ? `${match.scheduleEstimated ? "约 " : ""}${formatZonedShort(match.scheduledAt, timeZone)} · ` : "时间待定 · "}
-                  {match.court?.name ?? "场地待定"} · {role === "MAIN_REFEREE" ? "主裁判" : role}
-                </small>
-                <Link className="button small" href={`/officiating/${match.code}`}>进入执裁</Link>
+                {match.rubberKind && match.rubberOrder ? (
+                  <p className="assignment-rubber">第 {match.rubberOrder} 场{RUBBER_LABEL[match.rubberKind as RubberKind] ?? ""}</p>
+                ) : null}
+                <p className="assignment-meta">
+                  <span>{match.scheduledAt ? `${match.scheduleEstimated ? "约 " : ""}${formatZonedShort(match.scheduledAt, timeZone)}` : "时间待定"}</span>
+                  <span>{match.court?.name ?? "场地待定"}</span>
+                </p>
+                <Link className="button assignment-go" href={`/officiating/${match.code}`}>进入执裁</Link>
               </article>
             );
           })}
@@ -120,20 +135,30 @@ export default async function OfficiatingPage() {
               <article className="card" key={item.tournamentId}>
                 <h3>{item.tournament.name}</h3>
                 <p>按场地查看已发布赛程的现场状态与延误，临时更换裁判。</p>
-                <Link className="button small" href={`/officiating/board/${item.tournament.slug}`}>打开看板</Link>
+                <Link className="button secondary assignment-go" href={`/officiating/board/${item.tournament.slug}`}>打开看板</Link>
               </article>
             ))}
           </div>
           <div className="section-heading"><p className="eyebrow">裁判长权限</p><h2>待复核结果</h2></div>
-          {reviewMatches.length ? reviewMatches.map((match) => (
-            <article className="card" key={match.code}>
-              <StatusBadge tone="warn">{match.verificationStatus}</StatusBadge>
-              <h3>{match.code}</h3>
-              <p>{match.sideAEntry?.displayName ?? "待定"} vs {match.sideBEntry?.displayName ?? "待定"}</p>
-              <small>{match.court?.name ?? "场地待定"}</small>
-              <Link className="button small" href={`/officiating/${match.code}`}>进入复核 / 接管</Link>
-            </article>
-          )) : <p className="empty-state">当前没有待复核结果。</p>}
+          {reviewMatches.length ? (
+            <div className="card-grid">
+              {reviewMatches.map((match) => (
+                <article className="card assignment-card" key={match.code}>
+                  <div className="assignment-head">
+                    <StatusBadge tone="warn">{verificationLabel[match.verificationStatus] ?? match.verificationStatus}</StatusBadge>
+                  </div>
+                  <h3>{match.code}</h3>
+                  <p className="assignment-vs">
+                    <strong>{match.sideAEntry?.displayName ?? "待定"}</strong>
+                    <span>vs</span>
+                    <strong>{match.sideBEntry?.displayName ?? "待定"}</strong>
+                  </p>
+                  <p className="assignment-meta"><span>{match.court?.name ?? "场地待定"}</span></p>
+                  <Link className="button secondary assignment-go" href={`/officiating/${match.code}`}>进入复核 / 接管</Link>
+                </article>
+              ))}
+            </div>
+          ) : <p className="empty-state">当前没有待复核结果。</p>}
         </section>
       ) : null}
     </section>

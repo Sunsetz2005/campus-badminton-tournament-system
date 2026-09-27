@@ -4,11 +4,11 @@ import { LoginForm } from "@/components/login-form";
 
 export default function LoginPage() {
   return (
-    <section className="narrow-page">
+    <section className="narrow-page login-page">
       <div className="section-heading">
-        <p className="eyebrow">真实数据库会话</p>
-        <h1>登录本地演示环境</h1>
-        <p>不提供公开注册。示例身份只能通过受保护的本地种子命令创建。</p>
+        <p className="eyebrow">工作人员登录</p>
+        <h1>登录羽赛台</h1>
+        <p>管理员、裁判与学院领队使用赛事方分配的账号登录。本平台不开放公开注册；忘记口令请联系赛事管理员重置。</p>
       </div>
       <Suspense fallback={<p>加载登录表单…</p>}>
         <LoginForm />

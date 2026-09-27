@@ -68,6 +68,8 @@ export default async function HomePage() {
     grouped.get(tournamentBucket(tournament.phase))?.push(tournament);
   });
   const visibleBuckets = bucketOrder.filter((bucket) => (grouped.get(bucket)?.length ?? 0) > 0);
+  const liveMatches = tournaments.reduce((sum, tournament) => sum + tournament.liveMatchCount, 0);
+  const publishedMatches = tournaments.reduce((sum, tournament) => sum + tournament.publishedMatchCount, 0);
 
   return (
     <>
@@ -78,6 +80,11 @@ export default async function HomePage() {
           公开赛程、逐局比分与已确认结果。比分由现场主裁判在服务端权威记录，
           页面只读取公开字段，不展示账号、联系方式或内部审计信息。
         </p>
+        <ul aria-label="平台概况" className="home-hero-stats">
+          <li><strong>{tournaments.length}</strong>项公开赛事</li>
+          <li><strong>{publishedMatches}</strong>场已公开赛程</li>
+          <li><strong>{liveMatches}</strong>场正在进行</li>
+        </ul>
       </section>
 
       {tournaments.length === 0 ? (

@@ -69,7 +69,7 @@ src/server/services/  服务端命令与错误
 src/server/config/    启动期安全门禁
 src/db/               Prisma client 单例 + 数据库隔离断言
 src/reports/          对外投影（公开字段白名单）
-src/ui/ src/components/ src/app/   展示层
+src/ui/ src/components/ src/app/   展示层（全局样式分层在 src/app/styles/，globals.css 只做 @import；见知识库「全站视觉与动效规范」）
 prisma/               schema、迁移、模拟种子
 ```
 

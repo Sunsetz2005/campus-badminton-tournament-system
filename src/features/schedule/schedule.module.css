@@ -1,28 +1,32 @@
 /* 赛程工作台。颜色全部取自 globals.css 的变量；手机上用表单与按钮调整，不依赖拖拽。 */
 
 .tabs { display: flex; flex-wrap: wrap; gap: 6px; }
-.tabs a { padding: 8px 14px; color: var(--blue); background: white; border: 1px solid var(--line); border-radius: 999px; font-weight: 750; text-decoration: none; }
-.tabs a[aria-current="page"] { color: white; background: var(--blue); border-color: var(--blue); }
+.tabs { width: fit-content; max-width: 100%; padding: 4px; gap: 2px; background: rgba(15, 23, 42, .05); border-radius: var(--r-md); }
+.tabs a { display: inline-flex; align-items: center; min-height: 36px; padding: 6px 14px; color: var(--ink-2); border-radius: var(--r-sm); font-weight: 700; text-decoration: none; transition: background-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out); }
+.tabs a:hover { background: rgba(255, 255, 255, .7); }
+.tabs a[aria-current="page"] { color: var(--ink); background: var(--surface); box-shadow: var(--shadow-sm); }
 
 .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
-.summary div { display: grid; gap: 2px; padding: 12px; background: #f5f8fa; border: 1px solid var(--line); border-radius: 8px; }
-.summary strong { color: var(--blue); font-size: 1.4rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.summary div { display: grid; gap: 4px; padding: 14px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md); }
+.summary strong { color: var(--ink); font-family: var(--font-num); font-weight: 800; font-size: 1.4rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .summary span { color: var(--muted); font-size: .78rem; }
 .summary .bad strong { color: var(--danger); }
 .summary .warn strong { color: #8a5a00; }
 
 .filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.filters a { padding: 5px 11px; color: var(--blue); background: white; border: 1px solid var(--line); border-radius: 999px; font-size: .84rem; font-weight: 700; text-decoration: none; }
-.filters a[aria-current="page"] { color: white; background: var(--blue); border-color: var(--blue); }
+.filters a { display: inline-flex; align-items: center; min-height: 32px; padding: 4px 12px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; font-size: .84rem; font-weight: 700; text-decoration: none; transition: background-color var(--dur-2) var(--ease-out); }
+.filters a:hover { background: var(--surface-2); }
+.filters a[aria-current="page"] { color: white; background: var(--ink); border-color: var(--ink); }
 .filters .label { color: var(--muted); font-size: .8rem; font-weight: 800; }
 
-.dayTitle { margin: 8px 0 0; color: var(--blue); font-size: 1.05rem; }
+.dayTitle { position: sticky; top: calc(var(--topbar-h) + 56px); z-index: 5; width: fit-content; margin: 8px 0 0; padding: 4px 12px; color: var(--ink); background: var(--glass-strong); border-radius: var(--r-pill); box-shadow: var(--shadow-xs); font-size: 1rem; -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
 
 .rows { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.row { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) auto; gap: 6px 14px; align-items: start; padding: 10px 12px; background: white; border: 1px solid var(--line); border-radius: 8px; }
+.row { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) auto; gap: 6px 14px; align-items: start; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); transition: border-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out); }
+.row:hover { border-color: var(--line-strong); box-shadow: var(--shadow-sm); }
 .row[data-severity="HARD"] { border-color: #e7a79d; background: #fff8f6; }
 .row[data-severity="WARNING"] { border-color: #ead8ac; }
-.row[data-changed="true"] { box-shadow: inset 4px 0 0 var(--blue); }
+.row[data-changed="true"] { box-shadow: inset 4px 0 0 var(--accent); }
 .time { display: grid; gap: 2px; font-variant-numeric: tabular-nums; }
 .time strong { color: var(--ink); font-size: 1.05rem; }
 .time span { color: var(--muted); font-size: .8rem; }
@@ -33,20 +37,20 @@
 .was { color: var(--muted); font-size: .8rem; text-decoration: line-through; }
 
 .editor { grid-column: 1 / -1; }
-.editor summary { width: fit-content; color: var(--blue); font-weight: 750; cursor: pointer; }
-.editorBody { display: grid; gap: 12px; margin-top: 10px; padding: 12px; background: #f7fafc; border: 1px solid var(--line); border-radius: 8px; }
+.editor summary { width: fit-content; min-height: 32px; padding: 4px 8px; color: var(--accent); font-weight: 750; cursor: pointer; }
+.editorBody { display: grid; gap: 12px; margin-top: 10px; padding: 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md); }
 .editorGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 10px; }
 .editorGrid input, .editorGrid select { min-width: 0; }
 
 .issues { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.issues li { display: grid; gap: 2px; padding: 8px 10px; border-radius: 8px; line-height: 1.5; font-size: .9rem; }
+.issues li { display: grid; gap: 2px; padding: 8px 10px; border-radius: var(--r-md); line-height: 1.5; font-size: .9rem; }
 .issues li[data-severity="HARD"] { color: #7a241f; background: #fff0ed; border: 1px solid #f1c5be; }
 .issues li[data-severity="WARNING"] { color: #5d410e; background: #fbf6ea; border: 1px solid #ead8ac; }
 .issues b { font-size: .82rem; }
 
 .courtRows { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .courtRow { display: grid; grid-template-columns: 3.5em minmax(0, 1fr) auto auto; gap: 8px; align-items: center; }
-.courtRow input { min-height: 40px; padding: 6px 10px; border: 1px solid #a9b8c3; border-radius: 6px; font: inherit; }
+.courtRow input { min-height: 40px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); font: inherit; }
 .courtCode { color: var(--muted); font-weight: 800; }
 
 .dayRows { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }

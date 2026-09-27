@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { MatchBoardAutoRefresh } from "@/components/match-board-auto-refresh";
@@ -14,11 +15,13 @@ type PublicMatch = Tournament["competitions"][number]["stages"][number]["matches
 };
 type BoardGroup = "LIVE" | "ACTION" | "UPCOMING" | "DONE";
 
-const groupCopy: Record<BoardGroup, { eyebrow: string; title: string; empty: string }> = {
-  LIVE: { eyebrow: "COURTS NOW", title: "正在进行", empty: "当前没有进行中的比赛。" },
-  ACTION: { eyebrow: "ACTION REQUIRED", title: "赛后待处理", empty: "当前没有待提交或待复核结果。" },
-  UPCOMING: { eyebrow: "UP NEXT", title: "待开赛", empty: "当前没有待开赛比赛。" },
-  DONE: { eyebrow: "FINAL RESULTS", title: "已完成", empty: "当前没有已锁定结果。" },
+const groupOrder: readonly BoardGroup[] = ["LIVE", "ACTION", "UPCOMING", "DONE"];
+
+const groupCopy: Record<BoardGroup, { anchor: string; eyebrow: string; title: string; short: string; empty: string }> = {
+  LIVE: { anchor: "live", eyebrow: "ON COURT", title: "正在进行", short: "进行中", empty: "当前没有进行中的比赛。" },
+  ACTION: { anchor: "action", eyebrow: "UNDER REVIEW", title: "赛后待处理", short: "待处理", empty: "当前没有待提交或待复核结果。" },
+  UPCOMING: { anchor: "upcoming", eyebrow: "UP NEXT", title: "待开赛", short: "待开赛", empty: "当前没有待开赛比赛。" },
+  DONE: { anchor: "done", eyebrow: "FINAL RESULTS", title: "已完成", short: "已完成", empty: "当前没有已锁定结果。" },
 };
 
 function boardGroup(match: PublicMatch): BoardGroup {
@@ -38,16 +41,11 @@ function statusPresentation(match: PublicMatch): { label: string; detail?: strin
   return { label: "已排期", tone: "neutral" };
 }
 
-function matchTime(value: Date | null, timezone: string) {
-  if (!value) return "时间待定";
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: timezone,
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(value);
+function formatParts(value: Date | null, timezone: string) {
+  if (!value) return { day: "日期待定", time: "待定" };
+  const day = new Intl.DateTimeFormat("zh-CN", { timeZone: timezone, month: "2-digit", day: "2-digit" }).format(value);
+  const time = new Intl.DateTimeFormat("zh-CN", { timeZone: timezone, hour: "2-digit", minute: "2-digit", hour12: false }).format(value);
+  return { day, time };
 }
 
 function gameScore(match: PublicMatch) {
@@ -65,24 +63,109 @@ function gameWins(match: PublicMatch) {
   }, { A: 0, B: 0 });
 }
 
-function MatchCard({ match, timezone }: { match: PublicMatch; timezone: string }) {
+function currentGame(match: PublicMatch) {
+  return [...match.games].reverse().find((game) => !game.completed) ?? null;
+}
+
+function detailHref(slug: string, match: PublicMatch) {
+  return `/public/${slug}/matches/${encodeURIComponent(match.code)}`;
+}
+
+function MatchMeta({ match, timezone }: { match: PublicMatch; timezone: string }) {
+  const { day, time } = formatParts(match.scheduledAt, timezone);
   const presentation = statusPresentation(match);
-  const wins = gameWins(match);
   return (
-    <article className="board-match-card" data-testid={`board-match-${match.code}`}>
-      <div className="board-match-meta">
-        <span>{matchTime(match.scheduledAt, timezone)}</span>
-        <span>{match.court?.name ?? "场地待定"}</span>
-        <StatusBadge detail={presentation.detail} tone={presentation.tone}>{presentation.label}</StatusBadge>
+    <div className="gm-card-meta">
+      <span className="gm-court">{match.court?.name ?? "场地待定"}</span>
+      <span>{day} {time}</span>
+      <StatusBadge detail={presentation.detail} tone={presentation.tone}>{presentation.label}</StatusBadge>
+    </div>
+  );
+}
+
+/** 进行中：深色大比分卡，突出当前局比分与各自已胜局数。 */
+function LiveCard({ match, slug, timezone }: { match: PublicMatch; slug: string; timezone: string }) {
+  const wins = gameWins(match);
+  const game = currentGame(match);
+  const sides = [
+    { key: "A", name: match.sideAEntry?.displayName ?? "待定", won: wins.A, points: game?.scoreA ?? 0 },
+    { key: "B", name: match.sideBEntry?.displayName ?? "待定", won: wins.B, points: game?.scoreB ?? 0 },
+  ];
+  return (
+    <article className="gm-card gm-card-live" data-testid={`board-match-${match.code}`}>
+      <MatchMeta match={match} timezone={timezone} />
+      <div className="gm-code">{match.competitionCode} · {match.code}</div>
+      <ol className="gm-live-sides" aria-label={`${match.code} 实时比分`}>
+        {sides.map((side) => (
+          <li key={side.key}>
+            <strong>{side.name}</strong>
+            <span className="gm-won" aria-label={`已胜 ${side.won} 局`}>{side.won}</span>
+            <span className="gm-points" aria-label={`当前局 ${side.points} 分`}>{side.points}</span>
+          </li>
+        ))}
+      </ol>
+      <div className="gm-card-foot">
+        <span className="gm-games" aria-label={`${match.code} 局分`}>{gameScore(match)}</span>
+        <Link aria-label={`${match.code} 比赛详情`} className="gm-detail" href={detailHref(slug, match)}>详情</Link>
       </div>
-      <div className="board-match-code">{match.competitionCode} · {match.code}</div>
-      <div className="board-sides">
-        <strong className={wins.A > wins.B ? "is-winner" : undefined}>{match.sideAEntry?.displayName ?? "待定"}</strong>
-        <span className="board-versus">{wins.A || wins.B ? `${wins.A} — ${wins.B}` : "VS"}</span>
-        <strong className={wins.B > wins.A ? "is-winner" : undefined}>{match.sideBEntry?.displayName ?? "待定"}</strong>
-      </div>
-      <div className="board-score" aria-label={`${match.code} 局分`}>{gameScore(match)}</div>
     </article>
+  );
+}
+
+/** 待处理与已完成：浅色结果卡。只有结果锁定后才标出胜方，待复核的比赛不提前宣布胜负。 */
+function ResultCard({ match, slug, timezone }: { match: PublicMatch; slug: string; timezone: string }) {
+  const wins = gameWins(match);
+  const final = match.verificationStatus === "LOCKED";
+  const winner = !final || wins.A === wins.B ? null : wins.A > wins.B ? "A" : "B";
+  const sides = [
+    { key: "A", name: match.sideAEntry?.displayName ?? "待定", won: wins.A },
+    { key: "B", name: match.sideBEntry?.displayName ?? "待定", won: wins.B },
+  ];
+  return (
+    <article className="gm-card gm-card-result" data-testid={`board-match-${match.code}`}>
+      <MatchMeta match={match} timezone={timezone} />
+      <div className="gm-code">{match.competitionCode} · {match.code}</div>
+      <ol className="gm-result-sides">
+        {sides.map((side) => (
+          <li className={winner === side.key ? "is-winner" : undefined} key={side.key}>
+            <strong>{side.name}</strong>
+            {winner === side.key ? <span className="gm-win-mark">胜</span> : null}
+            <span className="gm-won">{side.won}</span>
+          </li>
+        ))}
+      </ol>
+      <div className="gm-card-foot">
+        <span className="gm-games" aria-label={`${match.code} 局分`}>{gameScore(match)}</span>
+        <Link aria-label={`${match.code} 比赛详情`} className="gm-detail" href={detailHref(slug, match)}>详情</Link>
+      </div>
+    </article>
+  );
+}
+
+/** 待开赛：按时间排的赛程条。 */
+function UpcomingRow({ match, slug, timezone }: { match: PublicMatch; slug: string; timezone: string }) {
+  const { day, time } = formatParts(match.scheduledAt, timezone);
+  const presentation = statusPresentation(match);
+  return (
+    <li className="gm-up-row" data-testid={`board-match-${match.code}`}>
+      <div className="gm-up-time"><strong>{time}</strong><span>{day}</span></div>
+      <div className="gm-up-body">
+        <div className="gm-up-meta">
+          <span className="gm-court">{match.court?.name ?? "场地待定"}</span>
+          <span className="gm-code">{match.competitionCode} · {match.code}</span>
+        </div>
+        <p className="gm-up-sides">
+          <strong>{match.sideAEntry?.displayName ?? "待定"}</strong>
+          <span aria-hidden="true">VS</span>
+          <span className="visually-hidden">对</span>
+          <strong>{match.sideBEntry?.displayName ?? "待定"}</strong>
+        </p>
+      </div>
+      <div className="gm-up-status">
+        <StatusBadge detail={presentation.detail} tone={presentation.tone}>{presentation.label}</StatusBadge>
+        <Link aria-label={`${match.code} 比赛详情`} className="gm-detail" href={detailHref(slug, match)}>详情</Link>
+      </div>
+    </li>
   );
 }
 
@@ -108,7 +191,7 @@ export default async function MatchBoardPage({
     ),
   );
   const grouped = Object.fromEntries(
-    (["LIVE", "ACTION", "UPCOMING", "DONE"] as const).map((group) => [
+    groupOrder.map((group) => [
       group,
       matches
         .filter((match) => boardGroup(match) === group)
@@ -119,42 +202,74 @@ export default async function MatchBoardPage({
         }),
     ]),
   ) as Record<BoardGroup, PublicMatch[]>;
+  const courts = new Set(grouped.LIVE.map((match) => match.court?.code).filter(Boolean)).size;
 
   return (
-    <section className="match-board-page">
-      <div className="section-heading board-heading">
-        <div>
-          <p className="eyebrow">COURTS NOW</p>
-          <h1>现场看板</h1>
-          <p>{tournament.name} · 数据来自服务端公开白名单，按状态分组展示现场进度、赛后待处理和已锁定结果。</p>
+    <div className="gm-board">
+      <header className="gm-hero">
+        <div className="gm-hero-inner">
+          <div className="gm-hero-copy">
+            <p className="gm-kicker"><span className="gm-live-dot" aria-hidden="true" />LIVE BOARD</p>
+            <h1>现场看板</h1>
+            <p>{tournament.name}</p>
+          </div>
+          <MatchBoardAutoRefresh serverRefreshedAt={new Date().toISOString()} />
         </div>
-        <MatchBoardAutoRefresh serverRefreshedAt={new Date().toISOString()} />
-      </div>
+        <dl className="gm-kpis" aria-label="比赛状态汇总">
+          <div><dt>全部比赛</dt><dd>{matches.length}</dd></div>
+          <div className="gm-kpi-live"><dt>正在进行</dt><dd>{grouped.LIVE.length}</dd></div>
+          <div><dt>在用场地</dt><dd>{courts}</dd></div>
+          <div><dt>赛后待处理</dt><dd>{grouped.ACTION.length}</dd></div>
+          <div><dt>待开赛</dt><dd>{grouped.UPCOMING.length}</dd></div>
+          <div><dt>已完成</dt><dd>{grouped.DONE.length}</dd></div>
+        </dl>
+      </header>
 
-      <div className="board-summary" aria-label="比赛状态汇总">
-        <div><strong>{matches.length}</strong><span>全部比赛</span></div>
-        <div><strong>{grouped.LIVE.length}</strong><span>正在进行</span></div>
-        <div><strong>{grouped.ACTION.length}</strong><span>赛后待处理</span></div>
-        <div><strong>{grouped.UPCOMING.length}</strong><span>待开赛</span></div>
-        <div><strong>{grouped.DONE.length}</strong><span>已完成</span></div>
-      </div>
+      <nav aria-label="看板分区" className="gm-jump">
+        {groupOrder.map((group) => (
+          <a href={`#${groupCopy[group].anchor}`} key={group}>
+            {groupCopy[group].short}<span>{grouped[group].length}</span>
+          </a>
+        ))}
+      </nav>
 
-      {(["LIVE", "ACTION", "UPCOMING", "DONE"] as const).map((group) => (
-        <section className="board-section" data-board-group={group} key={group}>
-          <div className="board-section-title">
-            <div><p className="eyebrow">{groupCopy[group].eyebrow}</p><h2>{groupCopy[group].title}</h2></div>
+      {groupOrder.map((group) => (
+        <section
+          aria-labelledby={`board-${groupCopy[group].anchor}-title`}
+          className={`gm-section gm-section-${groupCopy[group].anchor}`}
+          data-board-group={group}
+          id={groupCopy[group].anchor}
+          key={group}
+        >
+          <div className="gm-section-title">
+            <div>
+              <p className="gm-eyebrow">{groupCopy[group].eyebrow}</p>
+              <h2 id={`board-${groupCopy[group].anchor}-title`}>{groupCopy[group].title}</h2>
+            </div>
             <span>{grouped[group].length} 场</span>
           </div>
-          {grouped[group].length ? (
-            <div className="board-match-grid">
-              {grouped[group].map((match) => <MatchCard key={match.code} match={match} timezone={tournament.timezone} />)}
+          {grouped[group].length === 0 ? (
+            <p className="gm-empty">{groupCopy[group].empty}</p>
+          ) : group === "UPCOMING" ? (
+            <ol className="gm-up-list">
+              {grouped[group].map((match) => (
+                <UpcomingRow key={match.code} match={match} slug={tournamentSlug} timezone={tournament.timezone} />
+              ))}
+            </ol>
+          ) : (
+            <div className={group === "LIVE" ? "gm-live-grid" : "gm-result-grid"}>
+              {grouped[group].map((match) => group === "LIVE"
+                ? <LiveCard key={match.code} match={match} slug={tournamentSlug} timezone={tournament.timezone} />
+                : <ResultCard key={match.code} match={match} slug={tournamentSlug} timezone={tournament.timezone} />)}
             </div>
-          ) : <p className="empty-state">{groupCopy[group].empty}</p>}
+          )}
         </section>
       ))}
 
-      <p className="notice">看板为只读投影。要实际记分，请使用裁判账号从“我的执裁”进入；比分与状态只有服务器确认后才会刷新到这里。</p>
-      <p className="notice">需要按日期、项目、场地筛选或查看逐局比分，请使用<a href={`/public/${tournamentSlug}/schedule`}>每日赛程</a>。</p>
-    </section>
+      <footer className="gm-footnotes">
+        <p>看板为只读投影。要实际记分，请使用裁判账号从“我的执裁”进入；比分与状态只有服务器确认后才会刷新到这里。</p>
+        <p>需要按日期、项目、场地筛选或查看逐局比分，请使用<Link href={`/public/${tournamentSlug}/schedule`}>每日赛程</Link>。</p>
+      </footer>
+    </div>
   );
 }

@@ -929,3 +929,94 @@
 }
 .unscheduled > p { margin: 0 0 16px; color: var(--preview-muted); font-size: .9rem; }
 .unscheduled .scheduleCards { display: grid; }
+
+/*
+ * 2026-09 视觉更新：公开赛程与比赛详情并入观赛台的运动会配色。
+ * 只改颜色、圆角、阴影与动效；尺寸、栅格与各断点布局沿用上方规则。
+ */
+.shell {
+  --preview-blue: #4f2586;
+  --preview-blue-strong: #2e1760;
+  --preview-blue-soft: #f3eefb;
+  --preview-green: #00786f;
+  --preview-amber: #8f5f00;
+  --preview-ink: #16202c;
+  --preview-muted: #5d6b7b;
+  --preview-line: #e4e1ec;
+}
+
+.shell .eventHeader {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  color: white;
+  background:
+    radial-gradient(55% 90% at 92% 0%, rgba(0, 190, 170, .45), transparent 62%),
+    linear-gradient(118deg, #1b1040 0%, #55298a 48%, #0f62ad 100%);
+  border-bottom: 0;
+  border-radius: 24px;
+  box-shadow: 0 24px 50px -24px rgba(43, 18, 94, .5);
+}
+.shell .eventHeader::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: linear-gradient(90deg, #f4b41a 0 20%, #e03a45 20% 40%, #7a3db8 40% 60%, #0f62ad 60% 80%, #00968f 80% 100%);
+}
+.shell .eventHeader h1 { color: white; font-style: italic; font-weight: 900; }
+.shell .kicker { color: #ffd66b; }
+.shell .eventFacts div { border-bottom-color: rgba(255, 255, 255, .18); }
+.shell .eventFacts dt { color: rgba(255, 255, 255, .72); }
+.shell .eventFacts dd { color: white; }
+
+.shell .announcement { margin-top: 14px; color: #5c3f00; background: #fbf1dc; border-left: 0; border-radius: 12px; }
+
+.shell .dateRail > div { gap: 6px; padding: 5px; background: rgba(15, 23, 42, .05); border-radius: 16px; scrollbar-width: none; }
+.shell .dateRail a,
+.shell .dateRail a:first-of-type,
+.shell .dateRail a:last-of-type { border-right: 0; border-radius: 12px; background: transparent; transition: background-color 200ms var(--ease-out), color 200ms var(--ease-out), box-shadow 200ms var(--ease-out); }
+.shell .dateRail a:not(.activeDate):hover { background: rgba(255, 255, 255, .75); }
+.shell .dateRail a.activeDate,
+.shell .dateRail a.activeDate:hover { color: white; background: linear-gradient(135deg, #55298a, #0f62ad); box-shadow: 0 8px 20px -8px rgba(79, 37, 134, .6); }
+
+.shell .filters { border-radius: 18px; box-shadow: var(--shadow-sm); }
+.shell .filters select,
+.shell .filters input { border-color: var(--line-strong); border-radius: 10px; }
+.shell .searchForm button { border-radius: 10px; background: #4f2586; border-color: #4f2586; transition: background-color 200ms var(--ease-out), transform 320ms var(--ease-spring); }
+.shell .searchForm button:active:not(:disabled) { transform: scale(.96); }
+.shell .filterChip { border-color: #d9c9ee; }
+
+.shell .scheduleTableWrap,
+.shell .matchHero,
+.shell .detailSection,
+.shell .detailAside > section { border-radius: 18px; box-shadow: var(--shadow-sm); }
+.shell .scheduleTable thead { color: #3d2a66; background: #f5f1fb; }
+.shell .scheduleTable tbody tr { transition: background-color 160ms var(--ease-out); }
+.shell .scheduleTable tbody tr:hover { background: #faf7fe; }
+.shell .timePrimary { font-style: italic; font-weight: 900; }
+.shell .gamesWon, .shell .heroScore { font-style: italic; font-weight: 900; }
+.shell .detailLink { border-color: #cdb8ea; border-radius: 999px; transition: background-color 200ms var(--ease-out), transform 320ms var(--ease-spring); }
+.shell .detailLink:active { transform: scale(.95); }
+.shell .primaryLink { border-radius: 999px; background: linear-gradient(135deg, #55298a, #0f62ad); }
+.shell .secondaryLink { border-radius: 999px; }
+.shell .matchCard { border-radius: 18px; box-shadow: var(--shadow-sm); transition: box-shadow 320ms var(--ease-out), transform 320ms var(--ease-out); }
+.shell .matchCard:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
+.shell .sectionTitle > span { background: linear-gradient(180deg, #7a3db8, #00968f); }
+.shell .scoreTable thead { color: #3d2a66; background: #f5f1fb; }
+.shell .scoreTable tr[data-winner="true"] { background: #fbf6e6; }
+.shell .winnerLabel { color: #5a3b00; background: linear-gradient(135deg, #ffd873, #f4b41a); }
+.shell .gameCells span[data-game-status="IN_PROGRESS"] { color: #8a1c22; background: #fde8e9; }
+.shell .previewBanner { border-radius: 12px; }
+
+.shell .eventHeader :focus-visible { outline-color: white; }
+
+@media (prefers-reduced-motion: reduce) {
+  .shell .matchCard:hover { transform: none; }
+}
+
+@media (prefers-contrast: more) {
+  .shell .eventHeader { background: #1b1040; }
+}

@@ -1,0 +1,256 @@
+/* 裁判工作台（场地化执裁区）。自 globals.css 原样迁出，颜色取自 tokens.css。 */
+.scoring-shell { position: relative; left: 50%; display: grid; gap: 14px; width: min(1180px, 96vw); margin: -32px 0 0; transform: translateX(-50%); }
+.scoring-statusbar { position: relative; z-index: 10; display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 14px 18px; background: rgba(255,255,255,.84); border: 1px solid rgba(255,255,255,.84); border-radius: 18px; box-shadow: 0 16px 44px rgba(21,62,104,.11); backdrop-filter: blur(22px) saturate(160%); }
+.scoring-statusbar h1 { margin: 2px 0 0; color: var(--blue); font-size: clamp(1.35rem, 3vw, 2rem); letter-spacing: -.03em; }
+.status-facts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 14px; color: var(--muted); font-size: .78rem; }
+.status-facts span { display: inline-flex; align-items: center; gap: 5px; }
+.status-facts strong { color: var(--ink); }
+.status-facts small { flex-basis: 100%; text-align: right; }
+.sync-dot { width: 10px; height: 10px; border-radius: 50%; background: #9a3434; box-shadow: 0 0 0 4px rgba(154,52,52,.12); }
+.sync-dot.online { background: #19805f; box-shadow: 0 0 0 4px rgba(25,128,95,.12); }
+.scoring-alert { margin: 0; padding: 14px 18px; color: #7a241f; background: #fff0ed; border: 1px solid #f1c5be; border-radius: 12px; }
+.scoring-alert.is-status { color: #154e3e; background: #eaf6f1; border-color: #b9ddcf; }
+.scoring-stale { margin: 0; padding: 13px 16px; color: #68450b; background: #fff4dc; border: 1px solid #e4c783; border-radius: 12px; }
+.pending-recovery { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 16px; color: #5d410e; background: #fff3d7; border: 1px solid #dfbd73; border-radius: 14px; }
+.pending-recovery div { display: grid; flex: 1 1 320px; gap: 3px; }
+.pending-recovery span { color: #6d6048; font-size: .82rem; }
+.control-strip, .phase-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.control-strip { min-height: 48px; padding: 4px 0; }
+.control-strip span { color: var(--muted); font-size: .86rem; }
+.games-ribbon { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; color: var(--muted); }
+.games-ribbon span { padding: 7px 10px; background: #e7ece9; border-radius: 999px; }
+.special-outcome-summary { display: grid; grid-template-columns: minmax(190px, .7fr) minmax(260px, 1fr) minmax(280px, 1.25fr); gap: 18px; align-items: center; padding: 18px; color: #5f2e28; background: #fff3f0; border: 1px solid #edc4be; border-left: 5px solid var(--danger); border-radius: 14px; }
+.special-outcome-summary h2 { margin: 4px 0 0; color: #7a2722; font-size: 1.2rem; }
+.special-outcome-summary dl { display: grid; gap: 8px; margin: 0; }
+.special-outcome-summary dl div { display: grid; grid-template-columns: 110px 1fr; gap: 10px; }
+.special-outcome-summary dt { color: #82554f; }
+.special-outcome-summary dd { margin: 0; font-weight: 750; overflow-wrap: anywhere; }
+.special-outcome-summary > p { margin: 0; color: #70443e; line-height: 1.55; }
+/* ── 裁判工作台：场地化执裁区 ───────────────────────────────────────────── */
+/* 作用域变量只挂在裁判端外壳上，不污染 :root、管理端和公开端。 */
+.scoring-shell {
+  --court-turf: #1f6b4f;
+  --court-turf-deep: #17573f;
+  --court-line: #f4fbf7;
+  --court-zone: rgba(255, 255, 255, .07);
+  --serve-warm: #f2b134;
+  --serve-warm-ink: #5c3d02;
+  --ops-blue: var(--blue);
+}
+.court-console { display: grid; gap: 12px; padding: clamp(12px, 2vw, 20px); background: white; border: 1px solid var(--line); border-radius: 24px; box-shadow: 0 18px 54px rgba(20,35,31,.07); }
+
+/* 1. 队名条：移出绿色场地，避免挤压四个发球区 */
+.court-sides-header { display: grid; grid-template-columns: 1fr 1fr; align-items: stretch; gap: 8px; }
+.court-side-tag { min-width: 0; padding: 4px 10px; color: var(--muted); background: #f4f8f6; border: 1px solid var(--line); border-radius: 999px; border-left: 4px solid var(--green); font-size: .7rem; font-weight: 800; letter-spacing: .03em; overflow-wrap: anywhere; }
+.court-side-tag.side-b { border-left-color: var(--ops-blue); }
+.court-truth { grid-column: 1 / -1; justify-self: start; margin-top: -2px; padding: 3px 9px; color: #0a5e47; background: #e1f2ec; border-radius: 999px; font-size: .68rem; font-weight: 800; }
+.court-truth.draft { color: #68450b; background: #fff2d8; }
+
+/* 2. 横向模拟场地：SVG 画正式场线，姓名用真实 DOM 叠层 */
+.badminton-court { position: relative; aspect-ratio: 1340 / 610; width: 100%; min-height: 210px; overflow: hidden; border-radius: 14px; box-shadow: 0 12px 34px rgba(18,64,45,.18); }
+.court-lines { position: absolute; inset: 0; width: 100%; height: 100%; }
+.court-lines .court-surface { fill: var(--court-turf); }
+.court-lines .court-service-zone { fill: var(--court-zone); }
+.court-lines .court-boundary { fill: none; stroke: var(--court-line); stroke-width: 9; }
+.court-lines .court-line { stroke: var(--court-line); stroke-width: 5; }
+.court-lines .court-net-line { stroke: rgba(255,255,255,.95); stroke-width: 7; stroke-dasharray: 16 12; }
+.court-net-label { position: absolute; top: 4px; left: 50%; z-index: 3; padding: 2px 7px; color: #17382e; background: rgba(255,255,255,.94); border-radius: 0 0 6px 6px; font-size: .6rem; font-weight: 900; letter-spacing: .08em; transform: translateX(-50%); pointer-events: none; }
+.court-visual-half { position: absolute; inset: 0; pointer-events: none; }
+/* 每格绝对定位到 Diagram A 的真实发球区矩形上 */
+.court-cell { position: absolute; display: grid; align-content: center; justify-items: center; gap: 3px; min-width: 0; padding: 4px; }
+.court-cell-label { color: rgba(255,255,255,.88); font-size: .64rem; font-weight: 800; letter-spacing: .04em; }
+.player-position-card { display: grid; justify-items: center; gap: 3px; width: min(100%, 220px); min-width: 0; padding: 6px 7px; color: #10221d; background: rgba(255,255,255,.95); border-radius: 10px; box-shadow: 0 6px 16px rgba(5,35,25,.18); }
+/* 长姓名一律换行，绝不截断；另有「查看全名」可展开列表 */
+.player-name { min-width: 0; font-size: clamp(.72rem, 1.45vw, .98rem); line-height: 1.18; text-align: center; overflow-wrap: anywhere; }
+.player-role { display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; border-radius: 999px; font-size: .66rem; font-weight: 900; white-space: nowrap; }
+.role-server { color: var(--serve-warm-ink); background: var(--serve-warm); }
+.role-receiver { color: #12405f; background: #cfe4f7; box-shadow: inset 0 0 0 2px #12405f; }
+.role-draft_server { color: #68450b; background: #ffe9bd; }
+.role-draft_receiver { color: #36566f; background: #e4eef6; }
+.shuttle-icon { flex: none; width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.9; }
+.empty-court-cell { color: rgba(255,255,255,.85); font-size: .7rem; }
+
+/* 3. 一行三个按钮：左侧换位 — 换边 — 右侧换位 */
+.court-position-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.court-action-button { display: grid; align-content: center; gap: 1px; min-height: 52px; padding: 7px 9px; color: var(--ops-blue); background: #f5f9f8; border: 1px solid #9eb0a9; border-radius: 12px; font: inherit; font-size: .84rem; font-weight: 800; cursor: pointer; touch-action: manipulation; }
+.court-action-button small { color: var(--muted); font-size: .62rem; font-weight: 700; overflow-wrap: anywhere; }
+.court-action-button.ends { color: white; background: var(--ops-blue); border-color: var(--ops-blue); }
+.court-action-button.ends small { color: rgba(255,255,255,.82); }
+.court-action-button.attention { background: #8a590b; border-color: #8a590b; }
+
+/* 4. 大比分：跟随画面左右队伍 */
+.court-scoreboard { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 8px 10px; background: #f7f9f8; border: 1px solid var(--line); border-radius: 16px; }
+.scoreboard-side { display: grid; justify-items: center; gap: 2px; min-width: 0; }
+.scoreboard-team { min-width: 0; color: var(--muted); font-size: .74rem; font-weight: 800; line-height: 1.2; text-align: center; overflow-wrap: anywhere; }
+.court-score-number { color: var(--ink); font-size: clamp(2.9rem, 9vw, 5rem); line-height: .92; letter-spacing: -.05em; font-variant-numeric: tabular-nums; }
+.scoreboard-side.side-a .court-score-number { color: var(--green-dark); }
+.scoreboard-side.side-b .court-score-number { color: var(--ops-blue); }
+.scoreboard-colon { position: absolute; top: 50%; left: 50%; color: var(--muted); font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 800; transform: translate(-50%, -30%); }
+
+/* 5. 双方加分与更正 */
+.court-score-console { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.court-score-side { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); gap: 8px; min-width: 0; }
+.court-score-side.half-right { grid-template-columns: minmax(0, 1fr) minmax(0, 1.9fr); }
+.score-adjust { display: grid; place-items: center; align-content: center; min-height: 64px; padding: 5px; border: 0; border-radius: 13px; color: white; background: var(--green); font: inherit; font-size: 1.3rem; font-weight: 900; cursor: pointer; touch-action: manipulation; user-select: none; transition: transform 100ms ease-out, filter 100ms ease-out; }
+.side-b .score-adjust.plus { background: var(--ops-blue); }
+.score-adjust.minus { min-height: 64px; color: #6d2521; background: #fae8e6; border: 1px solid #e8b8b3; font-size: 1.05rem; }
+.score-adjust small { font-size: .6rem; font-weight: 800; }
+
+/* 6. 精简状态 */
+.court-service-sentence { display: grid; gap: 2px; margin: 0; padding: 8px 11px; background: #fdf6e6; border: 1px solid #ecd9ab; border-radius: 10px; }
+.court-service-sentence span { color: #7a5a14; font-size: .68rem; font-weight: 800; letter-spacing: .04em; }
+.court-service-sentence strong { color: #4a3607; font-size: .84rem; line-height: 1.35; overflow-wrap: anywhere; }
+.court-interaction-status { margin: 0; padding: 7px 11px; color: #405b6d; background: #eef4f7; border-radius: 8px; font-size: .76rem; line-height: 1.45; }
+.court-roster { padding: 7px 11px; background: #f7f9f8; border: 1px solid var(--line); border-radius: 10px; font-size: .76rem; }
+.court-roster summary { min-height: 28px; color: var(--ops-blue); font-weight: 800; cursor: pointer; }
+.court-roster ul { display: grid; gap: 7px; margin: 8px 0 0; padding: 0; list-style: none; }
+.court-roster li { display: grid; gap: 1px; min-width: 0; }
+.court-roster li span { color: var(--muted); font-size: .66rem; font-weight: 800; }
+.court-roster li strong, .court-roster li em { overflow-wrap: anywhere; }
+.court-roster li em { color: #2c4a3d; font-style: normal; }
+.court-caption { margin: 8px 0 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+.score-adjust:active:not(:disabled), .court-action-button:active:not(:disabled) { transform: scale(.97); filter: brightness(.94); }
+.score-adjust:disabled, .court-action-button:disabled { opacity: .42; cursor: not-allowed; }
+/* 次要操作折叠抽屉 */
+.secondary-drawer { background: white; border: 1px solid var(--line); border-radius: 16px; }
+.secondary-drawer > summary { display: grid; gap: 2px; min-height: 52px; padding: 12px 18px; color: var(--blue); font-weight: 800; cursor: pointer; align-content: center; }
+.secondary-drawer > summary span { color: var(--muted); font-size: .72rem; font-weight: 700; overflow-wrap: anywhere; }
+.secondary-drawer[open] > summary { border-bottom: 1px solid var(--line); }
+.secondary-drawer-body { display: grid; gap: 12px; padding: 14px 16px 16px; }
+.secondary-drawer-body .service-panel, .secondary-drawer-body .phase-actions, .secondary-drawer-body .history-panel { margin: 0; }
+.device-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.device-strip span { color: var(--muted); font-size: .74rem; }
+.phase-actions-urgent { display: flex; flex-wrap: wrap; gap: 10px; padding: 0; background: none; border: 0; }
+.phase-actions-urgent:empty { display: none; }
+.phase-actions-secondary { display: flex; flex-wrap: wrap; gap: 10px; padding: 0; background: none; border: 0; }
+.phase-actions-secondary:empty { display: none; }
+.opening-setup-panel { display: grid; grid-template-columns: 1.2fr 1fr 1fr auto; align-items: end; gap: 12px; padding: 16px; background: #fff9e9; border: 1px solid #ead8aa; border-radius: 16px; }
+.opening-setup-panel h2 { margin: 3px 0 0; color: #63430c; font-size: 1.1rem; }
+.opening-setup-panel label, .sheet-form-grid label { display: grid; gap: 6px; font-size: .78rem; font-weight: 800; }
+.opening-setup-panel select, .correction-sheet select { min-height: 48px; padding: 10px; border: 1px solid #9ba9a4; border-radius: 10px; background: white; font: inherit; }
+.service-panel { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--line); }
+.service-panel div { display: grid; gap: 6px; padding: 18px; background: white; }
+.service-panel span { color: var(--muted); font-size: .8rem; }
+.service-panel strong { overflow-wrap: anywhere; }
+.interval-clock { display: flex; align-items: center; gap: 14px; margin: 0; padding: 14px 18px; color: #68450b; background: #fff2d8; border-radius: 12px; }
+.interval-clock strong { font-size: 1.45rem; font-variant-numeric: tabular-nums; }
+.interval-clock span { color: var(--muted); }
+.inline-actions { display: inline-flex; flex-wrap: wrap; gap: 10px; }
+.phase-actions { padding: 18px; background: white; border: 1px solid var(--line); border-radius: 16px; }
+
+/* RV3-002 抛币开局表单：分步收集胜负双方的真实选择，手机单列、平板以上两列。 */
+.coin-toss-form { display: grid; gap: 12px; width: 100%; padding: 16px; background: #fff9e9; border: 1px solid #ead8aa; border-radius: 16px; }
+.coin-toss-form h3 { margin: 0; color: #63430c; font-size: 1.05rem; }
+.coin-toss-form fieldset { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 0; padding: 10px 12px; border: 1px solid #ead8aa; border-radius: 12px; background: white; }
+.coin-toss-form legend { padding: 0 6px; color: #63430c; font-size: .78rem; font-weight: 800; }
+.coin-toss-form label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-weight: 700; overflow-wrap: anywhere; }
+.coin-toss-form input[type="radio"] { width: 20px; height: 20px; }
+.coin-toss-summary { margin: 0; padding: 12px 14px; color: #17382e; background: #eaf4ef; border: 1px solid #b8d8ca; border-radius: 12px; line-height: 1.55; }
+.coin-toss-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.coin-toss-note { margin: 0; color: var(--muted); font-size: .76rem; line-height: 1.5; }
+.coin-toss-form :focus-visible { outline: 3px solid #ffb000; outline-offset: 3px; }
+@media (min-width: 801px) { .coin-toss-form fieldset { flex: 1 1 320px; } }
+.button.danger { background: #982f2a; }
+.history-panel { padding: 22px; background: white; border: 1px solid var(--line); border-radius: 16px; }
+.history-panel h2 { margin-top: 0; color: var(--blue); }
+.history-panel, .history-panel ol, .history-panel li { min-width: 0; }
+.history-panel ol { display: grid; gap: 6px; margin: 0; padding-left: 28px; }
+.history-panel li { padding: 7px 4px; overflow-wrap: anywhere; color: var(--muted); }
+.history-panel time { float: right; font-variant-numeric: tabular-nums; }
+.correction-scrim { position: fixed; inset: 0; z-index: 40; display: grid; align-items: end; padding: 18px; background: rgba(10,20,30,.36); backdrop-filter: blur(8px); }
+.correction-sheet { width: min(760px, 100%); max-height: min(82vh, 760px); margin: 0 auto; overflow: auto; padding: 26px; background: rgba(255,255,255,.96); border: 1px solid rgba(255,255,255,.9); border-radius: 26px; box-shadow: 0 30px 90px rgba(0,0,0,.22); animation: sheet-in 220ms cubic-bezier(.2,.8,.2,1); }
+.correction-scrim.is-closing { animation: scrim-out 180ms ease-in forwards; }
+.correction-sheet.is-closing { animation: sheet-out 180ms ease-in forwards; }
+.correction-sheet header { display: flex; justify-content: space-between; align-items: start; }
+.correction-sheet h2 { margin: 6px 0 20px; color: var(--blue); }
+.sheet-guidance { margin: -8px 0 18px; color: var(--muted); line-height: 1.55; }
+.correction-sheet label { display: grid; gap: 8px; font-weight: 750; }
+.correction-sheet textarea, .correction-sheet input, .correction-sheet select { width: 100%; min-height: 48px; padding: 12px; border: 1px solid #9ba9a4; border-radius: 10px; font: inherit; }
+.correction-sheet textarea { min-height: 92px; resize: vertical; }
+.correction-score { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
+.sheet-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+.sheet-error { padding: 10px 12px; color: #7a241f; background: #fff0ed; border-radius: 9px; }
+.server-preview { display: grid; gap: 6px; margin-top: 16px; padding: 14px; color: #17382e; background: #eaf4ef; border: 1px solid #b8d8ca; border-radius: 12px; }
+.sheet-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.sheet-close { flex: 0 0 48px; width: 48px; height: 48px; border: 0; border-radius: 50%; color: var(--ink); background: #e8ecea; font-size: 1.8rem; cursor: pointer; }
+.court-action-button:focus-visible, .score-adjust:focus-visible, .sheet-close:focus-visible, .opening-setup-panel select:focus-visible, .correction-sheet :focus-visible { outline: 3px solid #ffb000; outline-offset: 3px; }
+@keyframes sheet-in { from { transform: translateY(24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes sheet-out { from { transform: translateY(0); opacity: 1; } to { transform: translateY(24px); opacity: 0; } }
+@keyframes scrim-out { from { opacity: 1; } to { opacity: 0; } }
+
+@media (min-width: 801px) and (max-height: 820px) {
+  .scoring-shell { gap: 8px; margin-top: -46px; }
+  .scoring-statusbar { padding: 8px 14px; border-radius: 14px; }
+  .scoring-statusbar h1 { font-size: 1.3rem; }
+  .court-console { gap: 7px; padding: 10px 12px; }
+  .court-sides-header { gap: 8px; }
+  .court-side-tag { padding: 3px 8px; }
+  .badminton-court { min-height: 0; max-height: 34vh; }
+  .player-position-card { padding: 4px 6px; }
+  .court-caption, .court-roster { line-height: 1.25; }
+  .court-scoreboard { padding: 5px 9px; }
+  .score-adjust, .score-adjust.minus { min-height: 56px; }
+  .court-score-number { font-size: clamp(2.4rem, 6vh, 3.4rem); }
+}
+
+@media (max-width: 800px) {
+  .scoring-shell { left: auto; grid-template-columns: minmax(0, 1fr); width: 100%; min-width: 0; margin-top: -28px; transform: none; }
+  .scoring-shell > * { min-width: 0; }
+  .scoring-statusbar { flex-direction: column; align-items: stretch; min-width: 0; border-radius: 14px; }
+  .scoring-statusbar > div { width: 100%; min-width: 0; }
+  .scoring-statusbar h1 { overflow-wrap: anywhere; }
+  .status-facts { width: 100%; max-width: none; justify-content: flex-start; gap: 4px 9px; }
+  .status-facts small { text-align: left; }
+  .court-console { width: calc(100vw - 2px); margin-left: calc(50% - 50vw + 1px); padding: 9px 8px; border-radius: 18px; }
+  .badminton-court { aspect-ratio: auto; min-height: clamp(230px, 62vw, 300px); border-radius: 12px; }
+  .court-sides-header { gap: 6px; }
+  .court-side-tag { padding: 3px 7px; border-left-width: 3px; font-size: .64rem; }
+  .court-cell { padding: 2px; gap: 2px; }
+  .court-cell-label { font-size: .56rem; }
+  .player-position-card { padding: 4px 3px; border-radius: 8px; }
+  .player-name { font-size: .68rem; line-height: 1.14; }
+  .player-role { padding: 1px 4px; font-size: .6rem; }
+  .shuttle-icon { width: 12px; height: 12px; }
+  .court-position-actions { gap: 5px; }
+  .court-action-button { min-height: 48px; padding: 5px 4px; font-size: .74rem; }
+  .court-action-button small { font-size: .56rem; }
+  .court-scoreboard { gap: 6px; padding: 5px 7px; }
+  .scoreboard-team { font-size: .66rem; }
+  .court-score-number { font-size: min(15vw, 3.6rem); }
+  .court-score-console { gap: 6px; }
+  .court-score-side { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 5px; }
+  .score-adjust { min-height: 58px; font-size: 1.15rem; }
+  .score-adjust.minus { min-height: 58px; font-size: .95rem; }
+  .court-service-sentence strong { font-size: .78rem; }
+  .opening-setup-panel { grid-template-columns: 1fr 1fr; }
+  .opening-setup-panel > div, .opening-setup-panel > button { grid-column: 1 / -1; }
+  .service-panel { grid-template-columns: 1fr 1fr; }
+  .service-panel div { padding: 12px; }
+  .history-panel time { display: block; float: none; margin-top: 3px; }
+  .correction-scrim { padding: 0; }
+  .correction-sheet { border-radius: 24px 24px 0 0; }
+  .sheet-form-grid { grid-template-columns: 1fr; }
+  .special-outcome-summary { grid-template-columns: 1fr; gap: 12px; }
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+  .score-adjust, .court-action-button, .player-position-card { transition: none; }
+  .correction-sheet, .correction-scrim { animation: none; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .scoring-statusbar, .correction-sheet, .player-position-card { background: white; backdrop-filter: none; }
+  .correction-scrim { backdrop-filter: none; }
+  .court-side-tag { background: white; }
+}
+
+@media (prefers-contrast: more) {
+  .scoring-statusbar, .court-console, .service-panel, .phase-actions, .history-panel { border: 2px solid currentColor; }
+  .badminton-court { box-shadow: 0 0 0 3px #fff; }
+  .court-lines .court-line, .court-lines .court-boundary { stroke: #fff; }
+  .court-lines .court-service-zone { fill: rgba(255,255,255,.14); }
+  .player-position-card, .court-action-button { border: 2px solid currentColor; }
+  .court-cell-label, .empty-court-cell { color: white; opacity: 1; }
+  .score-adjust:disabled, .court-action-button:disabled { opacity: .65; }
+}

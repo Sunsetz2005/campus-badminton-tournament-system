@@ -3,6 +3,7 @@ import Link from "next/link";
 import { prisma } from "@/db/client";
 import { formatZoned, utcToZonedLocal } from "@/domain/time/zoned-time";
 import { entryTypeLabel, tournamentStatusLabel } from "@/features/management/labels";
+import { WorkflowGuide } from "@/features/management/workflow-guide";
 import styles from "@/features/management/management.module.css";
 import {
   AddCompetitionForm,
@@ -114,6 +115,8 @@ export default async function TournamentOverviewPage({ params }: { params: Promi
           报名审核（待审 {count(null, "PENDING")}）
         </Link>
       </div>
+
+      <WorkflowGuide pendingRegistrations={count(null, "PENDING")} phase={tournament.phase} slug={tournament.slug} />
 
       <dl className={styles.facts}>
         <div><dt>日期</dt><dd>{tournament.startDate?.toISOString().slice(0, 10) ?? "未设置"} 至 {tournament.endDate?.toISOString().slice(0, 10) ?? "未设置"}</dd></div>

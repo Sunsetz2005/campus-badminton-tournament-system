@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 import { AppFooter, AppNav } from "@/components/app-nav";
+import { RouteTransition } from "@/components/route-transition";
 import { getNavContext } from "@/server/auth/nav-context";
 
 import "./globals.css";
@@ -16,11 +17,13 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   const navContext = await getNavContext();
 
   return (
-    <html lang="zh-CN">
+    <html data-scroll-behavior="smooth" lang="zh-CN">
       <body>
         <a className="skip-link" href="#main-content">跳到主要内容</a>
         <AppNav navContext={navContext} />
-        <main className="page-shell" id="main-content" tabIndex={-1}>{children}</main>
+        <main className="page-shell" id="main-content" tabIndex={-1}>
+          <RouteTransition>{children}</RouteTransition>
+        </main>
         <AppFooter />
       </body>
     </html>
