@@ -198,7 +198,12 @@ export function projectTime(
 
 // --- 公开更正标记 -----------------------------------------------------------
 
-type RevisionRow = { revision: number; status: "PENDING" | "RETURNED" | "LOCKED" | "SUPERSEDED" };
+type RevisionRow = {
+  revision: number;
+  status: "PENDING" | "RETURNED" | "LOCKED" | "SUPERSEDED";
+  source?: "LIVE" | "RESULT_ONLY";
+  result?: unknown;
+};
 
 /**
  * 公开更正是独立于结果有效性的一维；内部 `reason` 默认不公开。
@@ -262,6 +267,7 @@ export interface MatchRow {
   games: readonly GameRow[];
   ruleSnapshot: { config: unknown } | null;
   snapshot: { state: unknown } | null;
+  resultSource?: "LIVE" | "RESULT_ONLY";
   resultRevisions: readonly RevisionRow[];
   scheduleEstimated?: boolean;
   rubberKind?: string | null;
@@ -297,8 +303,25 @@ export interface MatchContext {
   updatedAt: Date;
 }
 
+/**
+ * 仅结果记录的比赛没有逐分状态：从最新一版有效（待复核或已锁定）修订里只取局分、胜方和中断局。
+ */
+function resultOnlyFacts(revisions: readonly RevisionRow[]): AuthoritativeFacts {
+  const empty: AuthoritativeFacts = { gamesWon: null, stoppedGame: null, winnerSide: null };
+  const latest = [...revisions].sort((first, second) => second.revision - first.revision)[0];
+  if (!latest || latest.source !== "RESULT_ONLY" || (latest.status !== "PENDING" && latest.status !== "LOCKED")) return empty;
+  const record = latest.result as { games?: { a: number; b: number }[]; winnerSide?: "A" | "B" | null; partial?: unknown } | null;
+  if (!record || !Array.isArray(record.games)) return empty;
+  const gamesWon = { A: record.games.filter((game) => game.a > game.b).length, B: record.games.filter((game) => game.b > game.a).length };
+  return {
+    gamesWon,
+    stoppedGame: record.partial ? record.games.length + 1 : null,
+    winnerSide: record.winnerSide === "A" || record.winnerSide === "B" ? record.winnerSide : null,
+  };
+}
+
 export function projectMatch(match: MatchRow, context: MatchContext): PublicMatchPreview {
-  const facts = authoritativeFacts(match.snapshot?.state);
+  const facts = match.resultSource === "RESULT_ONLY" ? resultOnlyFacts(match.resultRevisions) : authoritativeFacts(match.snapshot?.state);
   const rule = projectRuleSummary(match.ruleSnapshot?.config);
   const scheduleDate = match.scheduledAt ? scheduleDateIn(context.timeZone, match.scheduledAt) : "";
   const rubber = match.rubberKind && match.rubberOrder ? ` · 第 ${match.rubberOrder} 场${RUBBER_TITLE[match.rubberKind] ?? ""}` : "";

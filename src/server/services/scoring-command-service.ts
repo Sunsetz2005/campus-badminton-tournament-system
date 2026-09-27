@@ -17,7 +17,7 @@ import {
   MATCH_ENGINE_VERSION,
 } from "@/server/services/match-state-service";
 import { verifyControlToken } from "@/server/services/scoring-session-service";
-import { settleAfterRubberChange } from "@/server/services/team-tie-service";
+import { settleAfterResultChange } from "@/server/services/results-service";
 
 export interface ScoringCommandEnvelope {
   commandId: string;
@@ -333,9 +333,10 @@ export async function submitScoringCommand(
     });
     await updateProjections(transaction, access.id, aggregate.state, result.aggregate.state, now);
     await updateResultRevision(transaction, access.id, actorUserId, session.actingRole, command, result.aggregate.state, now);
-    // 团体小场的结果锁定或重开后，在同一事务里重新推导对抗胜负与后续对阵；后续比赛已开始时整个命令回滚。
+    // 结果锁定或重开后，在同一事务里重新推导晋级：团体小场结算对抗胜负，个人项目推进胜者/负者签位、
+    // 撤回受影响的小组名次确认；后续比赛已开始时整个命令回滚，须裁判长登记人工处置。
     if (command.type === "CONFIRM_RESULT" || command.type === "REOPEN_RESULT") {
-      await settleAfterRubberChange(transaction, access.id, actorUserId);
+      await settleAfterResultChange(transaction, access.id, actorUserId);
     }
     await transaction.auditLog.create({
       data: {

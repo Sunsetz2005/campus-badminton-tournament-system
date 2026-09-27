@@ -1203,6 +1203,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         specialWinner={specialWinner}
         state={state}
         correctedServingSide={correctedServingSide}
+        matchCode={matchCode}
       />, document.body) : null}
     </>
   );
@@ -1252,6 +1253,7 @@ function WorkbenchActionSheet({
   specialType,
   specialWinner,
   state,
+  matchCode,
 }: {
   action: ActionSheetState;
   actualEndA: "END_1" | "END_2";
@@ -1275,6 +1277,7 @@ function WorkbenchActionSheet({
   onSpecialType: (type: "WO" | "RET" | "DSQ" | "ABANDONED" | "BYE") => void;
   onSpecialWinner: (side: "" | Side) => void;
   onSubmit: () => void;
+  matchCode: string;
   preview: PreviewState | null;
   reason: string;
   scoreA: number;
@@ -1284,6 +1287,13 @@ function WorkbenchActionSheet({
   state: MatchState;
 }) {
   const previewable = ["UNDO", "SWAP_POSITION", "ENDS", "SCORE", "SERVICE_ORDER", "SINGLES_CHECK"].includes(action.kind);
+  // 复核锁定与受控重开会推进或撤回晋级：先由服务器算出对后续对阵、名次与已发布榜单的影响。
+  const resultImpactAction = action.kind === "REASON_COMMAND" && action.type === "CONFIRM_RESULT"
+    ? "CONFIRM" as const
+    : action.kind === "REASON_COMMAND" && action.type === "REOPEN_RESULT" && state.phase === "CONFIRMED"
+      ? "REOPEN" as const
+      : null;
+  const [impactBlocked, setImpactBlocked] = useState(false);
   const hasChangeEnds = state.pendingObligations.some((item) => item.type === "CHANGE_ENDS");
   const hasPhysicalReview = state.pendingObligations.some((item) => item.type === "PHYSICAL_ENDS_REVIEW");
   const confirmOnly = action.kind === "ENDS" && endsMode === "CONFIRM";
@@ -1368,14 +1378,54 @@ function WorkbenchActionSheet({
           </div>
         ) : null}
 
+        {resultImpactAction ? <ResultImpactNotice action={resultImpactAction} matchCode={matchCode} onBlocked={setImpactBlocked} /> : null}
+
         <div className="sheet-actions">
           {previewable && !preview ? <ActionButton loading={busy} loadingLabel="正在生成预览…" onClick={onPreview}>生成服务器预览</ActionButton> : null}
           {previewable && preview ? <ActionButton loading={busy} loadingLabel="正在提交…" onClick={onConfirmPreview}>确认执行预览结果</ActionButton> : null}
           {action.kind === "SPECIAL" ? <ActionButton loading={busy} loadingLabel="正在记录…" onClick={onSpecialSubmit} variant="danger">确认记录特殊结果</ActionButton> : null}
-          {action.kind === "TAKEOVER" || action.kind === "REASON_COMMAND" ? <ActionButton loading={busy} loadingLabel="正在提交…" onClick={onSubmit}>确认提交</ActionButton> : null}
+          {action.kind === "TAKEOVER" || action.kind === "REASON_COMMAND" ? <ActionButton disabled={impactBlocked} loading={busy} loadingLabel="正在提交…" onClick={onSubmit}>确认提交</ActionButton> : null}
           <ActionButton disabled={busy} onClick={onClose} variant="secondary">取消</ActionButton>
         </div>
       </section>
+    </div>
+  );
+}
+
+/**
+ * 结果确认/重开的影响预览（服务器只读计算）。后续对阵已开始时不允许自动改写，提交按钮随之禁用，
+ * 须在后台「成绩名次」登记人工处置。
+ */
+function ResultImpactNotice({ action, matchCode, onBlocked }: { action: "CONFIRM" | "REOPEN"; matchCode: string; onBlocked: (blocked: boolean) => void }) {
+  const [impact, setImpact] = useState<{ blocked: boolean; effects: string[]; blockers: string[] } | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/matches/${encodeURIComponent(matchCode)}/result-impact?action=${action}`, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (cancelled) return;
+        if (!response.ok) setFailed(payload?.error?.message ?? "无法取得影响预览。");
+        else {
+          setImpact(payload);
+          onBlocked(Boolean(payload?.blocked));
+        }
+      })
+      .catch(() => { if (!cancelled) setFailed("网络中断，未能取得影响预览。"); });
+    return () => { cancelled = true; };
+  }, [action, matchCode, onBlocked]);
+  if (failed) return <p className="sheet-error" role="alert">{failed}</p>;
+  if (!impact) return <p className="sheet-guidance">正在计算对晋级与名次的影响…</p>;
+  return (
+    <div className="server-preview" aria-live="polite" data-testid="result-impact">
+      <strong>{action === "CONFIRM" ? "锁定后" : "重开后"}的影响</strong>
+      {impact.effects.length ? impact.effects.map((item) => <span key={item}>{item}</span>) : <span>不影响其他对阵或名次。</span>}
+      {impact.blocked ? (
+        <>
+          {impact.blockers.map((item) => <span className="sheet-error" key={item}>{item}</span>)}
+          <span>不能自动更正。请在后台「成绩名次」由裁判长登记人工处置（维持原结果或线下裁决）。</span>
+        </>
+      ) : null}
     </div>
   );
 }

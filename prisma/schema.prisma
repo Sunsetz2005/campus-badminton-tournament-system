@@ -175,6 +175,20 @@ enum ResultRevisionStatus {
   SUPERSEDED
 }
 
+// 结果来源：LIVE 是裁判台逐分记分（关联记分事件与冻结规则）；
+// RESULT_ONLY 是管理员补录的逐局结果（例如历史或线下纸质记分），只有结果，不伪造回合与发接发过程。
+enum ResultSource {
+  LIVE
+  RESULT_ONLY
+}
+
+// 已确认结果的更正被后续已开始的比赛阻止时，裁判长登记的人工处置决定。
+// 系统不会因此自动改写任何比赛；「线下处置」须由裁判长在现场决定暂停、取消或重赛后另行执行。
+enum ResultDispositionDecision {
+  MAINTAIN
+  OFFLINE_RULING
+}
+
 model User {
   id                         String                    @id @default(uuid()) @db.Uuid
   name                       String
@@ -212,6 +226,9 @@ model User {
   draftScheduleSlots         ScheduleSlot[]            @relation("ScheduleSlotReferee")
   editedScheduleSlots        ScheduleSlot[]            @relation("ScheduleSlotEditor")
   schedulePublications       SchedulePublication[]     @relation("SchedulePublisher")
+  rankingExclusions          RankingExclusion[]        @relation("RankingExclusionDecider")
+  standingsPublications      StandingsPublication[]    @relation("StandingsPublisher")
+  resultDispositions         ResultDisposition[]       @relation("ResultDispositionDecider")
 
   @@map("users")
 }
@@ -310,16 +327,16 @@ model Tournament {
 }
 
 model Competition {
-  id                    String               @id @default(uuid()) @db.Uuid
-  tournamentId          String               @db.Uuid
+  id                    String                 @id @default(uuid()) @db.Uuid
+  tournamentId          String                 @db.Uuid
   code                  String
   name                  String
   kind                  CompetitionKind
   entryType             EntryType
-  ruleProfileRevisionId String?              @db.Uuid
-  nextEntrySeq          Int                  @default(1)
+  ruleProfileRevisionId String?                @db.Uuid
+  nextEntrySeq          Int                    @default(1)
   // 仅团体项目：每场对抗的小场顺序与名单人数要求。非团体项目必须为空（迁移中的 CHECK 兜底）。
-  teamRubbers           CompetitionKind[]    @default([])
+  teamRubbers           CompetitionKind[]      @default([])
   teamRosterMin         Int?
   teamRosterMax         Int?
   teamMinMale           Int?
@@ -327,16 +344,17 @@ model Competition {
   // 仅团体项目：同一队员在一场对抗里最多上几个小场（按性别）；为空表示不设上限。
   teamMaxRubbersMale    Int?
   teamMaxRubbersFemale  Int?
-  createdAt             DateTime             @default(now())
-  updatedAt             DateTime             @updatedAt
-  tournament            Tournament           @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
-  ruleProfileRevision   RuleProfileRevision? @relation("CompetitionRule", fields: [ruleProfileRevisionId], references: [id], onDelete: SetNull)
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  tournament            Tournament             @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  ruleProfileRevision   RuleProfileRevision?   @relation("CompetitionRule", fields: [ruleProfileRevisionId], references: [id], onDelete: SetNull)
   stages                Stage[]
   entries               Entry[]
   entryMembers          EntryMember[]
   registrations         Registration[]
   draws                 Draw[]
   fixtures              Fixture[]
+  standingsPublications StandingsPublication[]
 
   @@unique([tournamentId, code])
   @@index([tournamentId])
@@ -369,26 +387,27 @@ model Participant {
 
 // 抽签发布时设置 frozenAt：此后不能通过、撤回或换人。团体报名单位额外挂在一个 Team 上。
 model Entry {
-  id            String          @id @default(uuid()) @db.Uuid
-  competitionId String          @db.Uuid
+  id            String             @id @default(uuid()) @db.Uuid
+  competitionId String             @db.Uuid
   code          String
   displayName   String
   entryType     EntryType
-  teamId        String?         @db.Uuid
+  teamId        String?            @db.Uuid
   frozenAt      DateTime?
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-  competition   Competition     @relation(fields: [competitionId], references: [id], onDelete: Cascade)
-  team          Team?           @relation(fields: [teamId], references: [id], onDelete: NoAction)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  competition   Competition        @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  team          Team?              @relation(fields: [teamId], references: [id], onDelete: NoAction)
   members       EntryMember[]
-  matchesAsA    Match[]         @relation("MatchSideA")
-  matchesAsB    Match[]         @relation("MatchSideB")
-  fixturesAsA   Fixture[]       @relation("FixtureSideAEntry")
-  fixturesAsB   Fixture[]       @relation("FixtureSideBEntry")
-  fixturesWon   Fixture[]       @relation("FixtureWinner")
+  matchesAsA    Match[]            @relation("MatchSideA")
+  matchesAsB    Match[]            @relation("MatchSideB")
+  fixturesAsA   Fixture[]          @relation("FixtureSideAEntry")
+  fixturesAsB   Fixture[]          @relation("FixtureSideBEntry")
+  fixturesWon   Fixture[]          @relation("FixtureWinner")
   lineups       FixtureLineup[]
   matchPlayers  MatchPlayer[]
   registration  Registration?
+  exclusions    RankingExclusion[]
 
   @@unique([competitionId, code])
   @@unique([competitionId, teamId])
@@ -541,22 +560,23 @@ model Stage {
 }
 
 model Group {
-  id                       String    @id @default(uuid()) @db.Uuid
-  stageId                  String    @db.Uuid
+  id                       String             @id @default(uuid()) @db.Uuid
+  stageId                  String             @db.Uuid
   code                     String
   name                     String
   // 小组名次经裁判长确认后固定（含无法区分时的抽签顺序），并据此回填淘汰签位。
   ranking                  Json?
   rankingConfirmedAt       DateTime?
-  rankingConfirmedByUserId String?   @db.Uuid
-  createdAt                DateTime  @default(now())
-  updatedAt                DateTime  @updatedAt
-  stage                    Stage     @relation(fields: [stageId], references: [id], onDelete: Cascade)
-  rankingConfirmedBy       User?     @relation("GroupRankingConfirmer", fields: [rankingConfirmedByUserId], references: [id], onDelete: SetNull)
+  rankingConfirmedByUserId String?            @db.Uuid
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+  stage                    Stage              @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  rankingConfirmedBy       User?              @relation("GroupRankingConfirmer", fields: [rankingConfirmedByUserId], references: [id], onDelete: SetNull)
   matches                  Match[]
-  fixtures                 Fixture[] @relation("FixtureGroup")
-  sourceForSideA           Fixture[] @relation("FixtureSideAGroup")
-  sourceForSideB           Fixture[] @relation("FixtureSideBGroup")
+  fixtures                 Fixture[]          @relation("FixtureGroup")
+  sourceForSideA           Fixture[]          @relation("FixtureSideAGroup")
+  sourceForSideB           Fixture[]          @relation("FixtureSideBGroup")
+  exclusions               RankingExclusion[]
 
   @@unique([stageId, code])
   @@map("competition_groups")
@@ -633,6 +653,7 @@ model Match {
   lifecycleStatus     MatchLifecycleStatus @default(SCHEDULED)
   outcomeType         MatchOutcomeType?
   verificationStatus  VerificationStatus   @default(UNVERIFIED)
+  resultSource        ResultSource         @default(LIVE)
   // 已发布赛程的计划开始/结束（结束 = 开始 + 预计时长，不是保证时长）；实际开始/结束另记。
   scheduledAt         DateTime?
   scheduledEndAt      DateTime?
@@ -660,6 +681,7 @@ model Match {
   officialAssignments OfficialAssignment[]
   players             MatchPlayer[]
   scheduleSlot        ScheduleSlot?
+  resultDispositions  ResultDisposition[]
 
   @@unique([fixtureId, rubberOrder])
   @@index([stageId])
@@ -772,6 +794,7 @@ model ResultRevision {
   matchId          String               @db.Uuid
   revision         Int
   status           ResultRevisionStatus @default(PENDING)
+  source           ResultSource         @default(LIVE)
   result           Json
   reason           String?
   actorUserId      String?              @db.Uuid
@@ -1070,4 +1093,59 @@ model SchedulePublication {
 
   @@unique([tournamentId, version])
   @@map("schedule_publications")
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 6（prompt-kit 07）：成绩、名次与晋级
+// ---------------------------------------------------------------------------
+
+// 裁判长的处理决定：某报名单位因弃权/退赛/取消资格等不能完成本组比赛，
+// 按「排除该单位及其全部对阵贡献」处理。原比赛、比分与审计历史保留，只是不进入名次统计。
+model RankingExclusion {
+  id              String   @id @default(uuid()) @db.Uuid
+  groupId         String   @db.Uuid
+  entryId         String   @db.Uuid
+  reason          String
+  decidedByUserId String?  @db.Uuid
+  decidedAt       DateTime @default(now())
+  group           Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  entry           Entry    @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  decidedBy       User?    @relation("RankingExclusionDecider", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([groupId, entryId])
+  @@map("ranking_exclusions")
+}
+
+// 名次榜单发布版本：保存发布时的完整名次快照与内容摘要。
+// 之后结果被更正、名次被撤回时，当前内容摘要与最新发布不同，界面标记「需重新发布」；历史版本全部保留。
+model StandingsPublication {
+  id                String      @id @default(uuid()) @db.Uuid
+  competitionId     String      @db.Uuid
+  version           Int
+  contentHash       String
+  snapshot          Json
+  note              String?
+  publishedByUserId String?     @db.Uuid
+  publishedAt       DateTime    @default(now())
+  competition       Competition @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  publishedBy       User?       @relation("StandingsPublisher", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([competitionId, version])
+  @@map("standings_publications")
+}
+
+// 已确认结果的更正被阻止（后续比赛已开始或已结束）时的人工处置登记。只追加，不修改比赛。
+model ResultDisposition {
+  id              String                    @id @default(uuid()) @db.Uuid
+  matchId         String                    @db.Uuid
+  decision        ResultDispositionDecision
+  reason          String
+  blockedBy       Json
+  decidedByUserId String?                   @db.Uuid
+  decidedAt       DateTime                  @default(now())
+  match           Match                     @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  decidedBy       User?                     @relation("ResultDispositionDecider", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([matchId])
+  @@map("result_dispositions")
 }

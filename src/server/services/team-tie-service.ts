@@ -44,7 +44,7 @@ async function audit(
   });
 }
 
-async function lockFixtureRow(transaction: Tx, fixtureId: string) {
+export async function lockFixtureRow(transaction: Tx, fixtureId: string) {
   await transaction.$queryRaw`SELECT "id" FROM "fixtures" WHERE "id" = ${fixtureId}::uuid FOR UPDATE`;
 }
 
@@ -114,7 +114,7 @@ const fixtureSelect = {
 export type TieFixtureRow = Prisma.FixtureGetPayload<{ select: typeof fixtureSelect }>;
 type TieMatchRow = TieFixtureRow["matches"][number];
 
-function isStarted(match: Pick<TieMatchRow, "version" | "lifecycleStatus">) {
+export function isStarted(match: Pick<TieMatchRow, "version" | "lifecycleStatus">) {
   return match.version > 0 || (match.lifecycleStatus !== "SCHEDULED" && match.lifecycleStatus !== "READY");
 }
 
@@ -146,7 +146,7 @@ export function rubberResultOf(match: TieMatchRow) {
   return { final: fact.final, winner: fact.winner, games: fact.games, started: fact.started };
 }
 
-async function loadTieFixture(client: Client, where: Prisma.FixtureWhereInput) {
+export async function loadTieFixture(client: Client, where: Prisma.FixtureWhereInput) {
   return client.fixture.findFirst({ where, select: fixtureSelect });
 }
 
@@ -416,18 +416,18 @@ export async function amendLineup(actorUserId: string, slug: string, fixtureId: 
 // 结算：小场结果锁定或重开后推导对抗胜负、未进行的小场，并回填下一轮
 // ---------------------------------------------------------------------------
 
-async function assertFixtureUntouched(transaction: Tx, fixtureId: string, what: string) {
+export async function assertFixtureUntouched(transaction: Tx, fixtureId: string, what: string) {
   const fixture = await transaction.fixture.findUniqueOrThrow({
     where: { id: fixtureId },
     select: { code: true, winnerEntryId: true, matches: { select: { version: true, lifecycleStatus: true } } },
   });
   if (fixture.winnerEntryId || fixture.matches.some(isStarted)) {
-    throw new AppError(409, "downstream_started", `${what}已用于后续对抗 ${fixture.code}，且该对抗已经开始，不能再改变。`);
+    throw new AppError(409, "downstream_started", `${what}已用于后续对阵 ${fixture.code}，且该对阵已经开始或已有结果，不能自动改写；请由裁判长登记人工处置（维持原结果或线下裁决）。`);
   }
 }
 
 /** 设置或清除对阵某一侧的队伍，同步该对阵全部比赛的同一侧；清除时一并作废该对阵已交的出场名单。 */
-async function setFixtureSide(
+export async function setFixtureSide(
   transaction: Tx,
   tournamentId: string,
   actorUserId: string | null,
@@ -465,7 +465,7 @@ async function setFixtureSide(
 }
 
 /** 把一场对抗的胜者/负者写入以它为来源的后续对阵。 */
-async function propagateFixtureResult(
+export async function propagateFixtureResult(
   transaction: Tx,
   tournamentId: string,
   actorUserId: string | null,
@@ -531,13 +531,6 @@ export async function settleTeamFixture(transaction: Tx, fixtureId: string, acto
     await revokeGroupRankingInternal(transaction, tournamentId, actorUserId, fixture.groupId, `对抗 ${fixture.code} 的小场结果被重开`);
   }
   return summary;
-}
-
-/** 计分命令锁定或重开一个团体小场的结果后调用。非团体小场直接返回。 */
-export async function settleAfterRubberChange(transaction: Tx, matchId: string, actorUserId: string) {
-  const match = await transaction.match.findUnique({ where: { id: matchId }, select: { fixtureId: true, rubberKind: true } });
-  if (!match?.fixtureId || !match.rubberKind) return null;
-  return settleTeamFixture(transaction, match.fixtureId, actorUserId);
 }
 
 // ---------------------------------------------------------------------------
@@ -657,7 +650,7 @@ export async function confirmGroupRanking(actorUserId: string, slug: string, com
   );
 }
 
-async function revokeGroupRankingInternal(transaction: Tx, tournamentId: string, actorUserId: string | null, groupId: string, cause: string) {
+export async function revokeGroupRankingInternal(transaction: Tx, tournamentId: string, actorUserId: string | null, groupId: string, cause: string) {
   const group = await transaction.group.findUniqueOrThrow({ where: { id: groupId }, select: { code: true, ranking: true } });
   const targets = await transaction.fixture.findMany({
     where: { OR: [{ sideAGroupId: groupId }, { sideBGroupId: groupId }] },

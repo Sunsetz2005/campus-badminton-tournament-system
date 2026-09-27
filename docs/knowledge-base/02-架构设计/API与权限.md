@@ -2,7 +2,7 @@
 title: API 与权限
 stage: 4
 status: current
-updated: 2026-09-25
+updated: 2026-09-27
 tags:
   - 羽毛球赛事管理系统
   - API
@@ -152,3 +152,17 @@ tags:
 ## 权限测试门禁
 
 阶段 3 已在真实 `_test` 数据库与 HTTP 路由覆盖过期版本、幂等重试、异载荷复用、两命令并发、心跳、裁判长接管、旧设备拒写、响应超时查询原 ID、快照篡改拒写和整事务回滚。测试范围见[黄金用例与回归清单](../05-测试验收/黄金用例与回归清单.md)。
+
+## 阶段 6：成绩、名次与晋级
+
+| 接口 | 角色 | 说明 |
+|---|---|---|
+| `POST /api/admin/tournaments/[slug]/matches/[matchCode]/result-only` | ADMIN / ORGANIZER | 补录仅结果记录，进入待复核 |
+| `POST /api/admin/tournaments/[slug]/matches/[matchCode]/result-only/review` | CHIEF_REFEREE | `CONFIRM`（补录人不能自己复核）/ `RETURN` / `REOPEN`，带 `expectedRevision` |
+| `GET /api/matches/[matchCode]/result-impact?action=CONFIRM\|REOPEN` | 该赛事 CHIEF_REFEREE | 只读影响预览 |
+| `POST /api/admin/tournaments/[slug]/matches/[matchCode]/disposition` | CHIEF_REFEREE | 更正被阻止时登记人工处置；未被阻止时 409 |
+| `POST /api/admin/tournaments/[slug]/competitions/[code]/groups/[groupCode]/ranking` | CHIEF_REFEREE | 按项目类型分派：团体沿用 4-D，个人用校园演示排名方案 |
+| `POST /api/admin/tournaments/[slug]/competitions/[code]/groups/[groupCode]/exclusions` | CHIEF_REFEREE | 排除/取消排除，名次确认后拒绝 |
+| `POST /api/admin/tournaments/[slug]/competitions/[code]/standings/publish` | ADMIN / CHIEF_REFEREE | 发布榜单新版本，内容未变 409 |
+
+后台布局 `/management/[slug]` 放宽为 ADMIN/ORGANIZER/CHIEF_REFEREE，以便裁判长进入「成绩名次」；其余后台页面各自仍只允许 ADMIN/ORGANIZER，服务端逐页校验。仅结果记录的比赛取得计分控制或接管返回 `result_only_match`。

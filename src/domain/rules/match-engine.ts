@@ -391,7 +391,7 @@ function removeObligation(state: MatchState, obligationId: string, type: Pending
   finishObligationPhase(state);
 }
 
-function gameIsWon(scoreA: number, scoreB: number, config: RuleConfig) {
+export function gameIsWon(scoreA: number, scoreB: number, config: RuleConfig) {
   const high = Math.max(scoreA, scoreB);
   const low = Math.min(scoreA, scoreB);
   if (high >= config.capPoints) return true;
@@ -402,7 +402,7 @@ function sameValue(left: unknown, right: unknown) {
   return stableStringify(left) === stableStringify(right);
 }
 
-function winsNeeded(config: RuleConfig) {
+export function winsNeeded(config: RuleConfig) {
   return Math.floor(config.bestOf / 2) + 1;
 }
 

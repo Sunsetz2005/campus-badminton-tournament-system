@@ -82,8 +82,10 @@ export const publicMatchSelect = {
   },
   ruleSnapshot: { select: { config: true } },
   snapshot: { select: { state: true } },
+  // 仅结果记录（阶段 6）：胜方与局分取自最新有效修订；修订内容只在服务端读取，不整体下发。
+  resultSource: true,
   resultRevisions: {
-    select: { revision: true, status: true },
+    select: { revision: true, status: true, source: true, result: true },
     orderBy: { revision: "asc" as const },
   },
 } as const;

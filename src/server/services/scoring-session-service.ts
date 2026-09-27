@@ -58,6 +58,14 @@ async function recordDeniedAcquire(userId: string, matchCode: string, error: App
   }
 }
 
+/** 仅结果记录的比赛没有逐分过程，不能再取得计分控制（数据库触发器同样拒绝写入记分事件）。 */
+async function assertLiveScoring(transaction: Prisma.TransactionClient, matchId: string) {
+  const match = await transaction.match.findUniqueOrThrow({ where: { id: matchId }, select: { resultSource: true } });
+  if (match.resultSource === "RESULT_ONLY") {
+    throw new AppError(409, "result_only_match", "该比赛已由管理员按「仅结果记录」补录，不能再在裁判台逐分记分；如需更正请在成绩管理中处理。");
+  }
+}
+
 function sessionResponse(session: { id: string; takeoverGeneration: number; expiresAt: Date }, controlToken: string) {
   return {
     sessionId: session.id,
@@ -82,6 +90,7 @@ export async function acquireScoringSession(userId: string, matchCode: string, d
     // 可串行化冲突（P2034/40001）时整段重跑：事务已整体回滚，重跑仍按「同一设备续用、其他设备 controller_exists」判定。
     return await transactWithRetry(() => prisma.$transaction(async (transaction) => {
       await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${match.id}::uuid FOR UPDATE`;
+      await assertLiveScoring(transaction, match.id);
       await transaction.scoringSession.updateMany({
         where: { matchId: match.id, status: "ACTIVE", expiresAt: { lte: now } },
         data: { status: "EXPIRED", revokedAt: now, revokedReason: "LEASE_EXPIRED" },
@@ -173,6 +182,7 @@ export async function takeoverScoringSession(userId: string, matchCode: string, 
   const { controlToken, tokenHash } = createControlToken();
   return transactWithRetry(() => prisma.$transaction(async (transaction) => {
     await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${match.id}::uuid FOR UPDATE`;
+    await assertLiveScoring(transaction, match.id);
     const previous = await transaction.scoringSession.findFirst({ where: { matchId: match.id, status: "ACTIVE" } });
     await transaction.scoringSession.updateMany({
       where: { matchId: match.id, status: "ACTIVE" },
