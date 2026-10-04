@@ -34,16 +34,12 @@
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 42px;
+  height: 42px;
   flex: none;
-  color: white;
-  background: linear-gradient(145deg, #1a73e8, #0b2a4a 70%);
-  border-radius: 9px;
-  box-shadow: var(--shadow-sm), var(--shadow-inset-hi);
   transition: transform var(--dur-3) var(--ease-spring);
 }
-.brand-mark svg { width: 18px; height: 18px; }
+.brand-mark img { display: block; width: 100%; height: 100%; }
 .brand:hover .brand-mark { transform: rotate(-8deg) scale(1.06); }
 .brand-context {
   padding: 3px 10px;
@@ -167,8 +163,9 @@
 }
 
 @media (max-width: 800px) {
-  :root { --topbar-h: 56px; }
-  .topbar { grid-template-columns: 1fr auto; gap: 8px 12px; padding: 8px 16px; }
+  /* 手机上顶栏会换成两行（约 115px），吸顶会挡住下方吸顶的分区条并占掉大半屏，改为随页面滚走。 */
+  :root { --topbar-h: 56px; --sticky-top: 0px; }
+  .topbar { position: relative; grid-template-columns: 1fr auto; gap: 8px 12px; padding: 8px 16px; }
   .topbar nav {
     grid-column: 1 / -1;
     order: 3;

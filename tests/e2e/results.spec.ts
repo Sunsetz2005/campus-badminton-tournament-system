@@ -19,7 +19,7 @@ const api = `/api/admin/tournaments/${slug}`;
 
 async function login(page: Page, email: string, password: string) {
   await page.goto("/login");
-  await page.getByLabel("登录邮箱").fill(email);
+  await page.getByLabel("账号", { exact: false }).fill(email);
   await page.getByLabel("密码").fill(password);
   await page.getByRole("button", { name: "登录" }).click();
   await expect(page).toHaveURL("/");
@@ -155,13 +155,13 @@ test.describe.serial("阶段 6 成绩、名次与晋级", () => {
     expect(selfReview.status()).toBe(403);
     await admin.context.close();
 
-    // 2. 裁判长：后台只看得到「成绩名次」，其他管理页面服务端拒绝。
+    // 2. 裁判长：后台只看得到「成绩名次」与「成绩册与导出」，其他管理页面服务端拒绝。
     const chief = await loggedIn(browser, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     const chiefPage = chief.page;
     await chiefPage.goto(`/management/${slug}/registrations`);
     await expect(chiefPage.getByRole("heading", { name: "没有赛事管理权限" })).toBeVisible();
     await chiefPage.goto(`/management/${slug}/results/MS`);
-    await expect(chiefPage.getByRole("navigation", { name: "赛事后台导航" }).getByRole("link")).toHaveText(["← 全部赛事", "成绩名次"]);
+    await expect(chiefPage.getByRole("navigation", { name: "赛事后台导航" }).getByRole("link")).toHaveText(["← 全部赛事", "成绩名次", "成绩册与导出"]);
     const chiefRow = chiefPage.getByTestId(`match-${first.code}`);
     await chiefRow.getByLabel("复核意见（必填）").fill("核对记分表无误");
     await chiefRow.getByRole("button", { name: "复核锁定" }).click();

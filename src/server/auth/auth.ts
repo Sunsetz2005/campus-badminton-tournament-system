@@ -1,8 +1,10 @@
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { betterAuth } from "better-auth";
+import { username } from "better-auth/plugins";
 
 import { prisma } from "@/db/client";
 import { assertRuntimeSecurity, requireEnvironment } from "@/server/config/runtime";
+import { configuredTrustedOrigins } from "@/server/security/trusted-origins";
 
 assertRuntimeSecurity();
 
@@ -18,12 +20,15 @@ export const auth = betterAuth({
     disableSignUp: true,
     minPasswordLength: 12,
   },
+  // 允许用用户名登录；用户名只能由管理员在库里设定，公众注册仍关闭。
+  plugins: [username()],
   advanced: {
     database: {
       generateId: "uuid",
     },
   },
-  trustedOrigins: [requireEnvironment("BETTER_AUTH_URL")],
+  // 阶段 8：生产只信任显式配置；开发另信任本机局域网地址，供同一 Wi-Fi 的手机登录。
+  trustedOrigins: configuredTrustedOrigins(),
 });
 
 export type AuthSession = typeof auth.$Infer.Session;

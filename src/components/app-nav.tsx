@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 
 import { authClient } from "@/lib/auth-client";
@@ -34,14 +35,11 @@ export function AppNav({ navContext }: { navContext: NavContext }) {
   );
 }
 
-/** 品牌标：简化的羽毛球轮廓，纯装饰。 */
+/** 品牌标：跨球类的赛事交汇图形，纯装饰。 */
 function BrandMark() {
   return (
     <span aria-hidden="true" className="brand-mark">
-      <svg fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
-        <circle cx="12" cy="18" r="3" />
-        <path d="M9.5 16.2 6 4.5M14.5 16.2 18 4.5M12 15V3.5M6 4.5c2-.8 4-1 6-1s4 .2 6 1M7.8 10.2h8.4" />
-      </svg>
+      <Image alt="" height={42} priority src="/brand/logo-mark.png" width={42} />
     </span>
   );
 }
@@ -52,7 +50,7 @@ function PublicPreviewNav({ pathname }: { pathname: string }) {
   return (
     <header className="topbar topbar-preview">
       <Link className="brand" href={scheduleHref}>
-        <BrandMark />羽赛台
+        <BrandMark />赛事台
       </Link>
       <div className="preview-nav-area">
         <span className="preview-nav-scroll-hint">导航可横向滚动</span>
@@ -91,7 +89,7 @@ function AuthenticatedAppNav({
   return (
     <header className={`topbar ${compact ? "topbar-workbench" : ""}`}>
       <div className="brand-lockup">
-        <Link className="brand" href="/"><BrandMark />羽赛台</Link>
+        <Link className="brand" href="/"><BrandMark />赛事台</Link>
         {compact ? <span className="brand-context">裁判工作台</span> : null}
       </div>
       <nav aria-label="主导航">

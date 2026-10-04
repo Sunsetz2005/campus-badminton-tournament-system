@@ -26,13 +26,15 @@ function required(name: string) {
   return value;
 }
 
-async function ensureAuthUser(email: string, password: string, name: string) {
+async function ensureAuthUser(email: string, password: string, name: string, username?: string) {
   const normalizedEmail = email.toLowerCase();
+  // 用户名与 Better Auth username 插件一致：小写归一；未配置时不改动已有用户名。
+  const usernameFields = username ? { username: username.toLowerCase(), displayUsername: username } : {};
   return prisma.$transaction(async (transaction) => {
     const user = await transaction.user.upsert({
       where: { email: normalizedEmail },
-      update: { name, status: "ACTIVE", emailVerified: true },
-      create: { email: normalizedEmail, name, emailVerified: true },
+      update: { name, status: "ACTIVE", emailVerified: true, ...usernameFields },
+      create: { email: normalizedEmail, name, emailVerified: true, ...usernameFields },
     });
 
     const accountKey = { providerId: "credential", accountId: user.id };
@@ -537,6 +539,36 @@ async function seedSunshineLeague(adminId: string, refereeId: string) {
   return created;
 }
 
+function optional(name: string) {
+  return process.env[name]?.trim() || undefined;
+}
+
+/**
+ * 可选的模拟领队：同时提供 DEMO_TEAM_MANAGER_EMAIL / _PASSWORD 时创建，
+ * 绑定为团体赛演示赛事第一支队伍（T01）的负责人。模拟身份不强制首次改密。
+ */
+async function seedDemoTeamManager(adminId: string) {
+  const email = optional("DEMO_TEAM_MANAGER_EMAIL");
+  const password = optional("DEMO_TEAM_MANAGER_PASSWORD");
+  if (Boolean(email) !== Boolean(password)) {
+    throw new Error("模拟领队账号必须同时提供 DEMO_TEAM_MANAGER_EMAIL 和 DEMO_TEAM_MANAGER_PASSWORD。");
+  }
+  if (!email || !password) return false;
+  const tournament = await prisma.tournament.findUniqueOrThrow({ where: { slug: "sunshine-league-2026" }, select: { id: true } });
+  const team = await prisma.team.findUniqueOrThrow({
+    where: { tournamentId_code: { tournamentId: tournament.id, code: "T01" } },
+    select: { id: true },
+  });
+  const manager = await ensureAuthUser(email, password, "模拟学院领队", optional("DEMO_TEAM_MANAGER_USERNAME"));
+  await prisma.user.update({ where: { id: manager.id }, data: { mustChangePassword: false } });
+  await prisma.teamManager.upsert({
+    where: { teamId_userId: { teamId: team.id, userId: manager.id } },
+    update: {},
+    create: { teamId: team.id, tournamentId: tournament.id, userId: manager.id, createdByUserId: adminId },
+  });
+  return true;
+}
+
 async function main() {
   assertDemoSeedDatabase(process.env.DATABASE_URL);
   if (process.env.ALLOW_DEMO_ACCOUNTS !== "true") {
@@ -546,13 +578,19 @@ async function main() {
     throw new Error("生产环境禁止运行模拟种子。");
   }
 
-  const admin = await ensureAuthUser(required("DEMO_ADMIN_EMAIL"), required("DEMO_ADMIN_PASSWORD"), "本地赛事管理员");
+  const admin = await ensureAuthUser(
+    required("DEMO_ADMIN_EMAIL"),
+    required("DEMO_ADMIN_PASSWORD"),
+    "本地赛事管理员",
+    optional("DEMO_ADMIN_USERNAME"),
+  );
   // 平台级角色只允许新建赛事；既有赛事的权限仍逐一通过 RoleAssignment 授予。
   await prisma.user.update({ where: { id: admin.id }, data: { systemRole: "SYSTEM_ADMIN" } });
   const referee = await ensureAuthUser(
     required("DEMO_REFEREE_EMAIL"),
     required("DEMO_REFEREE_PASSWORD"),
     "本地临场裁判",
+    optional("DEMO_REFEREE_USERNAME"),
   );
   const participantEmail = process.env.DEMO_PARTICIPANT_EMAIL?.trim();
   const participantPassword = process.env.DEMO_PARTICIPANT_PASSWORD?.trim();
@@ -1015,11 +1053,12 @@ async function main() {
   const extraTournaments = await seedPortalTournaments(admin.id);
   const sunshineTeams = await seedSunshineLeague(admin.id, referee.id);
   console.info(`团体赛演示赛事：本次新增 ${sunshineTeams} 支已审核队伍（共 8 支，未抽签；8 块场地、3 个比赛日）。`);
+  const teamManagerSeeded = await seedDemoTeamManager(admin.id);
 
   console.info(`公开发布边界：本次补写 ${published.count} 场；额外门户赛事 ${extraTournaments} 个。`);
 
   console.info(
-    `人工直采模拟种子完成：17 场比赛、16 名匿名选手、4 场明确全新 0:0、4 场锁定结果、1 场待复核、1 场待提交、${participantEmail ? 3 : 2} 个模拟身份。`,
+    `人工直采模拟种子完成：17 场比赛、16 名匿名选手、4 场明确全新 0:0、4 场锁定结果、1 场待复核、1 场待提交、${(participantEmail ? 3 : 2) + (teamManagerSeeded ? 1 : 0)} 个模拟身份。`,
   );
 }
 

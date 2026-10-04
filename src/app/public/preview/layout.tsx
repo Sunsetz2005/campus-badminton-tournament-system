@@ -7,7 +7,7 @@ import { isPublicUiPreviewEnabled } from "@/features/public-results/access";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "公开赛程界面预览｜羽赛台",
+  title: "公开赛程界面预览｜赛事台",
   description: "校园羽毛球公开赛程与比赛详情的隔离界面预览",
   robots: { follow: false, index: false },
 };

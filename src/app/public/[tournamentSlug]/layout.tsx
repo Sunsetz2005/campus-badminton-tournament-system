@@ -14,20 +14,18 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { tournamentSlug } = await params;
   const tournament = await getPublicTournamentHeader(tournamentSlug);
-  return { title: tournament ? `${tournament.name}｜羽赛台` : "赛事不存在｜羽赛台" };
+  return { title: tournament ? `${tournament.name}｜赛事台` : "赛事不存在｜赛事台" };
 }
 
 /**
- * 公开入口。对阵与晋级、小组排名、最终名次和成绩册依赖尚未实现的权威服务，
- * 因此显示为「暂未开放」而不是可点击的假页面、假排名或假下载。
+ * 公开入口（阶段 7 起全部可用）：「对阵与名次」只列已确认结果、已确认的小组名次与已发布的名次榜单；
+ * 「成绩册」只提供组织方生成的当前正式版文件。
  */
 const sections = [
   { key: "schedule", label: "每日赛程", available: true },
   { key: "board", label: "现场看板", available: true },
-  { key: "bracket", label: "对阵与晋级", available: false },
-  { key: "standings", label: "小组排名", available: false },
-  { key: "rankings", label: "最终名次", available: false },
-  { key: "results-book", label: "成绩册", available: false },
+  { key: "results", label: "对阵与名次", available: true },
+  { key: "downloads", label: "成绩册", available: true },
 ] as const;
 
 export default async function PublicTournamentLayout({

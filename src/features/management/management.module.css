@@ -8,7 +8,7 @@
 .headingRow { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 16px; }
 
 /* 后台二级导航：系统式分段控件。窄屏横向滚动而不是折成多行。 */
-.subnav { position: sticky; top: calc(var(--topbar-h) + 8px); z-index: 20; display: flex; gap: 2px; padding: 4px; width: fit-content; max-width: 100%; overflow-x: auto; background: var(--glass-strong); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--shadow-sm); -webkit-backdrop-filter: saturate(180%) blur(18px); backdrop-filter: saturate(180%) blur(18px); scrollbar-width: none; }
+.subnav { position: sticky; top: calc(var(--sticky-top) + 8px); z-index: 20; display: flex; gap: 2px; padding: 4px; width: fit-content; max-width: 100%; overflow-x: auto; background: var(--glass-strong); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--shadow-sm); -webkit-backdrop-filter: saturate(180%) blur(18px); backdrop-filter: saturate(180%) blur(18px); scrollbar-width: none; }
 .subnav a { flex: none; display: inline-flex; align-items: center; min-height: 36px; padding: 6px 14px; color: var(--ink-2); border-radius: var(--r-sm); font-size: .9rem; font-weight: 650; text-decoration: none; white-space: nowrap; transition: background-color var(--dur-2) var(--ease-out), color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out); }
 .subnav a:hover { color: var(--ink); background: rgba(15, 23, 42, .05); }
 .subnav a[aria-current="page"] { color: var(--ink); background: var(--surface); box-shadow: var(--shadow-sm), 0 0 0 1px rgba(15, 23, 42, .06); font-weight: 750; }

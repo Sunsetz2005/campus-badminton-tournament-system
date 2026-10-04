@@ -21,6 +21,7 @@ import {
   detectCommandIdCapability,
   type CommandIdCapability,
 } from "@/ui/secure-command-id";
+import { describeWakeLock, useScreenWakeLock } from "@/ui/screen-wake-lock";
 
 type SessionControl = {
   sessionId: string;
@@ -875,6 +876,8 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     ? commandIdCapability.advisory
     : null;
   const canAcquireControl = Boolean(!control && snapshot?.access.assignedReferee);
+  // 阶段 8：本机持有控制权时申请屏幕常亮；不可用只给人工替代提示，不影响记分。
+  const wakeLock = describeWakeLock(useScreenWakeLock(Boolean(control)));
   const readOnlyReason = canWrite
     ? null
     : !commandIdCapability.available
@@ -1007,6 +1010,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
           <span>同步<strong>{syncLabel}</strong></span>
           <span>局数<strong>第 {state.currentGame} 局</strong></span>
           <span>数据<strong>{dataFreshness === "FRESH" ? "最新" : "可能过期"}</strong></span>
+          {control ? <span data-testid="wake-lock-status">常亮<strong>{wakeLock.label}</strong></span> : null}
           <small>服务器版本 {state.version}</small>
         </div>
       </header>
@@ -1017,6 +1021,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       {insecureContextAdvisory ? (
         <p className="scoring-alert is-status" role="status">{insecureContextAdvisory}</p>
       ) : null}
+      {control && wakeLock.hint ? <p className="scoring-hint" data-testid="wake-lock-hint">{wakeLock.hint}</p> : null}
       {dataFreshness === "STALE" && !message ? <p className="scoring-stale" role="status">无法确认最新状态；继续显示最后一次服务器确认数据，写入保持只读。</p> : null}
       {message ? <p className={`scoring-alert ${messageTone === "status" ? "is-status" : ""}`} role={messageTone === "error" ? "alert" : "status"}>{message}</p> : null}
       {syncState === "UNKNOWN" ? (

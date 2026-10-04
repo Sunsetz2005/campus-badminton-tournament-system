@@ -189,10 +189,26 @@ enum ResultDispositionDecision {
   OFFLINE_RULING
 }
 
+// 阶段 7：导出文件种类。内部报名名单含学号与联系方式，只供赛事管理员/编排员；其余是对外版本。
+enum ReportKind {
+  REGISTRATIONS_INTERNAL
+  DATA_WORKBOOK
+  BOOKLET_PDF
+}
+
+// 草稿可带暂定结果并醒目标记；正式版只引用经裁判长复核锁定的结果与已发布的名次榜单。
+enum ReportEdition {
+  DRAFT
+  OFFICIAL
+}
+
 model User {
   id                         String                    @id @default(uuid()) @db.Uuid
   name                       String
   email                      String                    @unique
+  // Better Auth username 插件：可选的登录用户名（小写归一），与邮箱二选一登录。
+  username                   String?                   @unique
+  displayUsername            String?
   emailVerified              Boolean                   @default(false)
   image                      String?
   status                     UserStatus                @default(ACTIVE)
@@ -229,6 +245,7 @@ model User {
   rankingExclusions          RankingExclusion[]        @relation("RankingExclusionDecider")
   standingsPublications      StandingsPublication[]    @relation("StandingsPublisher")
   resultDispositions         ResultDisposition[]       @relation("ResultDispositionDecider")
+  reportExports              ReportExport[]            @relation("ReportExportCreator")
 
   @@map("users")
 }
@@ -322,6 +339,7 @@ model Tournament {
   scheduleDays          ScheduleDay[]
   scheduleSlots         ScheduleSlot[]
   schedulePublications  SchedulePublication[]
+  reportExports         ReportExport[]
 
   @@map("tournaments")
 }
@@ -1148,4 +1166,44 @@ model ResultDisposition {
 
   @@index([matchId])
   @@map("result_dispositions")
+}
+
+// ---------------------------------------------------------------------------
+// 阶段 7（prompt-kit 08）：成绩册、导出与公开查询
+// ---------------------------------------------------------------------------
+
+// 一次导出：文件字节与生成它的数据快照摘要一起保存，之后不可改写（触发器兜底）。
+// 同一种正式版再次生成且数据已变化时，旧版标记「已被替代」但原文件保留。
+model ReportExport {
+  id                   String         @id @default(uuid()) @db.Uuid
+  tournamentId         String         @db.Uuid
+  kind                 ReportKind
+  // 内部报名名单没有草稿/正式之分，为空。
+  edition              ReportEdition?
+  // 同一赛事同一种文件的顺序号。
+  version              Int
+  // 数据快照的内容摘要（SHA-256）：相同数据得到相同摘要，界面显示前 12 位作为「数据修订号」。
+  snapshotHash         String
+  // 快照在其一致性读取事务中的取数时刻。
+  capturedAt           DateTime
+  // 引用的名次榜单发布版本等出处（项目代码 → 版本）。
+  sources              Json
+  fileName             String
+  contentType          String
+  byteSize             Int
+  sha256               String
+  content              Bytes
+  createdByUserId      String?        @db.Uuid
+  createdAt            DateTime       @default(now())
+  supersededAt         DateTime?
+  supersededByExportId String?        @db.Uuid
+  tournament           Tournament     @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  createdBy            User?          @relation("ReportExportCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  // 迁移中把这个外键设为 DEFERRABLE INITIALLY DEFERRED（Prisma 无法表达）。
+  supersededBy         ReportExport?  @relation("ReportExportSupersede", fields: [supersededByExportId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  supersedes           ReportExport[] @relation("ReportExportSupersede")
+
+  @@unique([tournamentId, kind, version])
+  @@index([tournamentId, createdAt])
+  @@map("report_exports")
 }

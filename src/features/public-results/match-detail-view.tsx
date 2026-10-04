@@ -10,6 +10,7 @@ import {
   type PublicMatchPreview,
   type PublicTournamentPreview,
 } from "./model";
+import { LiveMatchRefresh, ShareMatchLink } from "./live-match-tools";
 import { EntryIdentity, MatchScore, PublicResultsShell, StatusCluster } from "./public-components";
 import styles from "./public-results.module.css";
 import { PublicMatchSkeleton } from "./resource-states";
@@ -22,6 +23,23 @@ export interface MatchDetailViewProps {
   preservedQuery: string;
   scenario: PreviewScenario;
   tournament: PublicTournamentPreview;
+}
+
+type ResultNature = "UPCOMING" | "LIVE" | "PROVISIONAL" | "CONFIRMED";
+
+const NATURE_LABEL: Record<ResultNature, string> = {
+  UPCOMING: "未开始",
+  LIVE: "进行中 · 实时比分",
+  PROVISIONAL: "暂定 · 待裁判长确认",
+  CONFIRMED: "已确认",
+};
+
+/** 读者最关心的一维：这个比分能不能当真。只有裁判长复核锁定的才是「已确认」。 */
+function resultNature(match: PublicMatchPreview): ResultNature {
+  if (match.verification === "LOCKED") return "CONFIRMED";
+  if (match.lifecycle === "IN_PROGRESS" || match.lifecycle === "SUSPENDED") return "LIVE";
+  if (match.lifecycle === "SCHEDULED" || match.lifecycle === "READY") return "UPCOMING";
+  return "PROVISIONAL";
 }
 
 export function MatchDetailView({
@@ -40,12 +58,19 @@ export function MatchDetailView({
   const sideAName = match.sideA?.displayName ?? "对阵待定";
   const sideBName = match.sideB?.displayName ?? "对阵待定";
   const time = formatPreviewTime(match.time, timeZone);
+  const nature = resultNature(match);
 
   return (
     <PublicResultsShell activeSection="match" mode={mode} tournament={tournament}>
       <div className={styles.detailToolbar}>
         <Link className={styles.backLink} href={scheduleHref}>← 返回每日赛程</Link>
-        {scenario === "ready" || scenario === "stale" ? <span>最后同步 {formatPreviewSyncTime(match.lastSyncedAt, timeZone)}</span> : null}
+        {scenario === "ready" || scenario === "stale" ? (
+          <div className={styles.natureBar}>
+            <strong className={styles.nature} data-nature={nature}>{NATURE_LABEL[nature]}</strong>
+            <span>最后同步 {formatPreviewSyncTime(match.lastSyncedAt, timeZone)} · 比分版本 {match.scoreVersion}</span>
+            {mode === "live" ? <LiveMatchRefresh active={nature !== "CONFIRMED"} /> : null}
+          </div>
+        ) : null}
       </div>
 
       {scenario === "loading" ? <PublicMatchSkeleton /> : null}
@@ -117,6 +142,12 @@ export function MatchDetailView({
                   <div><dt>数据更新时间</dt><dd>{formatPreviewDateTime(match.lastSyncedAt, timeZone)}</dd></div>
                 </dl>
               </section>
+              {mode === "live" ? (
+                <section>
+                  <h2>分享</h2>
+                  <ShareMatchLink path={`${basePath}/matches/${match.code}`} />
+                </section>
+              ) : null}
               <section>
                 <h2>规则摘要</h2>
                 <p>{match.ruleSummary}</p>

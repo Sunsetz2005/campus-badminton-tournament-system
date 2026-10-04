@@ -71,6 +71,8 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "PingFang SC", "HarmonyOS Sans SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, sans-serif;
   --font-num: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Helvetica Neue", "DIN Alternate", ui-sans-serif, sans-serif;
   --topbar-h: 60px;
+  /* 吸顶元素的起点：桌面端让在吸顶顶栏下方；手机端顶栏会换行且不吸顶，所以为 0。 */
+  --sticky-top: var(--topbar-h);
 }
 
 * { box-sizing: border-box; }
@@ -78,7 +80,7 @@
 html {
   -webkit-text-size-adjust: 100%;
   scroll-behavior: smooth;
-  scroll-padding-top: calc(var(--topbar-h) + 16px);
+  scroll-padding-top: calc(var(--sticky-top) + 16px);
 }
 
 body {

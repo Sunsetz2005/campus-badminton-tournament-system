@@ -1020,3 +1020,19 @@
 @media (prefers-contrast: more) {
   .shell .eventHeader { background: #1b1040; }
 }
+
+/* 阶段 7：实时比分页的结果性质标签与只读分享 */
+.natureBar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.nature { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 12px; border-radius: 999px; font-size: .86rem; font-weight: 850; }
+.nature::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.nature[data-nature="LIVE"] { color: #b3261e; background: #fdecea; }
+.nature[data-nature="LIVE"]::before { animation: live-pulse 1.6s var(--ease-in-out) infinite; }
+.nature[data-nature="PROVISIONAL"] { color: #7a4d00; background: #fff4d6; }
+.nature[data-nature="CONFIRMED"] { color: #0b5d45; background: #e3f5ee; }
+.nature[data-nature="UPCOMING"] { color: #31516a; background: #eaf3f9; }
+.shareBox { display: grid; gap: 8px; }
+.shareBox label { display: grid; gap: 6px; color: #38566d; font-size: .82rem; font-weight: 750; }
+.shareBox input { min-height: 40px; padding: 8px 10px; color: var(--ink); background: #f8fbfd; border: 1px solid var(--preview-line); border-radius: 8px; font: inherit; font-size: .84rem; }
+.shareBox button { justify-self: start; min-height: 40px; padding: 8px 14px; color: white; background: var(--preview-blue-strong); border: 0; border-radius: 8px; font: inherit; font-weight: 800; cursor: pointer; }
+.shareBox p { margin: 0; color: #4c667a; font-size: .82rem; }
+@media (prefers-reduced-motion: reduce) { .nature[data-nature="LIVE"]::before { animation: none; } }

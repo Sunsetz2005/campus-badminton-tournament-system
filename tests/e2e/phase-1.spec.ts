@@ -4,7 +4,7 @@ import { prisma } from "../../src/db/client";
 
 async function login(page: import("@playwright/test").Page, email: string, password: string) {
   await page.goto("/login");
-  await page.getByLabel("登录邮箱").fill(email);
+  await page.getByLabel("账号", { exact: false }).fill(email);
   await page.getByLabel("密码").fill(password);
   await page.getByRole("button", { name: "登录" }).click();
   await expect(page).toHaveURL("/");
@@ -66,7 +66,7 @@ test.describe.serial("阶段 1 浏览器权限链", () => {
   test("旧的公开查询入口重定向到赛事列表首页", async ({ page }) => {
     await page.goto("/public");
     await expect(page).toHaveURL("/");
-    await expect(page.getByRole("heading", { level: 1, name: "羽赛台" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "赛事台" })).toBeVisible();
   });
 
   test("首页按生命周期分组列出已发布赛事", async ({ page }) => {

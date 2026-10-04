@@ -1,8 +1,8 @@
 ---
 title: API 与权限
-stage: 4
+stage: 7
 status: current
-updated: 2026-09-27
+updated: 2026-09-29
 tags:
   - 羽毛球赛事管理系统
   - API
@@ -138,7 +138,7 @@ tags:
 - 导入（阶段 4-A 已实现）：预览不落库，确认时重新上传同一文件并携带预览的内容摘要与新增/重复计数，服务端在赛事行锁内重算，一致才整份写入；`RegistrationImportBatch` 按内容摘要唯一，重复导入被拒；导入只生成待审核报名，人员在审核通过时才建立，因此不会重复建人。
 - 排程冲突检查（阶段 4-C 已实现）以运动员内部 ID 展开单打成员、双打组合与团体小场上场队员，跨全部项目返回冲突的比赛与原因；尚未公开的出场名单造成的冲突只说明存在、不写姓名。草稿保存 `PATCH .../schedule/slots/[matchCode]` 立即返回这一场的复检结果；发布 `POST .../schedule/publish` 必须带与当前警告一致的摘要，硬冲突 `409 schedule_has_conflicts`（附前 50 条），警告变化 `409 warnings_changed`。
 - 公开查询只返回服务端白名单 DTO；没有姓名发布决定时使用公开编号/别名。
-- PDF/Excel 任务只接受授权赛事和锁定快照 ID，不接受任意 URL；生成记录保存快照、模板、哈希、版本和替代关系。
+- PDF/Excel（阶段 7 已实现）：只由服务端从内部快照生成，不接受任意 URL；存档记录保存快照摘要、取数时刻、文件哈希、版本和替代关系，见下方「阶段 7」。
 
 ## 数据安全
 
@@ -166,3 +166,15 @@ tags:
 | `POST /api/admin/tournaments/[slug]/competitions/[code]/standings/publish` | ADMIN / CHIEF_REFEREE | 发布榜单新版本，内容未变 409 |
 
 后台布局 `/management/[slug]` 放宽为 ADMIN/ORGANIZER/CHIEF_REFEREE，以便裁判长进入「成绩名次」；其余后台页面各自仍只允许 ADMIN/ORGANIZER，服务端逐页校验。仅结果记录的比赛取得计分控制或接管返回 `result_only_match`。
+
+## 阶段 7：成绩册、导出与公开查询
+
+| 接口/页面 | 权限 | 说明 |
+|---|---|---|
+| `POST /api/admin/tournaments/[slug]/reports` `{kind, edition}` | 内部报名名单：ADMIN/ORGANIZER；草稿：ADMIN/ORGANIZER/CHIEF_REFEREE；正式版：ADMIN/CHIEF_REFEREE | 生成并存档；正式版数据未变 `409 report_unchanged`，榜单需重发 `409 standings_need_republish`，超限 `413 report_too_large`，PDF 引擎缺失 `503 pdf_engine_unavailable` |
+| `GET /api/admin/tournaments/[slug]/reports/[exportId]` | 内部名单：ADMIN/ORGANIZER；其余：ADMIN/ORGANIZER/CHIEF_REFEREE（按账号在该赛事的全部角色判断） | 返回存档原文件；ID 不属于该赛事或格式不符一律 404；文件名 ASCII 兜底＋RFC 5987 中文名 |
+| `GET /management/[slug]/reports/booklet?edition=` | ADMIN/ORGANIZER/CHIEF_REFEREE | 打印网页，不存档；CSP `default-src 'none'` 禁止脚本与外部资源 |
+| `/public/[slug]/results`、`/public/[slug]/downloads` | 公开（赛事已发布） | 对外快照；只列已确认结果与已发布榜单 |
+| `GET /api/public/tournaments/[slug]/reports/booklet|data` | 公开（赛事已发布） | 只下发当前正式版；草稿、已被替代的旧版与内部名单一律 404 |
+
+公开端与导出文件共用同一份对外快照形状（`src/reports/report-model.ts`），不含学号、联系方式、审核意见、更正理由、内部特殊结果原因、账号或数据库 ID。

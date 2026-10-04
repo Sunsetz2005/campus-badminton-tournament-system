@@ -19,7 +19,7 @@ const evidenceDir = path.join(process.cwd(), "artifacts", "phase4-portal", proce
 test.describe.serial("阶段 4-0 赛事门户", () => {
   test("首页按生命周期分组列出赛事，并带海报与赛事信息", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByRole("heading", { level: 1, name: "羽赛台" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "赛事台" })).toBeVisible();
 
     for (const bucket of ["进行中", "即将开始", "已结束"]) {
       await expect(page.getByRole("heading", { level: 2, name: bucket, exact: true })).toBeVisible();
@@ -75,15 +75,38 @@ test.describe.serial("阶段 4-0 赛事门户", () => {
     await expect(page.getByText("退赛").first()).toBeVisible();
   });
 
-  test("未开放的公开入口显示暂未开放，不提供假链接", async ({ page }) => {
+  test("公开导航四项均可用：对阵与名次只公布已确认结果，成绩册没有正式版时明确说明", async ({ page }) => {
     await page.goto(schedulePath);
     const nav = page.getByRole("navigation", { name: "赛事公开导航" });
-    for (const label of ["对阵与晋级", "小组排名", "最终名次", "成绩册"]) {
-      await expect(nav.getByText(`${label} · 暂未开放`)).toBeVisible();
-      await expect(nav.getByRole("link", { name: label })).toHaveCount(0);
-    }
-    await expect(nav.getByRole("link", { name: "每日赛程" })).toBeVisible();
-    await expect(nav.getByRole("link", { name: "现场看板" })).toBeVisible();
+    await expect(nav.getByRole("link")).toHaveText(["← 全部赛事", "每日赛程", "现场看板", "对阵与名次", "成绩册"]);
+    await expect(nav.getByText("暂未开放")).toHaveCount(0);
+
+    await nav.getByRole("link", { name: "对阵与名次" }).click();
+    await expect(page.getByRole("heading", { name: "对阵与名次", level: 1 })).toBeVisible();
+    const confirmedRow = page.getByRole("row").filter({ hasText: "MS-DONE-001" });
+    await expect(confirmedRow).toContainText("21:14 21:17");
+    await expect(confirmedRow).toContainText("已确认");
+    // 待复核的比赛不提前公布比分。
+    const pendingRow = page.getByRole("row").filter({ hasText: "MS-REVIEW-001" });
+    await expect(pendingRow).toContainText("暂定 · 待确认");
+    await expect(pendingRow).not.toContainText("21:18");
+    await expect(page.getByText("MD-DONE-002：退赛（RET）")).toBeVisible();
+    await expect(page.getByText("模拟现场特殊结果")).toHaveCount(0);
+
+    await nav.getByRole("link", { name: "成绩册" }).click();
+    await expect(page.getByRole("heading", { name: "成绩册", level: 1 })).toBeVisible();
+    const internal = await page.request.get(`/api/public/tournaments/${SLUG}/reports/internal`);
+    expect(internal.status()).toBe(404);
+  });
+
+  test("实时比分页标出结果性质并提供只读分享链接", async ({ page }) => {
+    await page.goto(`/public/${SLUG}/matches/MS-REVIEW-001`);
+    await expect(page.locator("[data-nature]")).toHaveText("暂定 · 待裁判长确认");
+    await expect(page.getByText("每 10 秒自动更新")).toBeVisible();
+    await expect(page.getByLabel("只读链接")).toHaveValue(new RegExp(`/public/${SLUG}/matches/MS-REVIEW-001$`));
+    await page.goto(`/public/${SLUG}/matches/MS-DONE-001`);
+    await expect(page.locator("[data-nature]")).toHaveText("已确认");
+    await expect(page.getByText("比分已确认，不再自动刷新")).toBeVisible();
   });
 
   test("旧的 /board 地址重定向到进行中赛事的现场看板", async ({ page }) => {
@@ -106,7 +129,7 @@ test.describe.serial("阶段 4-0 赛事门户", () => {
       await page.setViewportSize(viewport);
 
       await page.goto("/");
-      await expect(page.getByRole("heading", { level: 1, name: "羽赛台" })).toBeVisible();
+      await expect(page.getByRole("heading", { level: 1, name: "赛事台" })).toBeVisible();
       expect(await noOverflow(), `首页 ${viewport.width}`).toBe(true);
       await page.screenshot({ fullPage: true, path: path.join(evidenceDir, `home-${viewport.width}x${viewport.height}.png`) });
 

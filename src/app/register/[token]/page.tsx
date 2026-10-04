@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 // 链接里带着邀请令牌：禁止搜索引擎收录，也不把完整地址通过 Referer 带给外站。
 export const metadata: Metadata = {
-  title: "赛事报名｜羽赛台",
+  title: "赛事报名｜赛事台",
   robots: { index: false, follow: false },
   referrer: "no-referrer",
 };

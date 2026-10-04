@@ -16,9 +16,10 @@ export function ManagementSubnav({ slug, resultsOnly = false }: { slug: string; 
     [`${base}/ties`, "团体对抗"],
     [`${base}/schedule`, "赛程排班"],
     [`${base}/results`, "成绩名次"],
+    [`${base}/reports`, "成绩册与导出"],
   ] as const;
-  // 只有裁判长角色的账号只看得到「成绩名次」（其他后台页面服务端同样拒绝）。
-  const links = resultsOnly ? all.filter(([href]) => href === `${base}/results`) : all;
+  // 只有裁判长角色的账号只看得到「成绩名次」与「成绩册与导出」（其他后台页面服务端同样拒绝）。
+  const links = resultsOnly ? all.filter(([href]) => href === `${base}/results` || href === `${base}/reports`) : all;
   return (
     <nav aria-label="赛事后台导航" className={styles.subnav}>
       <Link href="/management">← 全部赛事</Link>

@@ -11,8 +11,11 @@ import { Prisma } from "@/generated/prisma/client";
  *   （它把 40001 与 40P01 都映射成这一类）。
  * 事务整体回滚，重跑整段工作不会重复写入。
  * 其他错误（包括业务 AppError、唯一约束冲突）一律原样抛出，不重试。
+ *
+ * 阶段 8 基准：6 场比赛同时无间隔记分时，不同比赛之间也会因共享索引页上的谓词锁互相中止；
+ * 原先 8 次（总退避约 1 秒）每轮约有 3/258 条命令重试耗尽成 500，改为 12 次（最坏总退避约 3—5 秒）。
  */
-export const DEFAULT_TRANSACTION_ATTEMPTS = 8;
+export const DEFAULT_TRANSACTION_ATTEMPTS = 12;
 
 const RETRYABLE_SQLSTATES = new Set(["40001", "40P01"]);
 

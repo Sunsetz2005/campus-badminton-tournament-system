@@ -154,6 +154,15 @@ describe("公开赛事门户投影", () => {
   });
 
   describe("比赛详情", () => {
+    it("阶段 8：「最后同步」随比赛本身的变更前进，不停在赛事的更新时间", async () => {
+      const tournament = await prisma.tournament.findUniqueOrThrow({ where: { slug: SLUG }, select: { updatedAt: true } });
+      // 模拟记分只推进比赛行：比赛的更新时间晚于赛事。
+      const matchUpdatedAt = new Date(tournament.updatedAt.getTime() + 60_000);
+      await prisma.match.update({ where: { code: "MS-DONE-001" }, data: { updatedAt: matchUpdatedAt } });
+      const { match } = await getPublicMatchDetail(SLUG, "MS-DONE-001");
+      expect(match.lastSyncedAt).toBe(matchUpdatedAt.toISOString());
+    });
+
     it("未开赛的比赛所有局都是未进行，不渲染成 0:0", async () => {
       const { match } = await getPublicMatchDetail(SLUG, "MS-FRESH-002");
       expect(match.lifecycle).toBe("READY");

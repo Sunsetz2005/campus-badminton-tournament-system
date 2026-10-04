@@ -44,3 +44,9 @@ artifacts/phase4b-team-draw/local-run/
 artifacts/phase4d-team-ties/local-run/
 artifacts/phase4c-schedule/local-run/
 artifacts/phase6-results/local-run/
+artifacts/phase7-reports/local-run/
+artifacts/phase8-mobile/local-run/
+# 本机生成的 PDF 嵌入 macOS 系统字体子集，不入库；仓库只保留逐页渲染图。
+artifacts/phase7-reports/samples/*.pdf
+# 本机 PDF 渲染试验脚本；保留在工作区，不纳入发布源码。
+.pdf-try.tmp.ts

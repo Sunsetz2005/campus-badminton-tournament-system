@@ -337,7 +337,8 @@ export function projectMatch(match: MatchRow, context: MatchContext): PublicMatc
     endedAt: match.endedAt?.toISOString() ?? null,
     games: projectGames(match.games, rule.bestOf, match.lifecycleStatus, facts.stoppedGame),
     gamesWon: facts.gamesWon,
-    lastSyncedAt: context.updatedAt.toISOString(),
+    // 阶段 8 修复：原先只取赛事的 updatedAt，记分推进的是比赛行，公开页「最后同步」因此停在旧时刻。
+    lastSyncedAt: new Date(Math.max(context.updatedAt.getTime(), match.updatedAt.getTime())).toISOString(),
     lifecycle: match.lifecycleStatus,
     outcome: match.outcomeType ?? "NORMAL",
     // 单调公开投影修订号。它与只随计分命令推进的 scoreVersion 不同：

@@ -74,8 +74,8 @@ export default async function HomePage() {
   return (
     <>
       <section className="home-hero">
-        <p className="eyebrow">校园羽毛球赛事编排与成绩管理</p>
-        <h1>羽赛台</h1>
+        <p className="eyebrow">综合赛事平台 · 当前支持羽毛球赛事</p>
+        <h1>赛事台</h1>
         <p>
           公开赛程、逐局比分与已确认结果。比分由现场主裁判在服务端权威记录，
           页面只读取公开字段，不展示账号、联系方式或内部审计信息。

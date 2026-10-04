@@ -145,7 +145,7 @@
 /* ── 分区跳转条 ───────────────────────────────────────────────────── */
 .gm-jump {
   position: sticky;
-  top: calc(var(--topbar-h) + 8px);
+  top: calc(var(--sticky-top) + 8px);
   z-index: 20;
   display: flex;
   gap: 6px;
@@ -189,7 +189,7 @@
 .gm-jump a[href="#live"] span { background: var(--gm-red); }
 
 /* ── 分区 ───────────────────────────────────────────────────────── */
-.gm-section { display: grid; gap: 16px; scroll-margin-top: calc(var(--topbar-h) + 72px); }
+.gm-section { display: grid; gap: 16px; scroll-margin-top: calc(var(--sticky-top) + 72px); }
 .gm-section-title { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; }
 .gm-section-title > div { position: relative; padding-left: 18px; }
 .gm-section-title > div::before {

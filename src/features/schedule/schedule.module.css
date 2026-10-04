@@ -19,7 +19,7 @@
 .filters a[aria-current="page"] { color: white; background: var(--ink); border-color: var(--ink); }
 .filters .label { color: var(--muted); font-size: .8rem; font-weight: 800; }
 
-.dayTitle { position: sticky; top: calc(var(--topbar-h) + 56px); z-index: 5; width: fit-content; margin: 8px 0 0; padding: 4px 12px; color: var(--ink); background: var(--glass-strong); border-radius: var(--r-pill); box-shadow: var(--shadow-xs); font-size: 1rem; -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+.dayTitle { position: sticky; top: calc(var(--sticky-top) + 56px); z-index: 5; width: fit-content; margin: 8px 0 0; padding: 4px 12px; color: var(--ink); background: var(--glass-strong); border-radius: var(--r-pill); box-shadow: var(--shadow-xs); font-size: 1rem; -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
 
 .rows { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .row { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) auto; gap: 6px 14px; align-items: start; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); transition: border-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out); }

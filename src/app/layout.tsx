@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 
 import { AppFooter, AppNav } from "@/components/app-nav";
@@ -8,8 +8,16 @@ import { getNavContext } from "@/server/auth/nav-context";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "羽赛台｜校园羽毛球赛事编排与成绩管理",
-  description: "校园羽毛球赛事的公开赛程、逐局比分、已确认结果与裁判执裁管理",
+  title: "赛事台｜赛事编排与成绩管理",
+  description: "赛事编排、公开赛程、逐局比分、已确认结果与裁判执裁管理；当前支持羽毛球赛事",
+  appleWebApp: { title: "赛事台", statusBarStyle: "default" },
+};
+
+// 不设 maximumScale / userScalable：浏览器缩放必须保留给低视力用户。
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#1b1040",
 };
 
 export default async function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

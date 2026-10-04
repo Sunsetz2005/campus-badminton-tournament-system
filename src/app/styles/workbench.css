@@ -10,6 +10,7 @@
 .sync-dot.online { background: #19805f; box-shadow: 0 0 0 4px rgba(25,128,95,.12); }
 .scoring-alert { margin: 0; padding: 14px 18px; color: #7a241f; background: #fff0ed; border: 1px solid #f1c5be; border-radius: 12px; }
 .scoring-alert.is-status { color: #154e3e; background: #eaf6f1; border-color: #b9ddcf; }
+.scoring-hint { margin: 0; padding: 8px 12px; color: #405b6d; background: #eef4f7; border-radius: 10px; font-size: .78rem; line-height: 1.5; }
 .scoring-stale { margin: 0; padding: 13px 16px; color: #68450b; background: #fff4dc; border: 1px solid #e4c783; border-radius: 12px; }
 .pending-recovery { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 16px; color: #5d410e; background: #fff3d7; border: 1px solid #dfbd73; border-radius: 14px; }
 .pending-recovery div { display: grid; flex: 1 1 320px; gap: 3px; }
@@ -89,7 +90,8 @@
 
 /* 5. 双方加分与更正 */
 .court-score-console { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.court-score-side { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); gap: 8px; min-width: 0; }
+/* 阶段 8：同一侧 +1 与更正入口之间至少留 14px（手机 12px），更正按钮不紧贴加分按钮。 */
+.court-score-side { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); gap: 14px; min-width: 0; }
 .court-score-side.half-right { grid-template-columns: minmax(0, 1fr) minmax(0, 1.9fr); }
 .score-adjust { display: grid; place-items: center; align-content: center; min-height: 64px; padding: 5px; border: 0; border-radius: 13px; color: white; background: var(--green); font: inherit; font-size: 1.3rem; font-weight: 900; cursor: pointer; touch-action: manipulation; user-select: none; transition: transform 100ms ease-out, filter 100ms ease-out; }
 .side-b .score-adjust.plus { background: var(--ops-blue); }
@@ -217,8 +219,8 @@
   .court-scoreboard { gap: 6px; padding: 5px 7px; }
   .scoreboard-team { font-size: .66rem; }
   .court-score-number { font-size: min(15vw, 3.6rem); }
-  .court-score-console { gap: 6px; }
-  .court-score-side { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 5px; }
+  .court-score-console { gap: 10px; }
+  .court-score-side { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 12px; }
   .score-adjust { min-height: 58px; font-size: 1.15rem; }
   .score-adjust.minus { min-height: 58px; font-size: .95rem; }
   .court-service-sentence strong { font-size: .78rem; }

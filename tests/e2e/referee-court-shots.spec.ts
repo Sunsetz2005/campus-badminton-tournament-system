@@ -41,7 +41,7 @@ const LONG_NAMES = {
 
 async function login(page: Page, email: string, password: string) {
   await page.goto("/login");
-  await page.getByLabel("登录邮箱").fill(email);
+  await page.getByLabel("账号", { exact: false }).fill(email);
   await page.getByLabel("密码").fill(password);
   await page.getByRole("button", { name: "登录" }).click();
   await expect(page).toHaveURL("/");

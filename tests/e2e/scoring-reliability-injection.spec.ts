@@ -14,7 +14,7 @@ const PENDING_KEY = `badminton-pending:${MATCH_CODE}`;
 
 async function login(page: Page) {
   await page.goto("/login");
-  await page.getByLabel("登录邮箱").fill(process.env.DEMO_REFEREE_EMAIL!);
+  await page.getByLabel("账号", { exact: false }).fill(process.env.DEMO_REFEREE_EMAIL!);
   await page.getByLabel("密码").fill(process.env.DEMO_REFEREE_PASSWORD!);
   await page.getByRole("button", { name: "登录" }).click();
   await expect(page).toHaveURL("/");

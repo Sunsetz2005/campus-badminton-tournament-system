@@ -10,7 +10,7 @@ export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const errorId = useId();
-  const [email, setEmail] = useState("");
+  const [account, setAccount] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState("");
@@ -20,11 +20,15 @@ export function LoginForm() {
     event.preventDefault();
     setPending(true);
     setMessage("");
-    const result = await authClient.signIn.email({ email: email.trim(), password, rememberMe: false });
+    const identifier = account.trim();
+    // 含 @ 按邮箱登录，否则按用户名登录。
+    const result = identifier.includes("@")
+      ? await authClient.signIn.email({ email: identifier, password, rememberMe: false })
+      : await authClient.signIn.username({ username: identifier, password, rememberMe: false });
     if (result.error) {
       setMessage(result.error.status === 429
         ? "尝试过于频繁，请等待约 10 秒后再试。"
-        : "登录失败，请检查登录邮箱、密码或账号状态。");
+        : "登录失败，请检查账号、密码或账号状态。");
       setPending(false);
       return;
     }
@@ -38,19 +42,18 @@ export function LoginForm() {
   return (
     <form className="auth-form" onSubmit={submit}>
       <label>
-        登录邮箱
+        账号
         <input
           aria-describedby={describedBy}
           aria-invalid={invalid}
           autoCapitalize="none"
           autoComplete="username"
-          inputMode="email"
-          onChange={(event) => setEmail(event.target.value)}
-          placeholder="请输入完整邮箱地址"
+          onChange={(event) => setAccount(event.target.value)}
+          placeholder="用户名或邮箱"
           required
           spellCheck={false}
-          type="email"
-          value={email}
+          type="text"
+          value={account}
         />
       </label>
       <div className="password-field">

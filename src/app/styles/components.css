@@ -186,7 +186,7 @@
 .card:focus-within { border-color: #c5d3e3; box-shadow: var(--shadow-md); }
 .card h2, .card h3 { margin-top: 4px; color: var(--ink); letter-spacing: -.01em; }
 .card p { color: var(--muted); line-height: 1.7; }
-.card > a { color: var(--accent); font-weight: 700; text-underline-offset: 4px; }
+.card > a:not(.button) { color: var(--accent); font-weight: 700; text-underline-offset: 4px; }
 .stack { display: grid; gap: 16px; }
 .panel-title { display: flex; justify-content: space-between; gap: 16px; align-items: start; border-bottom: 1px solid var(--line); }
 .panel-title h2 { margin-top: 4px; color: var(--ink); }

@@ -1,0 +1,98 @@
+{
+  "measuredAt": "2026-09-29T03:37:34.326Z",
+  "environment": {
+    "node": "v24.21.0",
+    "os": "Darwin 27.0.0 arm64",
+    "cpu": "Apple M5 × 10",
+    "memoryGiB": 24,
+    "postgres": "PostgreSQL 15.18 (Homebrew) on aarch64-apple-darwin25.4.0",
+    "server": "next start（生产构建），与数据库、压测客户端同在本机",
+    "publicRateLimitPerMinute": "默认 600"
+  },
+  "firstStartMs": 1416,
+  "load": {
+    "matches": 6,
+    "ralliesPerMatch": 40,
+    "rallyPaceMs": 0,
+    "publicReaders": 80,
+    "refereeReaders": 6,
+    "publicIntervalMs": 10000,
+    "refereeIntervalMs": 2000,
+    "durationMs": 7220,
+    "commandsAccepted": 258,
+    "eventsInDatabase": 258,
+    "commandLatencyMs": {
+      "count": 258,
+      "p50": 32,
+      "p95": 408,
+      "max": 2581
+    },
+    "commandErrors": {},
+    "matchFailures": {},
+    "commandsPerSecond": 35.7,
+    "publicReadLatencyMs": {
+      "count": 142,
+      "p50": 11,
+      "p95": 23,
+      "max": 47
+    },
+    "refereeReadLatencyMs": {
+      "count": 53,
+      "p50": 39,
+      "p95": 76,
+      "max": 100
+    },
+    "readErrors": {},
+    "writeToPublicVisibleMs": {
+      "anyViewer": {
+        "count": 258,
+        "p50": 413,
+        "p95": 740,
+        "max": 1003
+      },
+      "perViewer": {
+        "count": 975,
+        "p50": 8177,
+        "p95": 9882,
+        "max": 10006
+      }
+    },
+    "finalVersions": {
+      "MS-DEMO-001": 43,
+      "MD-DEMO-002": 43,
+      "MS-FRESH-001": 43,
+      "MS-FRESH-002": 43,
+      "MD-FRESH-001": 43,
+      "MD-FRESH-002": 43
+    }
+  },
+  "restart": {
+    "serverStoppedAndUnreachable": true,
+    "restartReadyMs": 1379,
+    "totalOutageMs": 1645,
+    "sessionCookieStillValid": true,
+    "versionAfterRestart": 44,
+    "lookupOriginalCommandId": {
+      "status": 200,
+      "version": 44
+    },
+    "resendSameEnvelope": {
+      "status": 200,
+      "resultStatus": "duplicate"
+    },
+    "sameIdDifferentPayload": {
+      "status": 409,
+      "code": "command_id_reused"
+    },
+    "eventsBefore": 44,
+    "eventsAfterResend": 44,
+    "staleExpectedVersion": {
+      "status": 409,
+      "code": "conflict"
+    },
+    "continueWithSameControl": {
+      "status": 201,
+      "version": 45
+    }
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "measuredAt": "2026-09-29T03:40:34.556Z",
+  "environment": {
+    "node": "v24.21.0",
+    "os": "Darwin 27.0.0 arm64",
+    "cpu": "Apple M5 × 10",
+    "memoryGiB": 24,
+    "postgres": "PostgreSQL 15.18 (Homebrew) on aarch64-apple-darwin25.4.0",
+    "server": "next start（生产构建），与数据库、压测客户端同在本机",
+    "publicRateLimitPerMinute": "默认 600"
+  },
+  "firstStartMs": 1437,
+  "load": {
+    "matches": 6,
+    "ralliesPerMatch": 40,
+    "rallyPaceMs": 1000,
+    "publicReaders": 300,
+    "refereeReaders": 6,
+    "publicIntervalMs": 10000,
+    "refereeIntervalMs": 2000,
+    "durationMs": 40842,
+    "commandsAccepted": 258,
+    "eventsInDatabase": 258,
+    "commandLatencyMs": {
+      "count": 258,
+      "p50": 28,
+      "p95": 134,
+      "max": 284
+    },
+    "commandErrors": {},
+    "matchFailures": {},
+    "commandsPerSecond": 6.3,
+    "publicReadLatencyMs": {
+      "count": 1540,
+      "p50": 4,
+      "p95": 13,
+      "max": 43
+    },
+    "refereeReadLatencyMs": {
+      "count": 152,
+      "p50": 28,
+      "p95": 46,
+      "max": 66
+    },
+    "readErrors": {
+      "public:429": 940
+    },
+    "writeToPublicVisibleMs": {
+      "anyViewer": {
+        "count": 132,
+        "p50": 113,
+        "p95": 194,
+        "max": 310
+      },
+      "perViewer": {
+        "count": 2932,
+        "p50": 5015,
+        "p95": 9513,
+        "max": 10004
+      }
+    },
+    "finalVersions": {
+      "MS-DEMO-001": 43,
+      "MD-DEMO-002": 43,
+      "MS-FRESH-001": 43,
+      "MS-FRESH-002": 43,
+      "MD-FRESH-001": 43,
+      "MD-FRESH-002": 43
+    }
+  },
+  "restart": {
+    "serverStoppedAndUnreachable": true,
+    "restartReadyMs": 1439,
+    "totalOutageMs": 1713,
+    "sessionCookieStillValid": true,
+    "versionAfterRestart": 44,
+    "lookupOriginalCommandId": {
+      "status": 200,
+      "version": 44
+    },
+    "resendSameEnvelope": {
+      "status": 200,
+      "resultStatus": "duplicate"
+    },
+    "sameIdDifferentPayload": {
+      "status": 409,
+      "code": "command_id_reused"
+    },
+    "eventsBefore": 44,
+    "eventsAfterResend": 44,
+    "staleExpectedVersion": {
+      "status": 409,
+      "code": "conflict"
+    },
+    "continueWithSameControl": {
+      "status": 201,
+      "version": 45
+    }
+  }
+}
