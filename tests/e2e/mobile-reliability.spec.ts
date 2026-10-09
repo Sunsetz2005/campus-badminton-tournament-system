@@ -238,6 +238,32 @@ test.describe("阶段 8：全站基础约束", () => {
     const publicRead = await request.get(`/api/public/tournaments/${SLUG}`, { headers: { Origin: "https://evil.example" } });
     expect(publicRead.status()).toBe(200);
   });
+
+  test("登录接口同样拒绝跨站来源：用户名登录不再绕过来源校验", async ({ request }) => {
+    // 2026-10-09 演示站实测：不带 Cookie 时 Better Auth 的 /sign-in/username 不校验来源。
+    const crossSiteHeaders = {
+      Origin: "https://evil.example",
+      "Sec-Fetch-Site": "cross-site",
+      "Sec-Fetch-Mode": "cors",
+    };
+    const attempts = [
+      { path: "/api/auth/sign-in/username", data: { username: "nobodyx", password: "wrong-password-123" } },
+      { path: "/api/auth/sign-in/email", data: { email: "nobody@example.com", password: "wrong-password-123" } },
+      { path: "/api/auth/sign-out", data: {} },
+    ];
+    for (const attempt of attempts) {
+      const response = await request.post(attempt.path, { headers: crossSiteHeaders, data: attempt.data });
+      expect(response.status(), attempt.path).toBe(403);
+      expect((await response.json()).error.code, attempt.path).toBe("cross_origin_rejected");
+    }
+
+    // 本站来源照常进入 Better Auth（口令错误 401；若撞上其登录限流则 429），不被 proxy 拦下。
+    const sameOrigin = await request.post("/api/auth/sign-in/username", {
+      headers: { Origin: "http://127.0.0.1:3100", "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors" },
+      data: { username: "nobodyx", password: "wrong-password-123" },
+    });
+    expect([401, 429]).toContain(sameOrigin.status());
+  });
 });
 
 test.describe("阶段 8：公开页面五视口", () => {

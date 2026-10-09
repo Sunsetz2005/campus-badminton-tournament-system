@@ -31,8 +31,10 @@ const trustedOrigins = configuredTrustedOrigins();
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Better Auth 的 /api/auth/* 自带来源校验（trustedOrigins），这里不重复拦截。
-  if (pathname.startsWith("/api/") && !pathname.startsWith("/api/auth/")) {
+  // /api/auth/* 也在这里校验：Better Auth 自带的来源校验在请求不带 Cookie 时会跳过，
+  // username 插件的 /sign-in/username 又没有补上浏览器跨站头检查（2026-10-09 演示站实测），
+  // 外站页面可以借访客浏览器发起登录（登录 CSRF）。同站页面与无 Origin 的服务端调用不受影响。
+  if (pathname.startsWith("/api/")) {
     const decision = checkWriteOrigin({
       method: request.method,
       origin: request.headers.get("origin"),
