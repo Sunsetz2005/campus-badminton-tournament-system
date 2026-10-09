@@ -42,7 +42,7 @@ export function detectPosterExtension(bytes: Uint8Array): string | null {
 
 /**
  * 海报的落盘目录。沿用 `public/posters/` 以兼容已挂载的数据卷，
- * 但**不依赖 Next 的静态 public 服务**——生产模式只提供构建时已存在的 public 文件，
+ * 但**不依赖 Next 的静态 public 服务**——生产模式只提供服务启动时已存在的 public 文件，
  * 运行时上传的新文件会 404。读取一律走 `/media/posters/[file]`（见 `readPosterFile`）。
  */
 export function posterDirectory() {
