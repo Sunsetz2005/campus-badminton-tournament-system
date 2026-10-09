@@ -10,7 +10,10 @@
  * - 团体赛淘汰阶段一场对抗同时占用若干块场地（默认 2 块），小场轮流分配到这些场地上；
  * - 个人项目每场比赛选最早空出的场地。
  *
- * 占用检查：场地、队伍/运动员（含待晋级的候选者，保守处理）、前序比赛结束时间、比赛日开放时段。
+ * 占用检查：场地、队伍/运动员、前序比赛结束时间、比赛日开放时段。
+ * 待晋级的候选者只对**其他项目**保守占用（同一人兼报单打和双打）。同一项目内不必：每个小组名次、
+ * 每个「某场胜者/负者」只流向签表上唯一一个位置，同一人可能出现的后续比赛都排在其前序之后，
+ * 所以同项目两场未定对阵（如两场半决赛、决赛与三四名赛）不会共用运动员，可以同时进行。
  * 不检查休息间隔（由线下裁判控场）；相邻两场之间只留换场时间。
  */
 
@@ -101,13 +104,52 @@ function combinations<T>(items: readonly T[], size: number): T[][] {
   return [...combinations(rest, size - 1).map((combo) => [first, ...combo]), ...combinations(rest, size)];
 }
 
-function entityKeys(match: ScheduleMatchFacts) {
+interface EntityClaim {
+  key: string;
+  competitionCode: string;
+  /** 候选（待晋级）占用；同项目内不与其他占用冲突，见文件头说明。 */
+  tentative: boolean;
+}
+
+function entityClaims(match: ScheduleMatchFacts): EntityClaim[] {
+  const claim = (key: string, tentative: boolean) => ({ key, competitionCode: match.competitionCode, tentative });
   return [
-    ...match.confirmedEntries.map((id) => `E:${id}`),
-    ...match.candidateEntries.map((id) => `E:${id}`),
-    ...match.confirmedPersons.map((id) => `P:${id}`),
-    ...match.candidatePersons.map((id) => `P:${id}`),
+    ...match.confirmedEntries.map((id) => claim(`E:${id}`, false)),
+    ...match.candidateEntries.map((id) => claim(`E:${id}`, true)),
+    ...match.confirmedPersons.map((id) => claim(`P:${id}`, false)),
+    ...match.candidatePersons.map((id) => claim(`P:${id}`, true)),
   ];
+}
+
+/** 两处占用可能是同一人同时出场：跨项目一律算；同项目只有双方都已确定才算。 */
+function claimsClash(left: Omit<EntityClaim, "key">, right: Omit<EntityClaim, "key">) {
+  return left.competitionCode !== right.competitionCode || (!left.tentative && !right.tentative);
+}
+
+/** 一个排程单位（同一项目）的占用；同一键既有确定又有候选时按确定处理。 */
+function unitClaims(matches: readonly ScheduleMatchFacts[]): EntityClaim[] {
+  const byKey = new Map<string, EntityClaim>();
+  for (const claim of matches.flatMap(entityClaims)) {
+    const existing = byKey.get(claim.key);
+    if (!existing || (existing.tentative && !claim.tentative)) byKey.set(claim.key, claim);
+  }
+  return [...byKey.values()];
+}
+
+class EntityBusy {
+  private readonly map = new Map<string, (Interval & Omit<EntityClaim, "key">)[]>();
+  add(claim: EntityClaim, interval: Interval) {
+    const list = this.map.get(claim.key) ?? [];
+    list.push({ ...interval, competitionCode: claim.competitionCode, tentative: claim.tentative });
+    this.map.set(claim.key, list);
+  }
+  conflictEnd(claim: EntityClaim, interval: Interval): number | null {
+    let latest: number | null = null;
+    for (const busy of this.map.get(claim.key) ?? []) {
+      if (overlaps(busy, interval) && claimsClash(busy, claim)) latest = latest === null ? busy.end : Math.max(latest, busy.end);
+    }
+    return latest;
+  }
 }
 
 export function suggestSchedule(input: SuggestInput): SuggestResult {
@@ -118,7 +160,7 @@ export function suggestSchedule(input: SuggestInput): SuggestResult {
   const windows = [...input.windows].sort((left, right) => left.start - right.start);
 
   const courtBusy = new Busy();
-  const entityBusy = new Busy();
+  const entityBusy = new EntityBusy();
   const refereeBusy = new Busy();
   const ends = new Map<string, number>();
   const placements = new Map<string, Placement>();
@@ -135,7 +177,7 @@ export function suggestSchedule(input: SuggestInput): SuggestResult {
     const padded = { start: interval.start, end: interval.end + changeover };
     if (placement?.courtId) courtBusy.add(placement.courtId, padded);
     if (placement?.refereeId) refereeBusy.add(placement.refereeId, padded);
-    for (const key of entityKeys(match)) entityBusy.add(key, padded);
+    for (const claim of unitClaims([match])) entityBusy.add(claim, padded);
   }
 
   // 组成排程单位：团体对抗整场一个单位，个人比赛一场一个单位。
@@ -249,7 +291,7 @@ export function suggestSchedule(input: SuggestInput): SuggestResult {
   }
 
   function earliestStart(unit: Unit, courts: string[], lower: number, duration: number): number | null {
-    const entities = [...new Set(unit.matches.flatMap(entityKeys))];
+    const entities = unitClaims(unit.matches);
     let candidate = lower;
     for (let guard = 0; guard < 10_000; guard += 1) {
       const slots = layout(unit, courts, candidate, duration);
@@ -271,8 +313,8 @@ export function suggestSchedule(input: SuggestInput): SuggestResult {
         const blocked = courtBusy.conflictEnd(slot.courtId, slot.interval);
         if (blocked !== null) pushTo = Math.max(pushTo ?? 0, blocked);
       }
-      for (const key of entities) {
-        const blocked = entityBusy.conflictEnd(key, span);
+      for (const claim of entities) {
+        const blocked = entityBusy.conflictEnd(claim, span);
         if (blocked !== null) pushTo = Math.max(pushTo ?? 0, blocked);
       }
       if (pushTo === null) return candidate;
@@ -296,8 +338,8 @@ export function suggestSchedule(input: SuggestInput): SuggestResult {
         estimated: false,
       });
     }
-    for (const key of [...new Set(unit.matches.flatMap(entityKeys))]) {
-      entityBusy.add(key, { start, end: spanEnd + changeover });
+    for (const claim of unitClaims(unit.matches)) {
+      entityBusy.add(claim, { start, end: spanEnd + changeover });
     }
   }
 

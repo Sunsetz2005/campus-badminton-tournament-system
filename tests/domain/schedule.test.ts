@@ -95,12 +95,16 @@ describe("赛程冲突检查", () => {
     expect(check([ended, final], [at("G1", 0), at("F", 20, "c2", "r2")]).hardCount).toBe(0);
   });
 
-  it("尚未确定的晋级来源：按候选集合保守检查，只给「暂定」警告，不当作无冲突", () => {
-    const semi1 = match("SF1", { kind: "KNOCKOUT", stageOrder: 2, candidateEntries: ["e1", "e2", "e3"] });
-    const other = match("SF2", { kind: "KNOCKOUT", stageOrder: 2, candidateEntries: ["e3", "e4"] });
-    const result = check([semi1, other], [at("SF1", 0, "c1", "r1"), at("SF2", 0, "c2", "r2")]);
+  it("尚未确定的晋级来源：跨项目按候选集合保守检查，只给「暂定」警告；同项目两场未定对阵可以同时进行", () => {
+    const semi1 = match("SF1", { kind: "KNOCKOUT", stageOrder: 2, candidateEntries: ["e1", "e2", "e3"], candidatePersons: ["p1", "p2", "p3"] });
+    // 同一项目的另一场半决赛：签表上每个名次只流向一个位置，不会共用运动员。
+    const sameEvent = match("SF2", { kind: "KNOCKOUT", stageOrder: 2, candidateEntries: ["e3", "e4"], candidatePersons: ["p3", "p4"] });
+    expect(check([semi1, sameEvent], [at("SF1", 0, "c1", "r1"), at("SF2", 0, "c2", "r2")]).issues).toEqual([]);
+    // 另一个项目里同一人（兼报）可能晋级：保守给暂定警告。
+    const other = match("MD-SF", { competitionCode: "MD", kind: "KNOCKOUT", stageOrder: 2, candidatePersons: ["p3", "p9"] });
+    const result = check([semi1, other], [at("SF1", 0, "c1", "r1"), at("MD-SF", 0, "c2", "r2")]);
     expect(codes(result)).toEqual(["WARNING:TENTATIVE_OVERLAP"]);
-    expect(result.tentativeMatchIds.sort()).toEqual(["SF1", "SF2"]);
+    expect(result.tentativeMatchIds.sort()).toEqual(["MD-SF", "SF1"]);
     expect(result.issues[0].message).toContain("暂定");
   });
 

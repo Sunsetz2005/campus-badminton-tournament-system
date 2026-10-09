@@ -293,7 +293,9 @@ export function checkSchedule(input: ScheduleCheckInput): ScheduleCheckResult {
         });
       }
     }
-    if (!samePersons.length) {
+    // 待晋级候选者的暂定冲突只在不同项目之间提示：同一项目的签表里，每个名次/胜负者只流向唯一位置，
+    // 同一人可能出现的后续比赛都受前序约束（另有依赖检查），两场未定对阵不会共用运动员（见 suggest.ts 文件头）。
+    if (!samePersons.length && left.match.competitionCode !== right.match.competitionCode) {
       const leftAll = [...left.match.confirmedPersons, ...left.match.candidatePersons];
       const rightAll = [...right.match.confirmedPersons, ...right.match.candidatePersons];
       const personRisk = intersection(leftAll, rightAll);

@@ -216,7 +216,10 @@ describe("从对阵表到赛程：建议、检查、发布、执裁衔接", () =
       select: { scheduledAt: true, scheduledEndAt: true, courtId: true, publishedAt: true, officialAssignments: { where: { active: true } } },
     });
     expect(matches.every((match) => match.scheduledAt && match.scheduledEndAt && match.courtId && match.publishedAt)).toBe(true);
-    expect(matches.every((match) => match.officialAssignments.length === 1)).toBe(true);
+    // 只有 2 名裁判员，而淘汰赛两场对抗并行时同时有 4 个小场：排程不为等裁判而压缩并行，
+    // 指派不到的比赛如实缺裁判（发布前作为「尚未指派裁判」警告确认过），其余每场恰好 1 名主裁判。
+    expect(matches.every((match) => match.officialAssignments.length <= 1)).toBe(true);
+    expect(matches.filter((match) => match.officialAssignments.length === 1).length).toBeGreaterThan(matches.length / 2);
     // 「我的执裁」按真实指派读取。
     const mine = await prisma.officialAssignment.count({ where: { userId: refereeId, active: true, match: { stage: { competition: { tournamentId: ctx.tournamentId } } } } });
     expect(mine).toBeGreaterThan(0);
@@ -521,8 +524,13 @@ describe("个人项目：同一人同时报单打和双打", () => {
 });
 
 describe("一键排程：抽签后自动排出场地与时间", () => {
-  /** 6 人单循环：15 场、每轮 3 场两两不重叠，共 5 轮。 */
-  async function singlesRoundRobin(name: string, setup?: (slug: string) => Promise<void>) {
+  /** 默认 6 人单循环：15 场、每轮 3 场两两不重叠，共 5 轮。 */
+  async function singlesRoundRobin(
+    name: string,
+    setup?: (slug: string) => Promise<void>,
+    players = 6,
+    drawSettings: Record<string, unknown> = { format: "ROUND_ROBIN" },
+  ) {
     const slug = `t4c-${RUN}-${name}`;
     createdSlugs.push(slug);
     await createTournament(adminId, {
@@ -538,14 +546,14 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
     const tournament = await prisma.tournament.findUniqueOrThrow({ where: { slug }, select: { id: true } });
     const competition = await prisma.competition.findFirstOrThrow({ where: { tournamentId: tournament.id }, select: { id: true } });
     await transitionTournamentPhase(adminId, slug, { to: "REGISTRATION_OPEN" });
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < players; index += 1) {
       const created = await createManualRegistration(adminId, slug, {
         competitionId: competition.id,
         members: [{ displayName: `选手${index + 1}`, studentId: nextStudentId() }],
       });
       await approve(slug, created.id);
     }
-    const draft = await generateDrawDraft(adminId, slug, "MS", { format: "ROUND_ROBIN" });
+    const draft = await generateDrawDraft(adminId, slug, "MS", drawSettings);
     await transitionTournamentPhase(adminId, slug, { to: "REGISTRATION_CLOSED" });
     await setup?.(slug);
     await publishDraw(adminId, slug, "MS", draft.drawId, { confirm: true });
@@ -600,5 +608,41 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
     await expect(prisma.scheduleSlot.count({ where: { tournamentId, startsAt: { not: null } } })).resolves.toBe(15);
     // 只是草稿：发布前比赛本身没有计划时间。
     await expect(prisma.match.count({ where: { stage: { competition: { tournamentId } }, scheduledAt: { not: null } } })).resolves.toBe(0);
+  });
+
+  it("小组+淘汰：两场半决赛同时进行，决赛与三四名赛同时进行（同项目未定对阵不会共用运动员）", async () => {
+    // 复现演示站反馈：10 人分 2 组、8 块场地。小组赛每组最多 2 场并行，只用得上 4 块场地；
+    // 淘汰赛此前被当作可能撞人而全部串行在 1 块场地上。
+    const { slug, tournamentId } = await singlesRoundRobin(
+      "ko-parallel",
+      async (slug) => {
+        await addCourts(adminId, slug, { count: 8 });
+        await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "18:00" }] });
+      },
+      10,
+      { format: "GROUPS_KNOCKOUT", groupCount: 2, qualifiersPerGroup: 2, thirdPlaceMatch: true },
+    );
+    const result = await autoScheduleAfterDraw(adminId, slug, "MS");
+    expect(result).toMatchObject({ status: "GENERATED", scope: 24, placed: 24, hardCount: 0, warningCount: 1 });
+    const slots = await prisma.scheduleSlot.findMany({
+      where: { tournamentId },
+      select: { startsAt: true, courtId: true, match: { select: { fixture: { select: { kind: true } } } } },
+    });
+    const startsOf = (kinds: string[]) =>
+      slots.filter((slot) => kinds.includes(slot.match.fixture?.kind ?? "")).map((slot) => local(slot.startsAt as Date)).sort();
+    const groupStarts = startsOf(["GROUP"]);
+    // 5 轮 × 4 场，每轮占 4 块场地。
+    expect(new Set(groupStarts).size).toBe(5);
+    expect(Math.max(...[...new Set(groupStarts)].map((start) => groupStarts.filter((item) => item === start).length))).toBe(4);
+    const lastGroup = groupStarts.at(-1)!;
+    const knockout = startsOf(["KNOCKOUT", "THIRD_PLACE"]);
+    expect(knockout).toHaveLength(4);
+    // 半决赛两场同一时刻；决赛与三四名赛同一时刻，且在半决赛之后。
+    expect(knockout[0]).toBe(knockout[1]);
+    expect(knockout[2]).toBe(knockout[3]);
+    expect(knockout[0] > lastGroup && knockout[2] > knockout[0]).toBe(true);
+    // 唯一的警告是没有裁判员账号时的「尚未指派裁判」，不再有同项目的暂定冲突。
+    const facts = await loadScheduleFacts(prisma, tournamentId);
+    expect(checkDraft(facts).issues.map((issue) => issue.code)).toEqual(["NO_REFEREE"]);
   });
 });
