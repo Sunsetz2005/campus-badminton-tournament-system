@@ -34,17 +34,17 @@ export interface TournamentPosterProps {
 
 export function TournamentPoster({ tournament }: TournamentPosterProps) {
   if (tournament.posterPath) {
+    const src = posterUrl(tournament.posterPath);
+    // 海报比例各不相同（横幅、竖版都有）：在统一的 16:9 框里完整显示原图，
+    // 空出的部分用同一张图放大模糊铺底，不裁切内容，也不出现生硬的留白条。
+    // 同源路由提供的文件，不经过图片优化器，也不需要 images.remotePatterns；两处引用同一地址，只下载一次。
     return (
-      // 同源路由提供的文件，不经过图片优化器，也不需要 images.remotePatterns。
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        alt={tournament.posterAlt ?? `${tournament.name} 赛事海报`}
-        className="tournament-poster"
-        height={99}
-        loading="lazy"
-        src={posterUrl(tournament.posterPath)}
-        width={176}
-      />
+      <div className="tournament-poster tournament-poster-frame">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img alt="" aria-hidden="true" className="tournament-poster-backdrop" loading="lazy" src={src} />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img alt={tournament.posterAlt ?? `${tournament.name} 赛事海报`} className="tournament-poster-image" loading="lazy" src={src} />
+      </div>
     );
   }
 
