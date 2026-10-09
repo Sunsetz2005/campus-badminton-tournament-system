@@ -1,4 +1,5 @@
 import type { PublicTournamentCard } from "@/features/public-results/model";
+import { posterUrl } from "@/features/public-results/poster-url";
 
 /**
  * 缺少海报时的确定性占位卡。
@@ -34,14 +35,14 @@ export interface TournamentPosterProps {
 export function TournamentPoster({ tournament }: TournamentPosterProps) {
   if (tournament.posterPath) {
     return (
-      // 同源静态文件，不经过图片优化器，也不需要 images.remotePatterns。
+      // 同源路由提供的文件，不经过图片优化器，也不需要 images.remotePatterns。
       // eslint-disable-next-line @next/next/no-img-element
       <img
         alt={tournament.posterAlt ?? `${tournament.name} 赛事海报`}
         className="tournament-poster"
         height={99}
         loading="lazy"
-        src={`/posters/${tournament.posterPath}`}
+        src={posterUrl(tournament.posterPath)}
         width={176}
       />
     );

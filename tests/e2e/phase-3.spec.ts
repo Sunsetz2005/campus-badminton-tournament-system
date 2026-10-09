@@ -323,6 +323,37 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     })).toBe(1);
   });
 
+  test("裁判在开赛前直接记录选手弃权，必须指明弃权方，记录后可提交复核", async ({ page }) => {
+    const matchCode = "MS-DEMO-001";
+    await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
+    await page.goto(`/officiating/${matchCode}`);
+    await page.getByRole("button", { name: "取得本机控制权" }).click();
+
+    // 未开赛时入口直接露出，不藏在次要操作抽屉里。
+    const entry = page.locator(".phase-actions-urgent").getByTestId("special-outcome-entry");
+    await expect(entry).toBeVisible();
+    await entry.click();
+    const sheet = page.getByRole("dialog", { name: "选手弃赛 / 特殊结果" });
+    await expect(sheet.getByLabel("结果类型")).toHaveValue("WO");
+    await expect(sheet.locator("option[value=BYE]")).toHaveCount(0);
+
+    await sheet.getByLabel("必填原因").fill("B 方未到场");
+    await sheet.getByRole("button", { name: "确认记录弃权（WO）" }).click();
+    await expect(sheet.getByRole("alert")).toContainText("弃权须指明弃权的一方");
+
+    const state = await readAuthoritativeState(page.context().request, matchCode);
+    expect(state.phase).toBe("AWAITING_COIN_TOSS");
+    await sheet.getByLabel("弃权的一方").selectOption("B");
+    await expect(sheet).toContainText("获胜");
+    await sheet.getByRole("button", { name: "确认记录弃权（WO）" }).click();
+    await expect(sheet).toBeHidden();
+
+    await expect(page.getByRole("heading", { name: "弃权（WO）" })).toBeVisible();
+    const recorded = await readAuthoritativeState(page.context().request, matchCode);
+    expect(recorded).toMatchObject({ phase: "SPECIAL_OUTCOME_PENDING_SUBMISSION", specialOutcome: { type: "WO", winnerSide: "A", reason: "B 方未到场" } });
+    await expect(page.getByRole("button", { name: "提交结果复核" })).toBeVisible();
+  });
+
   test("单打四格、减分预览与本机翻转均遵守权威状态边界", async ({ page }) => {
     const matchCode = "MS-DEMO-001";
     const request = page.context().request;

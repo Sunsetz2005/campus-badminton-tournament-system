@@ -29,6 +29,7 @@ import {
   createTournament,
   publishTournament,
   transitionTournamentPhase,
+  updateTournamentProfile,
   updateTournamentSettings,
 } from "@/server/services/tournament-admin-service";
 
@@ -192,6 +193,48 @@ describe("赛事创建", () => {
     });
     await publishTournament(adminId, slug);
     await expect(publishTournament(adminId, slug)).rejects.toMatchObject({ code: "already_published" });
+  });
+});
+
+describe("赛事基本信息", () => {
+  it("管理员建赛后可更正名称、场馆与日期并留审计；日期颠倒与非管理员被拒", async () => {
+    const { slug } = await newTournament("profile");
+    await updateTournamentProfile(adminId, slug, {
+      name: "  更正后的 赛事名称 ",
+      subtitle: "",
+      organizer: "体育部",
+      venue: "东区体育馆",
+      summary: "开幕式 8:30",
+      startDate: "2026-11-03",
+      endDate: "2026-11-05",
+    });
+    const tournament = await prisma.tournament.findUniqueOrThrow({
+      where: { slug },
+      select: { name: true, subtitle: true, organizer: true, venue: true, summary: true, startDate: true, endDate: true },
+    });
+    expect(tournament).toMatchObject({ name: "更正后的 赛事名称", subtitle: null, organizer: "体育部", venue: "东区体育馆", summary: "开幕式 8:30" });
+    expect(tournament.startDate?.toISOString().slice(0, 10)).toBe("2026-11-03");
+    expect(tournament.endDate?.toISOString().slice(0, 10)).toBe("2026-11-05");
+    const audits = await prisma.auditLog.findMany({ where: { action: "TOURNAMENT_PROFILE_UPDATED", tournament: { slug } } });
+    expect(audits).toHaveLength(1);
+
+    // 内容未变时不重复写审计。
+    await updateTournamentProfile(adminId, slug, {
+      name: "更正后的 赛事名称",
+      organizer: "体育部",
+      venue: "东区体育馆",
+      summary: "开幕式 8:30",
+      startDate: "2026-11-03",
+      endDate: "2026-11-05",
+    });
+    await expect(prisma.auditLog.count({ where: { action: "TOURNAMENT_PROFILE_UPDATED", tournament: { slug } } })).resolves.toBe(1);
+
+    await expect(
+      updateTournamentProfile(adminId, slug, { name: "日期颠倒", startDate: "2026-11-05", endDate: "2026-11-01" }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      updateTournamentProfile(refereeId, slug, { name: "越权修改", startDate: "2026-11-03", endDate: "2026-11-05" }),
+    ).rejects.toMatchObject({ status: 403 });
   });
 });
 

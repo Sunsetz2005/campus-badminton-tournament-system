@@ -275,6 +275,64 @@ export async function updateTournamentSettings(actorUserId: string, slug: string
   });
 }
 
+const profileSchema = z.object({
+  name: requiredText(2, 60),
+  subtitle: optionalText(80),
+  organizer: optionalText(60),
+  venue: optionalText(60),
+  summary: optionalText(500),
+  startDate: isoDate,
+  endDate: isoDate,
+});
+
+const PROFILE_FIELDS = ["name", "subtitle", "organizer", "venue", "summary", "startDate", "endDate"] as const;
+
+/**
+ * 修改赛事基本信息（名称、副标题、主办、场馆、简介、日期）。
+ *
+ * 这些都是展示信息，不影响规则快照、签表或成绩，因此任何阶段都允许管理员更正；
+ * 访问路径、时区、姓名公开策略与规则不在此列——它们分别被链接、已排时间、公开投影和已开始比赛引用。
+ * 已归档的成绩册文件不可改写，更正后需重新导出新版本才会体现。
+ */
+export async function updateTournamentProfile(actorUserId: string, slug: string, rawInput: unknown) {
+  const { tournament } = await requireManagedTournament(actorUserId, slug, ["ADMIN"]);
+  const input = parseOrThrow(profileSchema, rawInput);
+  if (input.startDate > input.endDate) throw new AppError(400, "invalid_input", "结束日期不能早于开始日期。");
+
+  const next = {
+    name: input.name,
+    subtitle: input.subtitle,
+    organizer: input.organizer,
+    venue: input.venue,
+    summary: input.summary,
+    startDate: new Date(`${input.startDate}T00:00:00.000Z`),
+    endDate: new Date(`${input.endDate}T00:00:00.000Z`),
+  };
+  await prisma.$transaction(async (transaction) => {
+    const before = await transaction.tournament.findUniqueOrThrow({
+      where: { id: tournament.id },
+      select: { name: true, subtitle: true, organizer: true, venue: true, summary: true, startDate: true, endDate: true },
+    });
+    const comparable = (value: Date | string | null) => (value instanceof Date ? value.toISOString().slice(0, 10) : value);
+    const changed = PROFILE_FIELDS.filter((field) => comparable(before[field]) !== comparable(next[field]));
+    if (!changed.length) return;
+    await transaction.tournament.update({ where: { id: tournament.id }, data: next });
+    await transaction.auditLog.create({
+      data: {
+        tournamentId: tournament.id,
+        actorUserId,
+        action: "TOURNAMENT_PROFILE_UPDATED",
+        targetType: "Tournament",
+        targetId: tournament.id,
+        outcome: "SUCCESS",
+        metadata: {
+          changed: changed.map((field) => ({ field, from: comparable(before[field]), to: comparable(next[field]) })),
+        },
+      },
+    });
+  });
+}
+
 /**
  * 阶段 4-A 只开放报名相关的三段推进。进入 RUNNING/FINISHED 属于后续阶段，这里如实拒绝。
  * phase 由组织者显式推进并审计，不按服务器当前时间自动推导。

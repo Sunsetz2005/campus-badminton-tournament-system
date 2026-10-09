@@ -7,6 +7,7 @@ import {
   type MatchCommand,
   type MatchState,
 } from "@/domain/rules/match-engine";
+import { validateRefereeSpecialOutcome } from "@/domain/rules/special-outcome";
 import { getMatchAccess } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
 import { transactWithRetry } from "@/server/services/transaction-retry";
@@ -52,6 +53,16 @@ function envelopeFingerprint(matchId: string, envelope: ScoringCommandEnvelope) 
     type: envelope.type,
     payload: envelope.payload,
   });
+}
+
+/**
+ * 只作用于新命令的业务校验；引擎本身保持原样，已入库的历史事件照常重放。
+ * 特殊结果须与成绩结算口径一致，否则没有胜方的退赛会让晋级与名次卡住。
+ */
+function assertNewCommandPolicy(state: MatchState, command: MatchCommand) {
+  if (command.type !== "RECORD_SPECIAL_OUTCOME") return;
+  const errors = validateRefereeSpecialOutcome(state, command.payload);
+  if (errors.length) throw new AppError(422, "invalid_special_outcome", `${errors.join("；")}。`);
 }
 
 function assertRoleForCommand(role: TournamentRole, type: MatchCommand["type"]) {
@@ -238,6 +249,7 @@ export async function previewScoringCommand(
       throw new AppError(409, "conflict", "比赛版本已更新，请先同步权威状态。");
     }
     const aggregate = await loadVerifiedAggregate(transaction, access.id);
+    assertNewCommandPolicy(aggregate.state, commandFromEnvelope(envelope));
     const result = applyCommand(aggregate, commandFromEnvelope(envelope));
     if (result.status === "rejected") throw new AppError(422, result.error.code, result.error.message);
     return {
@@ -285,6 +297,7 @@ export async function submitScoringCommand(
       throw new AppError(409, "version_snapshot_mismatch", "比赛版本与权威快照不一致。");
     }
     const command = commandFromEnvelope(envelope);
+    assertNewCommandPolicy(aggregate.state, command);
     const result = applyCommand(aggregate, command);
     if (result.status === "rejected") throw new AppError(422, result.error.code, result.error.message);
     if (result.status === "duplicate") throw new AppError(409, "event_history_duplicate", "内存历史与数据库幂等记录不一致。");

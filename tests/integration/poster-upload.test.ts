@@ -9,6 +9,7 @@ import {
   detectPosterExtension,
   MAX_POSTER_BYTES,
   posterDirectory,
+  readPosterFile,
   uploadTournamentPoster,
 } from "@/server/services/poster-service";
 
@@ -78,6 +79,19 @@ describe("赛事海报上传", () => {
     expect(tournament.posterPath).toBe(result.posterPath);
     expect(tournament.posterAlt).toBe("模拟赛事海报");
     await expect(prisma.auditLog.count({ where: { action: "TOURNAMENT_POSTER_UPLOADED" } })).resolves.toBe(before + 1);
+  });
+
+  it("上传后可按文件名读回，并带正确的内容类型；非法文件名一律读不到", async () => {
+    const result = await uploadTournamentPoster(adminId, SLUG, { bytes: JPEG });
+    uploaded.push(result.posterPath);
+    const poster = await readPosterFile(result.posterPath);
+    expect(poster?.contentType).toBe("image/jpeg");
+    expect(new Uint8Array(poster?.bytes ?? [])).toEqual(JPEG);
+
+    for (const invalid of [".gitkeep", "../package.json", "..%2Fpackage.json", result.posterPath.toUpperCase(), `${result.posterPath}.bak`]) {
+      await expect(readPosterFile(invalid)).resolves.toBeNull();
+    }
+    await expect(readPosterFile("00000000-0000-0000-0000-000000000000.png")).resolves.toBeNull();
   });
 
   it("拒绝伪装成图片的非图片内容", async () => {

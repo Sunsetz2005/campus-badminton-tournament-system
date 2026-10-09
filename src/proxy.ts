@@ -23,8 +23,11 @@ const publicPageLimiter = limiterFor(
   publicRateLimitFromEnv(process.env.PUBLIC_PAGE_RATE_LIMIT_PER_MINUTE, DEFAULT_PUBLIC_PAGE_RATE_LIMIT_PER_MINUTE),
 );
 
-/** 与 next.config.ts 的 proxyClientMaxBodySize 一致。 */
+/** 普通接口的请求体上限。 */
 const MAX_API_BODY_BYTES = 4 * 1024 * 1024;
+/** 海报上传：10 MiB 文件加表单边界，与 next.config.ts 的 proxyClientMaxBodySize（11mb）一致。 */
+const MAX_POSTER_BODY_BYTES = 11 * 1024 * 1024;
+const POSTER_UPLOAD_PATH = /^\/api\/admin\/tournaments\/[^/]+\/poster$/;
 
 const trustedOrigins = configuredTrustedOrigins();
 
@@ -48,9 +51,10 @@ export function proxy(request: NextRequest) {
         { status: 403, headers: { "Cache-Control": "no-store" } },
       );
     }
-    if (Number(request.headers.get("content-length") ?? "0") > MAX_API_BODY_BYTES) {
+    const posterUpload = POSTER_UPLOAD_PATH.test(pathname);
+    if (Number(request.headers.get("content-length") ?? "0") > (posterUpload ? MAX_POSTER_BODY_BYTES : MAX_API_BODY_BYTES)) {
       return NextResponse.json(
-        { error: { code: "payload_too_large", message: "请求内容超过 4 MiB 上限。" } },
+        { error: { code: "payload_too_large", message: posterUpload ? "海报文件超过 10 MiB 上限，请压缩后再上传。" : "请求内容超过 4 MiB 上限。" } },
         { status: 413, headers: { "Cache-Control": "no-store" } },
       );
     }

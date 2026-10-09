@@ -1,13 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { prisma } from "@/db/client";
 import { requireTournamentRole } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
 
-/** 2 MiB。校园赛事海报远小于此，上限主要用于挡住误传与滥用。 */
-export const MAX_POSTER_BYTES = 2 * 1024 * 1024;
+/** 10 MiB。手机直出的海报常有 3—8 MiB，上限主要用于挡住误传与滥用。 */
+export const MAX_POSTER_BYTES = 10 * 1024 * 1024;
+export const MAX_POSTER_LABEL = "10 MiB";
+
+/** 服务端生成的文件名格式；读取时只认这一种，杜绝路径穿越。 */
+export const POSTER_FILE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(png|jpg|webp)$/;
+
+const POSTER_CONTENT_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", webp: "image/webp" };
 
 /**
  * 只接受三种位图格式，并且**以魔数字节为准**。
@@ -34,8 +40,26 @@ export function detectPosterExtension(bytes: Uint8Array): string | null {
   return SIGNATURES.find((signature) => signature.test(bytes))?.extension ?? null;
 }
 
+/**
+ * 海报的落盘目录。沿用 `public/posters/` 以兼容已挂载的数据卷，
+ * 但**不依赖 Next 的静态 public 服务**——生产模式只提供构建时已存在的 public 文件，
+ * 运行时上传的新文件会 404。读取一律走 `/media/posters/[file]`（见 `readPosterFile`）。
+ */
 export function posterDirectory() {
   return path.join(process.cwd(), "public", "posters");
+}
+
+/** 按文件名读取海报；文件名不合格或文件不存在都返回 null。 */
+export async function readPosterFile(name: string): Promise<{ bytes: Buffer; contentType: string } | null> {
+  const match = POSTER_FILE_PATTERN.exec(name);
+  if (!match) return null;
+  try {
+    const bytes = await readFile(path.join(posterDirectory(), name));
+    return { bytes, contentType: POSTER_CONTENT_TYPES[match[1]] };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
 }
 
 export interface UploadPosterResult {
@@ -59,7 +83,7 @@ export async function uploadTournamentPoster(
 
   if (file.bytes.byteLength === 0) throw new AppError(400, "poster_empty", "海报文件为空。");
   if (file.bytes.byteLength > MAX_POSTER_BYTES) {
-    throw new AppError(413, "poster_too_large", "海报文件超过 2 MiB 上限。");
+    throw new AppError(413, "poster_too_large", `海报文件超过 ${MAX_POSTER_LABEL} 上限，请压缩后再上传。`);
   }
   const extension = detectPosterExtension(file.bytes);
   if (!extension) {

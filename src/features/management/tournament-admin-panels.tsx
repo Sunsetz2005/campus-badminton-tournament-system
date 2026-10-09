@@ -163,6 +163,68 @@ export function RegistrationSettingsForm({
   );
 }
 
+export interface TournamentProfileValues {
+  name: string;
+  subtitle: string;
+  organizer: string;
+  venue: string;
+  summary: string;
+  startDate: string;
+  endDate: string;
+}
+
+export function TournamentProfileForm({ slug, initial }: { slug: string; initial: TournamentProfileValues }) {
+  const { pending, run, feedback } = useAction();
+  const [values, setValues] = useState(initial);
+  const set = (field: keyof TournamentProfileValues) => (event: { target: { value: string } }) =>
+    setValues({ ...values, [field]: event.target.value });
+  return (
+    <form
+      className={styles.form}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void run(() => sendJson(`/api/admin/tournaments/${slug}/profile`, "PATCH", values), "基本信息已保存。");
+      }}
+    >
+      <div className={styles.fieldGrid}>
+        <label className={`${styles.field} ${styles.full}`}>
+          <span>赛事名称</span>
+          <input maxLength={60} minLength={2} onChange={set("name")} required value={values.name} />
+        </label>
+        <label className={styles.field}>
+          <span>副标题（选填）</span>
+          <input maxLength={80} onChange={set("subtitle")} value={values.subtitle} />
+        </label>
+        <label className={styles.field}>
+          <span>主办单位（选填）</span>
+          <input maxLength={60} onChange={set("organizer")} value={values.organizer} />
+        </label>
+        <label className={`${styles.field} ${styles.full}`}>
+          <span>比赛场馆（选填）</span>
+          <input maxLength={60} onChange={set("venue")} value={values.venue} />
+        </label>
+        <label className={styles.field}>
+          <span>开始日期</span>
+          <input onChange={set("startDate")} required type="date" value={values.startDate} />
+        </label>
+        <label className={styles.field}>
+          <span>结束日期</span>
+          <input onChange={set("endDate")} required type="date" value={values.endDate} />
+        </label>
+        <label className={`${styles.field} ${styles.full}`}>
+          <span>赛事简介（公开页作为公告展示，选填）</span>
+          <textarea maxLength={500} onChange={set("summary")} value={values.summary} />
+        </label>
+      </div>
+      <div className={styles.actions}>
+        <ActionButton loading={pending} type="submit" variant="secondary">保存基本信息</ActionButton>
+        <span className={styles.hint}>访问路径、时区、规则与姓名公开方式创建后不可修改。</span>
+      </div>
+      {feedback}
+    </form>
+  );
+}
+
 type AddKind = RegistrationCompetitionKind | "TEAM";
 const ADD_KIND_LABEL: Record<AddKind, string> = { ...COMPETITION_KIND_LABEL, TEAM: "团体赛（学院对抗，默认五个小场）" };
 const KINDS = Object.keys(ADD_KIND_LABEL) as AddKind[];
@@ -371,7 +433,7 @@ export function PosterUploadForm({ slug, currentAlt }: { slug: string; currentAl
         <label className={styles.field}>
           <span>海报图片</span>
           <input accept="image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} type="file" />
-          <small>PNG、JPEG 或 WebP，不超过 2 MiB；格式以文件内容为准。</small>
+          <small>PNG、JPEG 或 WebP，不超过 10 MiB；格式以文件内容为准。上传后替换原海报。</small>
         </label>
         <label className={styles.field}>
           <span>图片说明（替代文本）</span>

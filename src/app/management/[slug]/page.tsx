@@ -12,6 +12,7 @@ import {
   PosterUploadForm,
   PublishButton,
   RegistrationSettingsForm,
+  TournamentProfileForm,
   type InviteRow,
 } from "@/features/management/tournament-admin-panels";
 import { tournamentPhaseLabels } from "@/features/public-results/model";
@@ -41,6 +42,7 @@ export default async function TournamentOverviewPage({ params }: { params: Promi
       phase: true,
       namePolicy: true,
       regulations: true,
+      summary: true,
       posterAlt: true,
       registrationOpensAt: true,
       registrationClosesAt: true,
@@ -182,6 +184,37 @@ export default async function TournamentOverviewPage({ params }: { params: Promi
         <InvitePanel canCreate={editable} defaultExpiry={defaultExpiry} invites={invites} slug={tournament.slug} timezone={tournament.timezone} />
       </section>
 
+      {isAdmin ? (
+        <>
+          <section aria-labelledby="profile-title" className={styles.section}>
+            <div className={styles.sectionTitle}>
+              <h2 id="profile-title">基本信息</h2>
+              <p>名称、场馆、日期等展示信息，任何阶段都可更正；已归档的成绩册需重新导出才会更新。</p>
+            </div>
+            <TournamentProfileForm
+              initial={{
+                name: tournament.name,
+                subtitle: tournament.subtitle ?? "",
+                organizer: tournament.organizer ?? "",
+                venue: tournament.venue ?? "",
+                summary: tournament.summary ?? "",
+                startDate: tournament.startDate?.toISOString().slice(0, 10) ?? "",
+                endDate: tournament.endDate?.toISOString().slice(0, 10) ?? "",
+              }}
+              key={`${tournament.name}|${tournament.startDate?.toISOString()}|${tournament.endDate?.toISOString()}`}
+              slug={tournament.slug}
+            />
+          </section>
+          <section aria-labelledby="poster-title" className={styles.section}>
+            <div className={styles.sectionTitle}>
+              <h2 id="poster-title">赛事海报</h2>
+              <p>显示在公开首页赛事卡片上；未上传时使用占位卡。</p>
+            </div>
+            <PosterUploadForm currentAlt={tournament.posterAlt ?? ""} slug={tournament.slug} />
+          </section>
+        </>
+      ) : null}
+
       {isAdmin && editable ? (
         <>
           <section aria-labelledby="settings-title" className={styles.section}>
@@ -198,13 +231,6 @@ export default async function TournamentOverviewPage({ params }: { params: Promi
               slug={tournament.slug}
               timezone={tournament.timezone}
             />
-          </section>
-          <section aria-labelledby="poster-title" className={styles.section}>
-            <div className={styles.sectionTitle}>
-              <h2 id="poster-title">赛事海报</h2>
-              <p>显示在公开首页赛事卡片上；未上传时使用占位卡。</p>
-            </div>
-            <PosterUploadForm currentAlt={tournament.posterAlt ?? ""} slug={tournament.slug} />
           </section>
           <section aria-labelledby="competition-title" className={styles.section}>
             <div className={styles.sectionTitle}>

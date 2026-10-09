@@ -166,6 +166,24 @@ describe("阶段 3 权威记分事务", () => {
     });
   });
 
+  it("服务端拒绝缺少弃赛方的退赛、带胜方的中止和裁判录入轮空，且不写入事件", async () => {
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "3c444444-4444-4444-8444-444444444444");
+    for (const payload of [
+      { type: "RET", reason: "伤病退赛但未指明哪一方" },
+      { type: "DSQ", reason: "未指明被取消资格方" },
+      { type: "ABANDONED", winnerSide: "A", reason: "中止却给了胜方" },
+      { type: "BYE", winnerSide: "A", reason: "裁判台录入轮空" },
+    ] as const) {
+      await expect(submitScoringCommand(
+        refereeId,
+        MATCH_CODE,
+        command(control, 0, "RECORD_SPECIAL_OUTCOME", payload),
+        control.controlToken,
+      )).rejects.toMatchObject({ status: 422, code: "invalid_special_outcome" } satisfies Partial<AppError>);
+    }
+    await expect(prisma.matchEvent.count({ where: { matchId } })).resolves.toBe(0);
+  });
+
   it("S2-009 在数据库事务中作废特殊结果且保留两条事件", async () => {
     const control = await acquireScoringSession(refereeId, MATCH_CODE, "37777777-7777-4777-8777-777777777777");
     let result = await submitScoringCommand(

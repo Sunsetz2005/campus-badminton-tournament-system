@@ -7,6 +7,14 @@ import { ActionButton } from "@/components/ui/action-button";
 import { ResourceState } from "@/components/ui/resource-state";
 import { deriveScoreCorrectionReplacement } from "@/domain/rules/match-engine";
 import type { MatchCommand, MatchState, PhysicalEnd, Side } from "@/domain/rules/match-engine";
+import {
+  canRecordSpecialOutcome,
+  defaultSpecialOutcomeType,
+  hasPlayStarted,
+  REFEREE_SPECIAL_OUTCOMES,
+  validateRefereeSpecialOutcome,
+  type RefereeSpecialOutcomeType,
+} from "@/domain/rules/special-outcome";
 import { CourtConsole } from "@/components/court-console";
 import { decideSnapshotAdoption } from "@/ui/authoritative-snapshot";
 import { classifyCommandResponse, classifyRequestFailure, type CommandOutcome } from "@/ui/command-outcome";
@@ -111,6 +119,16 @@ const specialOutcomeLabels: Record<NonNullable<MatchState["specialOutcome"]>["ty
   ABANDONED: "比赛中止",
   BYE: "轮空（BYE）",
 };
+
+/** 裁判台的弃赛选项：按现场说法描述，代码放在括号里。 */
+const specialOutcomeChoices: Record<RefereeSpecialOutcomeType, { label: string; hint: string; sideLabel: string | null }> = {
+  WO: { label: "弃权（WO）", hint: "赛前未到场或放弃比赛，一分未打。", sideLabel: "弃权的一方" },
+  RET: { label: "退赛（RET）", hint: "比赛中途因伤病等原因退出，已打的比分保留。", sideLabel: "退赛的一方" },
+  DSQ: { label: "取消资格（DSQ）", hint: "因违规被取消比赛资格。", sideLabel: "被取消资格的一方" },
+  ABANDONED: { label: "比赛中止", hint: "因场地、天气等外部原因无法继续，不判胜负，由裁判长另行裁决。", sideLabel: null },
+};
+
+const otherSide = (side: Side): Side => (side === "A" ? "B" : "A");
 
 /** 本机存储随时可能被禁用或抛错；所有读写都要能安全降级。 */
 function safeStorage(kind: "local" | "session"): StorageLike | null {
@@ -231,8 +249,9 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   const [correctedServingSide, setCorrectedServingSide] = useState<Side>("A");
   const [endsMode, setEndsMode] = useState<EndsMode>("CORRECT");
   const [actualEndA, setActualEndA] = useState<"END_1" | "END_2">("END_1");
-  const [specialType, setSpecialType] = useState<"WO" | "RET" | "DSQ" | "ABANDONED" | "BYE">("RET");
-  const [specialWinner, setSpecialWinner] = useState<"" | Side>("");
+  const [specialType, setSpecialType] = useState<RefereeSpecialOutcomeType>("RET");
+  /** 弃权、退赛或被取消资格的一方；胜方由此推出，不让裁判反着选。 */
+  const [specialSide, setSpecialSide] = useState<"" | Side>("");
   const [setupServerId, setSetupServerId] = useState("");
   const [setupReceiverId, setSetupReceiverId] = useState("");
   const [setupSelectionScope, setSetupSelectionScope] = useState("");
@@ -717,6 +736,10 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     setScoreB(state?.score.B ?? 0);
     setCorrectedServingSide(state?.servingSide ?? "A");
     setActualEndA(state?.physicalEnds?.A ?? "END_1");
+    if (next.kind === "SPECIAL" && state) {
+      setSpecialType(defaultSpecialOutcomeType(state));
+      setSpecialSide("");
+    }
     if (next.kind === "ENDS") {
       const hasChangeEnds = state?.pendingObligations.some((item) => item.type === "CHANGE_ENDS");
       const hasReview = state?.pendingObligations.some((item) => item.type === "PHYSICAL_ENDS_REVIEW");
@@ -850,10 +873,13 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       return;
     }
     if (actionSheet.kind === "SPECIAL") {
-      if (!trimmedReason) return setSheetError("特殊结果原因不能为空。");
+      const winnerSide = specialType !== "ABANDONED" && specialSide ? otherSide(specialSide) : null;
+      const problems = state ? validateRefereeSpecialOutcome(state, { type: specialType, winnerSide }) : [];
+      if (problems.length) return setSheetError(`${problems.join("；")}。`);
+      if (!trimmedReason) return setSheetError("请写明原因，例如“B 方未到场”或“A 方脚踝受伤无法继续”。");
       const accepted = await send("RECORD_SPECIAL_OUTCOME", {
         type: specialType,
-        ...(specialWinner ? { winnerSide: specialWinner } : {}),
+        ...(winnerSide ? { winnerSide } : {}),
         reason: trimmedReason,
       });
       if (accepted) closeActionSheet();
@@ -1139,7 +1165,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       <details className="secondary-drawer" open={secondaryNeedsAttention}>
         <summary>
           次要操作与记录
-          <span>暂停 · 详细更正 · 异常结果 · 接管 · 视角 · 事件记录{secondaryNeedsAttention ? " · 待提交或复核" : ""}</span>
+          <span>暂停 · 详细更正 · 弃赛与特殊结果 · 接管 · 视角 · 事件记录{secondaryNeedsAttention ? " · 待提交或复核" : ""}</span>
         </summary>
         <div className="secondary-drawer-body">
           <div className="service-panel">
@@ -1197,15 +1223,16 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         onScoreA={(value) => { setScoreA(value); setPreview(null); }}
         onScoreB={(value) => { setScoreB(value); setPreview(null); }}
         onSpecialSubmit={() => void submitSheetAction()}
-        onSpecialType={setSpecialType}
-        onSpecialWinner={setSpecialWinner}
+        onSpecialType={(value) => { setSpecialType(value); setSheetError(""); }}
+        onSpecialSide={(value) => { setSpecialSide(value); setSheetError(""); }}
         onSubmit={() => void submitSheetAction()}
         preview={preview}
         reason={reason}
         scoreA={scoreA}
         scoreB={scoreB}
+        sideName={(side) => sideName(side) ?? `${side} 方`}
+        specialSide={specialSide}
         specialType={specialType}
-        specialWinner={specialWinner}
         state={state}
         correctedServingSide={correctedServingSide}
         matchCode={matchCode}
@@ -1223,7 +1250,7 @@ function actionSheetTitle(action: ActionSheetState) {
     case "SERVICE_ORDER": return "更正发接发顺序";
     case "SINGLES_CHECK": return `核对 ${action.side} 方单打站位`;
     case "TAKEOVER": return "裁判长强制接管";
-    case "SPECIAL": return "记录特殊结果";
+    case "SPECIAL": return "选手弃赛 / 特殊结果";
     case "REASON_COMMAND": return action.title;
   }
 }
@@ -1248,15 +1275,16 @@ function WorkbenchActionSheet({
   onScoreA,
   onScoreB,
   onSpecialSubmit,
+  onSpecialSide,
   onSpecialType,
-  onSpecialWinner,
   onSubmit,
   preview,
   reason,
   scoreA,
   scoreB,
+  sideName,
+  specialSide,
   specialType,
-  specialWinner,
   state,
   matchCode,
 }: {
@@ -1279,16 +1307,17 @@ function WorkbenchActionSheet({
   onScoreA: (score: number) => void;
   onScoreB: (score: number) => void;
   onSpecialSubmit: () => void;
-  onSpecialType: (type: "WO" | "RET" | "DSQ" | "ABANDONED" | "BYE") => void;
-  onSpecialWinner: (side: "" | Side) => void;
+  onSpecialSide: (side: "" | Side) => void;
+  onSpecialType: (type: RefereeSpecialOutcomeType) => void;
   onSubmit: () => void;
   matchCode: string;
   preview: PreviewState | null;
   reason: string;
   scoreA: number;
   scoreB: number;
-  specialType: "WO" | "RET" | "DSQ" | "ABANDONED" | "BYE";
-  specialWinner: "" | Side;
+  sideName: (side: Side) => string;
+  specialSide: "" | Side;
+  specialType: RefereeSpecialOutcomeType;
   state: MatchState;
 }) {
   const previewable = ["UNDO", "SWAP_POSITION", "ENDS", "SCORE", "SERVICE_ORDER", "SINGLES_CHECK"].includes(action.kind);
@@ -1358,18 +1387,32 @@ function WorkbenchActionSheet({
         ) : null}
 
         {action.kind === "SPECIAL" ? (
-          <div className="sheet-form-grid">
-            <label>特殊结果
-              <select disabled={busy} value={specialType} onChange={(event) => onSpecialType(event.target.value as typeof specialType)}>
-                <option value="WO">WO</option><option value="RET">RET</option><option value="DSQ">DSQ</option><option value="ABANDONED">ABANDONED</option><option value="BYE">BYE</option>
-              </select>
-            </label>
-            <label>胜方（如适用）
-              <select disabled={busy} value={specialWinner} onChange={(event) => onSpecialWinner(event.target.value as "" | Side)}>
-                <option value="">无胜方</option><option value="A">A 方</option><option value="B">B 方</option>
-              </select>
-            </label>
-          </div>
+          <>
+            <div className="sheet-form-grid">
+              <label>结果类型
+                <select disabled={busy} value={specialType} onChange={(event) => onSpecialType(event.target.value as RefereeSpecialOutcomeType)}>
+                  {REFEREE_SPECIAL_OUTCOMES.map((type) => (
+                    <option disabled={type === "WO" && hasPlayStarted(state)} key={type} value={type}>
+                      {specialOutcomeChoices[type].label}{type === "WO" && hasPlayStarted(state) ? "（已开始计分，不适用）" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {specialOutcomeChoices[specialType].sideLabel ? (
+                <label>{specialOutcomeChoices[specialType].sideLabel}
+                  <select disabled={busy} value={specialSide} onChange={(event) => onSpecialSide(event.target.value as "" | Side)}>
+                    <option value="">请选择</option>
+                    <option value="A">{sideName("A")}</option>
+                    <option value="B">{sideName("B")}</option>
+                  </select>
+                </label>
+              ) : null}
+            </div>
+            <p>{specialOutcomeChoices[specialType].hint}</p>
+            {specialSide && specialOutcomeChoices[specialType].sideLabel ? (
+              <p><strong>判 {sideName(otherSide(specialSide))} 获胜。</strong>记录后比分停止，须提交结果并经裁判长复核锁定才生效；误记可在提交前作废。</p>
+            ) : null}
+          </>
         ) : null}
 
         {!confirmOnly ? <label>必填原因<textarea autoComplete="off" disabled={busy} value={reason} onChange={(event) => onReason(event.target.value)} /></label> : null}
@@ -1388,7 +1431,7 @@ function WorkbenchActionSheet({
         <div className="sheet-actions">
           {previewable && !preview ? <ActionButton loading={busy} loadingLabel="正在生成预览…" onClick={onPreview}>生成服务器预览</ActionButton> : null}
           {previewable && preview ? <ActionButton loading={busy} loadingLabel="正在提交…" onClick={onConfirmPreview}>确认执行预览结果</ActionButton> : null}
-          {action.kind === "SPECIAL" ? <ActionButton loading={busy} loadingLabel="正在记录…" onClick={onSpecialSubmit} variant="danger">确认记录特殊结果</ActionButton> : null}
+          {action.kind === "SPECIAL" ? <ActionButton loading={busy} loadingLabel="正在记录…" onClick={onSpecialSubmit} variant="danger">确认记录{specialOutcomeChoices[specialType].label}</ActionButton> : null}
           {action.kind === "TAKEOVER" || action.kind === "REASON_COMMAND" ? <ActionButton disabled={impactBlocked} loading={busy} loadingLabel="正在提交…" onClick={onSubmit}>确认提交</ActionButton> : null}
           <ActionButton disabled={busy} onClick={onClose} variant="secondary">取消</ActionButton>
         </div>
@@ -1470,8 +1513,11 @@ function PhaseActions({ canWrite, chief, flipped, scope, sideName, state, onSend
         {state.format === "DOUBLES" ? <button className="button secondary" disabled={!canWrite} onClick={onServiceOrder}>更正发接发顺序</button> : null}
         <button className="button secondary" disabled={!canWrite} onClick={() => onReasonCommand("LET 重发球", "LET", { reason: "" })}>LET 重发球</button>
         <button className="button secondary" disabled={!canWrite} onClick={() => onReasonCommand("暂停比赛", "PAUSE_MATCH", { reason: "" })}>暂停比赛</button>
-        <button className="button danger" disabled={!canWrite} onClick={onSpecial}>记录特殊结果</button>
       </> : null}
+      {/* 弃赛在未开赛（未到场）、暂停（伤病）和局间最常见：这些时候直接露出；比赛进行中收进抽屉，避免误触。 */}
+      {canRecordSpecialOutcome(state) && secondary === ["IN_PROGRESS", "OBLIGATIONS_PENDING"].includes(state.phase) ? (
+        <button className="button danger" data-testid="special-outcome-entry" disabled={!canWrite} onClick={onSpecial}>选手弃赛 / 特殊结果</button>
+      ) : null}
       {urgent && state.phase === "PAUSED" ? <button className="button" disabled={!canWrite} onClick={() => onReasonCommand("恢复比赛", "RESUME_MATCH", { reason: "" })}>恢复比赛</button> : null}
       {secondary && state.phase === "SPECIAL_OUTCOME_PENDING_SUBMISSION" ? <>
         <button className="button secondary" disabled={!canWrite} onClick={() => onReasonCommand("作废该特殊结果", "INVALIDATE_SPECIAL_OUTCOME", { reason: "" })}>作废该特殊结果</button>

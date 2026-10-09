@@ -16,9 +16,9 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   experimental: {
     authInterrupts: true,
-    // proxy 会把请求体缓冲在内存里；本站最大的合法上传是 2 MiB 海报。超出部分会被截断，
-    // 所以 proxy 里另按 Content-Length 以 413 提前拒绝（见 src/proxy.ts）。
-    proxyClientMaxBodySize: "4mb",
+    // proxy 会把请求体缓冲在内存里；本站最大的合法上传是 10 MiB 海报（加表单边界）。超出部分会被截断，
+    // 所以 proxy 里另按 Content-Length 以 413 提前拒绝（见 src/proxy.ts），海报以外的接口仍限 4 MiB。
+    proxyClientMaxBodySize: "11mb",
   },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
