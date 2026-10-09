@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
 import { ActionButton } from "@/components/ui/action-button";
@@ -265,7 +266,38 @@ export function PublishDrawPanel({
   summary: string;
 }) {
   const { pending, run, feedback } = useAction();
+  const router = useRouter();
   const [confirmed, setConfirmed] = useState(false);
+
+  /** 发布成功后服务端已尝试自动生成赛程草稿；直接带结果跳到赛程页，让下一步就在眼前。 */
+  async function publish() {
+    const captured: { schedule: AutoSchedule | null } = { schedule: null };
+    const ok = await run(async () => {
+      const result = await sendJson<{ schedule: AutoSchedule }>(
+        `/api/admin/tournaments/${slug}/competitions/${competitionCode}/draws/${drawId}/publish`,
+        "POST",
+        { confirm: true },
+      );
+      if (result.ok) captured.schedule = result.data.schedule;
+      return result;
+    }, "抽签已正式发布，对阵与比赛已生成。正在打开赛程排班…");
+    const outcome = captured.schedule;
+    if (!ok || !outcome) return;
+    const query = new URLSearchParams({ auto: outcome.status, comp: competitionCode });
+    if (outcome.status === "GENERATED") {
+      query.set("scope", String(outcome.scope));
+      query.set("placed", String(outcome.placed));
+      if (outcome.shortfall) {
+        query.set("sd", outcome.shortfall.date);
+        query.set("se", outcome.shortfall.currentEnd);
+        query.set("sr", outcome.shortfall.requiredEnd ?? "");
+      }
+    }
+    if (outcome.status === "FAILED") query.set("msg", outcome.message);
+    if (outcome.status === "SKIPPED_NOT_CONFIGURED") query.set("view", "settings");
+    router.push(`/management/${slug}/schedule?${query.toString()}`);
+  }
+
   return (
     <div className={styles.form}>
       {blockers.length ? (
@@ -284,9 +316,7 @@ export function PublishDrawPanel({
         <ActionButton
           disabled={!confirmed || blockers.length > 0}
           loading={pending}
-          onClick={() =>
-            run(() => sendJson(`/api/admin/tournaments/${slug}/competitions/${competitionCode}/draws/${drawId}/publish`, "POST", { confirm: true }), "抽签已正式发布，对阵与比赛已生成。")
-          }
+          onClick={() => void publish()}
         >
           正式发布抽签
         </ActionButton>
@@ -295,6 +325,11 @@ export function PublishDrawPanel({
     </div>
   );
 }
+
+type AutoSchedule =
+  | { status: "GENERATED"; scope: number; placed: number; shortfall: { date: string; currentEnd: string; requiredEnd: string | null } | null }
+  | { status: "SKIPPED_NOT_CONFIGURED" | "SKIPPED_ALREADY_ARRANGED" }
+  | { status: "FAILED"; message: string };
 
 export function RevokeDrawPanel({ slug, competitionCode }: { slug: string; competitionCode: string }) {
   const { pending, run, feedback } = useAction();

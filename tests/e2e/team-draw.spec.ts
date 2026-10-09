@@ -234,6 +234,10 @@ test.describe.serial("阶段 4-B 团体赛抽签编排", () => {
     await page.goto(`/management/${slug}/draw/TEAM`);
     await page.getByLabel(/我已核对分组与冲突/).check();
     await page.getByRole("button", { name: "正式发布抽签" }).click();
+    // 发布后直接进入赛程排班；本赛事还没设场地与比赛日，提示先去设置而不是假装已排好。
+    await expect(page).toHaveURL(new RegExp(`/management/${slug}/schedule\\?.*auto=SKIPPED_NOT_CONFIGURED`));
+    await expect(page.getByTestId("auto-schedule-banner")).toContainText("还没有设置场地或比赛日");
+    await page.goto(`/management/${slug}/draw/TEAM`);
     await expect(page.getByRole("heading", { name: "已发布的抽签" })).toBeVisible();
     await expect(page.getByText(/已生成 16 场对阵、\s*80 场比赛/)).toBeVisible();
     await shot(page, "07-draw-published");

@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { prisma } from "@/db/client";
 import styles from "@/features/management/management.module.css";
-import { IssueList, PublishPanel, RelayoutTieForm, SuggestPanel } from "@/features/schedule/schedule-draft";
+import { AutoScheduleBanner, IssueList, PublishPanel, RelayoutTieForm, SuggestPanel } from "@/features/schedule/schedule-draft";
 import { ScheduleFilters, ScheduleRows } from "@/features/schedule/schedule-rows";
 import { CourtsPanel, DaysEditor, ScheduleConfigForm } from "@/features/schedule/schedule-settings";
 import local from "@/features/schedule/schedule.module.css";
@@ -51,6 +51,21 @@ export default async function SchedulePage({
   const refereeOptions = workspace.referees.map((referee) => ({ id: referee.id, name: referee.name }));
   const { draftCheck } = workspace;
   const finished = tournament.phase === "FINISHED";
+  // 抽签发布后带着自动排程结果跳转过来（见抽签页）；只用于显示一次说明，不参与任何判断。
+  const auto = pick("auto");
+  const shortfallDate = pick("sd");
+  const banner = auto ? (
+    <AutoScheduleBanner
+      competitionCode={pick("comp") ?? null}
+      days={workspace.days}
+      message={pick("msg") ?? null}
+      placed={Number(pick("placed") ?? 0)}
+      scope={Number(pick("scope") ?? 0)}
+      shortfall={shortfallDate ? { date: shortfallDate, currentEnd: pick("se") ?? "", requiredEnd: pick("sr") || null } : null}
+      slug={tournament.slug}
+      status={auto}
+    />
+  ) : null;
 
   return (
     <>
@@ -88,6 +103,8 @@ export default async function SchedulePage({
           <IssueList issues={workspace.publishedCheck.issues} />
         </section>
       ) : null}
+
+      {banner}
 
       {view === "settings" ? (
         <>
@@ -139,7 +156,7 @@ export default async function SchedulePage({
                   请先在 <Link href={`${basePath}?view=settings`}>场地与时段</Link> 中设置场地和比赛日，否则自动建议会全部排不下。
                 </p>
               ) : null}
-              <SuggestPanel competitions={workspace.competitions} slug={tournament.slug} />
+              <SuggestPanel competitions={workspace.competitions} days={workspace.days} slug={tournament.slug} />
             </section>
           ) : null}
 

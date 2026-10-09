@@ -148,14 +148,25 @@ test.describe.serial("阶段 4-C 赛程与裁判排班：从对阵表到赛程�
     const days = page.getByTestId("schedule-days-form");
     await days.getByLabel("比赛日").first().fill("2026-10-17");
     await days.getByLabel("开始").first().fill("09:00");
-    await days.getByLabel("结束").first().fill("18:00");
+    // 故意先只给一小时：自动排程应说明需要排到几点，并能一键延长。
+    await days.getByLabel("结束").first().fill("10:00");
     await days.getByRole("button", { name: "保存比赛日" }).click();
     await expect(page.getByRole("status").filter({ hasText: "比赛日已保存" })).toBeVisible();
     await shot(page, "01-settings");
 
     await page.goto(`/management/${slug}/schedule`);
-    await page.getByTestId("suggest-form").getByRole("button", { name: "生成排程建议" }).click();
+    await page.getByTestId("suggest-form").getByRole("button", { name: "一键排出赛程" }).click();
+    const shortfall = page.getByTestId("schedule-shortfall");
+    await expect(shortfall).toContainText("10 月 17 日 当前到 10:00 结束");
+    const extend = shortfall.getByRole("button", { name: /^延长到 \d{2}:\d{2} 并重新排程$/ });
+    const requiredEnd = (await extend.textContent())!.match(/\d{2}:\d{2}/)![0];
+    expect(requiredEnd > "10:00").toBe(true);
+    await shot(page, "02a-draft-shortfall");
+    await extend.click();
     await expect(page.getByRole("status").filter({ hasText: "已为 30 场比赛生成草稿" })).toContainText("排入 30 场");
+    await expect(shortfall).toHaveCount(0);
+    const savedDay = await prisma.scheduleDay.findFirstOrThrow({ where: { tournament: { slug } } });
+    expect(`${String(Math.floor(savedDay.endMinute / 60)).padStart(2, "0")}:${String(savedDay.endMinute % 60).padStart(2, "0")}`).toBe(requiredEnd);
     await expect(page.getByTestId("schedule-summary")).toContainText("30草稿已排");
     const rows = page.getByTestId("schedule-row");
     await expect(rows).toHaveCount(30);

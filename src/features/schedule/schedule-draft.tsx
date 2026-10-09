@@ -24,8 +24,138 @@ interface CheckFeedback {
   focusIssues: ScheduleIssue[];
 }
 
+export interface ScheduleShortfallValue {
+  date: string;
+  currentEnd: string;
+  requiredEnd: string | null;
+}
+
+export interface DayWindowValue {
+  date: string;
+  start: string;
+  end: string;
+}
+
+interface SuggestResponse {
+  scope: number;
+  placed: number;
+  unplaced: { text: string; count: number }[];
+  hardCount: number;
+  warningCount: number;
+  shortfall: ScheduleShortfallValue | null;
+}
+
+function dayLabel(date: string) {
+  const [, month, day] = date.split("-").map(Number);
+  return `${month} 月 ${day} 日`;
+}
+
+/**
+ * 排不下时告诉组织者还差多少时间，并可一键把最后一个比赛日延长后重新生成。
+ * 延长只改比赛日设置并重跑自动建议，结果仍是草稿，发布前照常检查。
+ */
+export function ShortfallNotice({
+  slug,
+  shortfall,
+  days,
+  onRerun,
+}: {
+  slug: string;
+  shortfall: ScheduleShortfallValue;
+  days: DayWindowValue[];
+  onRerun: () => Promise<{ ok: boolean; error?: { message: string } }>;
+}) {
+  const router = useRouter();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { requiredEnd } = shortfall;
+
+  async function extend() {
+    if (!requiredEnd) return;
+    setPending(true);
+    setError(null);
+    const saved = await sendJson(`/api/admin/tournaments/${slug}/schedule/days`, "POST", {
+      days: days.map((day) => (day.date === shortfall.date ? { ...day, end: requiredEnd } : day)),
+    });
+    const rerun = saved.ok ? await onRerun() : saved;
+    setPending(false);
+    if (!rerun.ok) setError(rerun.error?.message ?? "操作失败。");
+    router.refresh();
+  }
+
+  return (
+    <div className={styles.alert} data-testid="schedule-shortfall" role="alert">
+      {requiredEnd ? (
+        <>
+          <p>
+            现有时段排不下全部比赛：{dayLabel(shortfall.date)} 当前到 {shortfall.currentEnd} 结束，
+            要排下全部比赛需要到 <strong>{requiredEnd}</strong>。也可以在「场地与时段」里增加比赛日或场地后重新生成。
+          </p>
+          <div className={styles.actions}>
+            <ActionButton loading={pending} loadingLabel="正在重新排程…" onClick={() => void extend()}>
+              延长到 {requiredEnd} 并重新排程
+            </ActionButton>
+          </div>
+        </>
+      ) : (
+        <p>
+          现有比赛日排不下全部比赛：即使把 {dayLabel(shortfall.date)} 放宽到 24:00 也不够。
+          请在「场地与时段」里增加比赛日（或场地）后重新生成。
+        </p>
+      )}
+      {error ? <p>{error}</p> : null}
+    </div>
+  );
+}
+
+/** 抽签发布后跳转到这里时的说明：系统是否已自动生成赛程草稿，以及下一步。 */
+export function AutoScheduleBanner({
+  slug,
+  status,
+  scope,
+  placed,
+  message,
+  shortfall,
+  days,
+  competitionCode,
+}: {
+  slug: string;
+  status: string;
+  scope: number;
+  placed: number;
+  message: string | null;
+  shortfall: ScheduleShortfallValue | null;
+  days: DayWindowValue[];
+  competitionCode: string | null;
+}) {
+  const rerun = () =>
+    sendJson(`/api/admin/tournaments/${slug}/schedule/suggest`, "POST", { competitionCode, stage: "ALL", assignReferees: true });
+  if (status === "GENERATED") {
+    return (
+      <section className={styles.section} data-testid="auto-schedule-banner">
+        <p className={placed === scope ? styles.success : styles.info} role="status">
+          抽签已发布，系统已按场地与比赛时段自动排好 {placed} / {scope} 场比赛的场地和时间（草稿）。
+          请在下方检查，没有问题后在「草稿检查与发布」中发布；发布前裁判和公众都看不到。
+        </p>
+        {shortfall ? <ShortfallNotice days={days} onRerun={rerun} shortfall={shortfall} slug={slug} /> : null}
+      </section>
+    );
+  }
+  const text =
+    status === "SKIPPED_NOT_CONFIGURED"
+      ? "抽签已发布。还没有设置场地或比赛日，所以暂未自动排程：设置好后回到「草稿」点「一键排出赛程」即可。"
+      : status === "SKIPPED_ALREADY_ARRANGED"
+        ? "抽签已发布。本项目已有比赛排过时间，为避免覆盖手工安排没有自动重排；需要时可在下方重新生成。"
+        : `抽签已发布，但自动排程没有完成：${message ?? "请在下方手动生成。"}`;
+  return (
+    <section className={styles.section} data-testid="auto-schedule-banner">
+      <p className={styles.info} role="status">{text}</p>
+    </section>
+  );
+}
+
 /** 自动建议：选范围、最早开始时间，生成草稿。不会动已开始的比赛，也不会直接发布。 */
-export function SuggestPanel({ slug, competitions }: { slug: string; competitions: string[] }) {
+export function SuggestPanel({ slug, competitions, days }: { slug: string; competitions: string[]; days: DayWindowValue[] }) {
   const router = useRouter();
   const [competitionCode, setCompetitionCode] = useState("");
   const [stage, setStage] = useState<"ALL" | "GROUPS" | "KNOCKOUT">("ALL");
@@ -33,28 +163,41 @@ export function SuggestPanel({ slug, competitions }: { slug: string; competition
   const [assignReferees, setAssignReferees] = useState(true);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string; details?: string[] } | null>(null);
+  const [shortfall, setShortfall] = useState<ScheduleShortfallValue | null>(null);
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setPending(true);
-    setMessage(null);
-    const result = await sendJson<{ scope: number; placed: number; unplaced: { text: string; count: number }[]; hardCount: number; warningCount: number }>(
-      `/api/admin/tournaments/${slug}/schedule/suggest`,
-      "POST",
-      { competitionCode: competitionCode || null, stage, notBefore: notBefore || null, assignReferees },
-    );
-    setPending(false);
+  function request() {
+    return sendJson<SuggestResponse>(`/api/admin/tournaments/${slug}/schedule/suggest`, "POST", {
+      competitionCode: competitionCode || null,
+      stage,
+      notBefore: notBefore || null,
+      assignReferees,
+    });
+  }
+
+  async function generate() {
+    const result = await request();
     if (!result.ok) {
+      setShortfall(null);
       setMessage({ tone: "error", text: result.error.message });
-      return;
+      return result;
     }
     const data = result.data;
+    setShortfall(data.shortfall);
     setMessage({
       tone: "ok",
       text: `已为 ${data.scope} 场比赛生成草稿：排入 ${data.placed} 场${data.unplaced.length ? `，${data.scope - data.placed} 场排不下` : ""}。当前草稿硬冲突 ${data.hardCount} 个、警告 ${data.warningCount} 个。草稿未发布前，裁判和公众都看不到。`,
       details: data.unplaced.map((item) => `${item.count} 场：${item.text}`),
     });
     router.refresh();
+    return result;
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setPending(true);
+    setMessage(null);
+    await generate();
+    setPending(false);
   }
 
   return (
@@ -94,8 +237,9 @@ export function SuggestPanel({ slug, competitions }: { slug: string; competition
           {message.details?.length ? <ul>{message.details.map((item) => <li key={item}>{item}</li>)}</ul> : null}
         </div>
       ) : null}
+      {shortfall ? <ShortfallNotice days={days} onRerun={generate} shortfall={shortfall} slug={slug} /> : null}
       <div className={styles.actions}>
-        <ActionButton loading={pending} loadingLabel="正在生成…" type="submit">生成排程建议</ActionButton>
+        <ActionButton loading={pending} loadingLabel="正在生成…" type="submit">一键排出赛程</ActionButton>
       </div>
     </form>
   );

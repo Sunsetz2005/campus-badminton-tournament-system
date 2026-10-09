@@ -13,6 +13,7 @@ import { createManualRegistration, reviewRegistration } from "@/server/services/
 import { loadScheduleFacts } from "@/server/services/schedule-facts";
 import {
   addCourts,
+  autoScheduleAfterDraw,
   checkDraft,
   discardDraftSlot,
   hashWarnings,
@@ -516,5 +517,88 @@ describe("个人项目：同一人同时报单打和双打", () => {
     expect(overlap?.message).toContain("兼项甲");
     const moved = await saveDraftSlot(adminId, slug, md.code, { courtCode: "C2", start: "2026-11-02T09:30", durationMinutes: 30, refereeUserId: null });
     expect(moved.focusIssues.filter((issue) => issue.severity === "HARD")).toEqual([]);
+  });
+});
+
+describe("一键排程：抽签后自动排出场地与时间", () => {
+  /** 6 人单循环：15 场、每轮 3 场两两不重叠，共 5 轮。 */
+  async function singlesRoundRobin(name: string, setup?: (slug: string) => Promise<void>) {
+    const slug = `t4c-${RUN}-${name}`;
+    createdSlugs.push(slug);
+    await createTournament(adminId, {
+      slug,
+      name: `一键排程 ${name}`,
+      startDate: "2026-11-02",
+      endDate: "2026-11-02",
+      timezone: TZ,
+      namePolicy: "DISPLAY_NAMES",
+      rulePreset: "traditional-21",
+      competitions: [{ kind: "MS", code: "MS", name: "男子单打" }],
+    });
+    const tournament = await prisma.tournament.findUniqueOrThrow({ where: { slug }, select: { id: true } });
+    const competition = await prisma.competition.findFirstOrThrow({ where: { tournamentId: tournament.id }, select: { id: true } });
+    await transitionTournamentPhase(adminId, slug, { to: "REGISTRATION_OPEN" });
+    for (let index = 0; index < 6; index += 1) {
+      const created = await createManualRegistration(adminId, slug, {
+        competitionId: competition.id,
+        members: [{ displayName: `选手${index + 1}`, studentId: nextStudentId() }],
+      });
+      await approve(slug, created.id);
+    }
+    const draft = await generateDrawDraft(adminId, slug, "MS", { format: "ROUND_ROBIN" });
+    await transitionTournamentPhase(adminId, slug, { to: "REGISTRATION_CLOSED" });
+    await setup?.(slug);
+    await publishDraw(adminId, slug, "MS", draft.drawId, { confirm: true });
+    return { slug, tournamentId: tournament.id };
+  }
+
+  it("未设场地或比赛日时明确拒绝；时段不够时算出需要的结束时间，延长后全部排下", async () => {
+    const { slug, tournamentId } = await singlesRoundRobin("shortfall");
+    await expect(autoScheduleAfterDraw(adminId, slug, "MS")).resolves.toEqual({ status: "SKIPPED_NOT_CONFIGURED" });
+    await expect(suggestDraft(adminId, slug, {})).rejects.toMatchObject({ status: 409, code: "no_courts" });
+    await addCourts(adminId, slug, { count: 3 });
+    await expect(suggestDraft(adminId, slug, {})).rejects.toMatchObject({ status: 409, code: "no_schedule_days" });
+    // 拒绝时不写任何草稿时间。
+    await expect(prisma.scheduleSlot.count({ where: { tournamentId, startsAt: { not: null } } })).resolves.toBe(0);
+
+    // 默认每场 30 分钟、换场 5 分钟：5 轮需要 09:00 到 11:50。
+    await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "10:00" }] });
+    const short = await suggestDraft(adminId, slug, {});
+    expect(short.scope).toBe(15);
+    expect(short.placed).toBeLessThan(15);
+    expect(short.shortfall).toEqual({ date: "2026-11-02", currentEnd: "10:00", requiredEnd: "11:50" });
+
+    await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "11:50" }] });
+    const full = await suggestDraft(adminId, slug, {});
+    expect(full).toMatchObject({ scope: 15, placed: 15, shortfall: null, unplaced: [], hardCount: 0 });
+    const slots = await prisma.scheduleSlot.findMany({ where: { tournamentId }, select: { startsAt: true, courtId: true } });
+    expect(slots.every((slot) => slot.startsAt && slot.courtId)).toBe(true);
+    expect(new Set(slots.map((slot) => local(slot.startsAt as Date)))).toEqual(
+      new Set(["2026-11-02T09:00", "2026-11-02T09:35", "2026-11-02T10:10", "2026-11-02T10:45", "2026-11-02T11:20"]),
+    );
+
+    // 已有安排时，抽签后的自动排程不覆盖。
+    await expect(autoScheduleAfterDraw(adminId, slug, "MS")).resolves.toEqual({ status: "SKIPPED_ALREADY_ARRANGED" });
+  });
+
+  it("放宽到当天 24:00 也排不下时提示增加比赛日", async () => {
+    const { slug } = await singlesRoundRobin("more-days", async (slug) => {
+      await addCourts(adminId, slug, { count: 1 });
+      await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "18:00", end: "19:00" }] });
+    });
+    const result = await suggestDraft(adminId, slug, {});
+    expect(result.shortfall).toEqual({ date: "2026-11-02", currentEnd: "19:00", requiredEnd: null });
+  });
+
+  it("已设好场地与比赛日时，抽签发布后直接生成全部比赛的草稿安排", async () => {
+    const { slug, tournamentId } = await singlesRoundRobin("auto", async (slug) => {
+      await addCourts(adminId, slug, { count: 3 });
+      await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "18:00" }] });
+    });
+    const result = await autoScheduleAfterDraw(adminId, slug, "MS");
+    expect(result).toMatchObject({ status: "GENERATED", scope: 15, placed: 15, shortfall: null });
+    await expect(prisma.scheduleSlot.count({ where: { tournamentId, startsAt: { not: null } } })).resolves.toBe(15);
+    // 只是草稿：发布前比赛本身没有计划时间。
+    await expect(prisma.match.count({ where: { stage: { competition: { tournamentId } }, scheduledAt: { not: null } } })).resolves.toBe(0);
   });
 });

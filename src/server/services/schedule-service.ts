@@ -438,9 +438,14 @@ export async function suggestDraft(actorUserId: string, slug: string, rawInput: 
           .map((fact) => fact.id),
       );
       if (!scope.size) throw new AppError(409, "nothing_to_schedule", "所选范围内没有尚未开始的比赛。");
-      const notBefore = input.notBefore ? localToUtc(input.notBefore, tournament.timezone, "最早开始时间") : now;
       const activeCourts = facts.courts.filter((court) => court.active).map((court) => court.id);
-      const result = suggestSchedule({
+      // 缺场地或比赛日时整批都排不下：直接拒绝，不写一份全空的草稿让人误以为排过了。
+      if (!activeCourts.length) throw new AppError(409, "no_courts", "还没有可用的场地。请先在「场地与时段」里添加场地，再生成赛程。");
+      if (!facts.windows.length) {
+        throw new AppError(409, "no_schedule_days", "还没有设置比赛日与开放时段。请先在「场地与时段」里填写每个比赛日的开始和结束时间，再生成赛程。");
+      }
+      const notBefore = input.notBefore ? localToUtc(input.notBefore, tournament.timezone, "最早开始时间") : now;
+      const suggestInput = {
         matches: facts.facts,
         scope,
         current: facts.draft,
@@ -449,7 +454,11 @@ export async function suggestDraft(actorUserId: string, slug: string, rawInput: 
         windows: facts.windows,
         notBefore: Math.max(notBefore.getTime(), now.getTime()),
         config: facts.config,
-      });
+      };
+      const result = suggestSchedule(suggestInput);
+      const shortfall = result.unplaced.some((item) => item.reason === "DOES_NOT_FIT")
+        ? estimateLastDayShortfall(facts, suggestInput)
+        : null;
       const placed = new Map(result.placements.map((placement) => [placement.matchId, placement]));
       for (const matchId of scope) {
         const placement = placed.get(matchId);
@@ -486,11 +495,65 @@ export async function suggestDraft(actorUserId: string, slug: string, rawInput: 
         scope: scope.size,
         placed: result.placements.length,
         unplaced: [...reasons.entries()].map(([reason, count]) => ({ reason, text: UNPLACED_TEXT[reason], count })),
+        shortfall,
       };
     },
     { timeout: 60_000 },
   );
   return { ...outcome, ...(await checkResponse(tournament.id)) };
+}
+
+/**
+ * 排不下时估算还差多少时间：把最后一个比赛日的结束时间放宽到当天 24:00 重算一遍，
+ * 取全部比赛排下所需的最晚结束时刻（向上取整到 5 分钟）。放宽到 24:00 仍排不下，说明需要增加比赛日。
+ * 只用于提示，不写入任何安排。
+ */
+function estimateLastDayShortfall(facts: ScheduleFacts, input: Parameters<typeof suggestSchedule>[0]): ScheduleShortfall | null {
+  const lastDay = facts.days.at(-1);
+  if (!lastDay) return null;
+  const extended = dayWindow(lastDay.day, lastDay.startMinute, 1440, facts.timeZone);
+  if (!extended) return null;
+  // 最后一个比赛日与其放宽后的时段起点相同：替换那一段，其余比赛日不变。
+  const windows = [...input.windows.filter((window) => window.start !== extended.start), extended];
+  const retry = suggestSchedule({ ...input, windows });
+  const base = { date: lastDay.day, currentEnd: minuteText(lastDay.endMinute) };
+  if (retry.unplaced.some((item) => item.reason === "DOES_NOT_FIT")) return { ...base, requiredEnd: null };
+  const latest = Math.max(...retry.placements.map((placement) => (placement.start as number) + placement.durationMinutes * MINUTE));
+  const rounded = Math.ceil(latest / (5 * MINUTE)) * 5 * MINUTE;
+  const local = utcToZonedLocal(new Date(rounded), facts.timeZone);
+  // 恰好到午夜时本地日期会跳到次日，按 24:00 表示。
+  const requiredEnd = local.slice(0, 10) === lastDay.day ? local.slice(11, 16) : "24:00";
+  return { ...base, requiredEnd };
+}
+
+export interface ScheduleShortfall {
+  /** 最后一个比赛日（赛事时区，YYYY-MM-DD）。 */
+  date: string;
+  currentEnd: string;
+  /** 全部排下需要的结束时间（HH:mm）；null 表示当天放宽到 24:00 也排不下，需要增加比赛日。 */
+  requiredEnd: string | null;
+}
+
+/**
+ * 抽签发布后自动生成该项目的赛程草稿（不发布）。
+ * 只在已有可用场地与比赛日、且该项目的比赛还没有任何安排时执行；条件不满足或失败都不影响抽签发布本身。
+ */
+export async function autoScheduleAfterDraw(actorUserId: string, slug: string, competitionCode: string) {
+  const tournament = await managedTournament(actorUserId, slug);
+  const [courts, days, arranged] = await Promise.all([
+    prisma.court.count({ where: { tournamentId: tournament.id, active: true } }),
+    prisma.scheduleDay.count({ where: { tournamentId: tournament.id } }),
+    prisma.match.count({
+      where: {
+        stage: { competition: { tournamentId: tournament.id, code: competitionCode } },
+        OR: [{ scheduledAt: { not: null } }, { scheduleSlot: { startsAt: { not: null } } }],
+      },
+    }),
+  ]);
+  if (!courts || !days) return { status: "SKIPPED_NOT_CONFIGURED" as const };
+  if (arranged) return { status: "SKIPPED_ALREADY_ARRANGED" as const };
+  const result = await suggestDraft(actorUserId, slug, { competitionCode, stage: "ALL" });
+  return { status: "GENERATED" as const, ...result };
 }
 
 // ---------------------------------------------------------------------------
