@@ -28,6 +28,12 @@ import {
 } from "@/server/services/schedule-service";
 import { submitScoringCommand, type ScoringCommandEnvelope } from "@/server/services/scoring-command-service";
 import { acquireScoringSession } from "@/server/services/scoring-session-service";
+import {
+  createRefereeAccount,
+  disableRefereeAccount,
+  resetRefereePassword,
+  updateRefereeMode,
+} from "@/server/services/referee-account-service";
 import { createTeam, provisionTeamManager, submitTeamRoster } from "@/server/services/team-service";
 import { loadRosterForLineup, submitLineup } from "@/server/services/team-tie-service";
 import { createTournament, publishTournament, transitionTournamentPhase } from "@/server/services/tournament-admin-service";
@@ -644,5 +650,67 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
     // 唯一的警告是没有裁判员账号时的「尚未指派裁判」，不再有同项目的暂定冲突。
     const facts = await loadScheduleFacts(prisma, tournamentId);
     expect(checkDraft(facts).issues.map((issue) => issue.code)).toEqual(["NO_REFEREE"]);
+  });
+
+  it("共用裁判账号：不逐场指派也能执裁任意一场；同一场只能由一台设备控制；切回逐场指派或停用后失去权限", async () => {
+    const { slug, tournamentId } = await singlesRoundRobin("shared-ref", async (slug) => {
+      await addCourts(adminId, slug, { count: 3 });
+      await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "18:00" }] });
+    });
+    const username = `Ref_${RUN}`;
+    const created = await createRefereeAccount(adminId, slug, { username, name: "现场裁判" });
+    expect(created.password).toMatch(/^[A-Za-z0-9]{16}$/);
+    const account = await prisma.user.findUniqueOrThrow({
+      where: { id: created.userId },
+      select: { email: true, username: true, mustChangePassword: true, provisionedForTournamentId: true },
+    });
+    createdEmails.push(account.email);
+    // 共用账号不要求首次改口令；用户名按登录插件小写归一。
+    expect(account).toMatchObject({ username: username.toLowerCase(), mustChangePassword: false, provisionedForTournamentId: tournamentId });
+    await expect(createRefereeAccount(adminId, slug, { username: username.toUpperCase(), name: "重复" })).rejects.toMatchObject({ status: 409, code: "username_taken" });
+    await expect(createRefereeAccount(adminId, slug, { username: `ref2_${RUN}`, name: "短口令", password: "short" })).rejects.toMatchObject({ status: 400 });
+    // 审计不含口令。
+    const auditRow = await prisma.auditLog.findFirstOrThrow({ where: { tournamentId, action: "REFEREE_ACCOUNT_CREATED" } });
+    expect(JSON.stringify(auditRow.metadata)).not.toContain(created.password as string);
+
+    const matches = await prisma.match.findMany({ where: { stage: { competition: { tournamentId } } }, select: { code: true }, orderBy: { code: "asc" } });
+    const [first, second] = matches.map((match) => match.code);
+
+    // 逐场指派模式下没有指派就不能执裁。
+    await expect(acquireScoringSession(created.userId, first, randomUUID())).rejects.toMatchObject({ status: 403, code: "not_assigned" });
+
+    await updateRefereeMode(adminId, slug, { refereeMode: "SHARED_ACCOUNT" });
+    // 排程不指派主裁判，也不提示「尚未指派裁判」。
+    const suggestion = await suggestDraft(adminId, slug, { assignReferees: true });
+    expect(suggestion).toMatchObject({ placed: 15, hardCount: 0 });
+    await expect(prisma.scheduleSlot.count({ where: { tournamentId, refereeUserId: { not: null } } })).resolves.toBe(0);
+    const facts = await loadScheduleFacts(prisma, tournamentId);
+    expect(checkDraft(facts).issues.map((issue) => issue.code)).not.toContain("NO_REFEREE");
+
+    // 同一账号、两台设备分别执裁两场；第二台设备不能抢同一场。
+    const deviceA = randomUUID();
+    const deviceB = randomUUID();
+    const controlA = await acquireScoringSession(created.userId, first, deviceA);
+    await expect(acquireScoringSession(created.userId, first, deviceB)).rejects.toMatchObject({ status: 409, code: "controller_exists" });
+    const controlB = await acquireScoringSession(created.userId, second, deviceB);
+    await expect(submitScoringCommand(created.userId, first, coinToss(controlA), controlA.controlToken)).resolves.toMatchObject({ status: "accepted" });
+    await expect(submitScoringCommand(created.userId, second, coinToss(controlB), controlB.controlToken)).resolves.toMatchObject({ status: "accepted" });
+
+    // 只能重置/停用本赛事开通的裁判账号，不能借此接管管理员账号。
+    await expect(resetRefereePassword(adminId, slug, adminId, {})).rejects.toMatchObject({ status: 404 });
+    const reset = await resetRefereePassword(adminId, slug, created.userId, {});
+    expect(reset.password).toMatch(/^[A-Za-z0-9]{16}$/);
+    expect(reset.password).not.toBe(created.password);
+
+    // 切回逐场指派：已取得的控制在下一条命令时被拒绝。
+    await updateRefereeMode(adminId, slug, { refereeMode: "PER_MATCH" });
+    const next = { ...coinToss(controlA), type: "RECORD_SPECIAL_OUTCOME", expectedVersion: 1, payload: { type: "WO", winnerSide: "A" } } as ScoringCommandEnvelope;
+    await expect(submitScoringCommand(created.userId, first, next, controlA.controlToken)).rejects.toMatchObject({ status: 403 });
+
+    // 停用：撤销角色、注销会话、吊销控制。
+    await updateRefereeMode(adminId, slug, { refereeMode: "SHARED_ACCOUNT" });
+    await disableRefereeAccount(adminId, slug, created.userId);
+    await expect(prisma.scoringSession.count({ where: { userId: created.userId, status: "ACTIVE" } })).resolves.toBe(0);
+    await expect(acquireScoringSession(created.userId, first, deviceA)).rejects.toMatchObject({ status: 403 });
   });
 });

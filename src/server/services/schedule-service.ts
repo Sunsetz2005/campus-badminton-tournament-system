@@ -93,6 +93,7 @@ export function checkDraft(facts: ScheduleFacts, focus?: ReadonlySet<string>): S
     placements: facts.draft,
     courts: facts.courts,
     referees: facts.referees,
+    refereesRequired: facts.refereeMode === "PER_MATCH",
     windows: facts.windows,
     names: facts.names,
     focus,
@@ -106,6 +107,7 @@ export function checkPublished(facts: ScheduleFacts): ScheduleCheckResult {
     placements: facts.published,
     courts: facts.courts,
     referees: facts.referees,
+    refereesRequired: facts.refereeMode === "PER_MATCH",
     windows: facts.windows,
     names: facts.names,
   });
@@ -450,7 +452,8 @@ export async function suggestDraft(actorUserId: string, slug: string, rawInput: 
         scope,
         current: facts.draft,
         courtIds: activeCourts,
-        refereeIds: input.assignReferees ? facts.referees.map((referee) => referee.id) : [],
+        // 共用裁判账号模式不逐场指派主裁判。
+        refereeIds: input.assignReferees && facts.refereeMode === "PER_MATCH" ? facts.referees.map((referee) => referee.id) : [],
         windows: facts.windows,
         notBefore: Math.max(notBefore.getTime(), now.getTime()),
         config: facts.config,
@@ -996,6 +999,7 @@ export async function loadScheduleWorkspace(tournamentId: string, now: Date, fil
     config: facts.config,
     courts: facts.courts,
     referees: facts.referees,
+    refereeMode: facts.refereeMode,
     days: facts.days.map((day) => ({ date: day.day, start: minuteText(day.startMinute), end: minuteText(day.endMinute) })),
     competitions: [...new Set(rows.map((row) => row.competitionCode))].sort(),
     draftDays: [...new Set(rows.map((row) => dayOf(row.draft)).filter(Boolean))].sort(),

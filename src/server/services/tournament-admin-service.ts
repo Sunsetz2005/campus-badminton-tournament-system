@@ -117,6 +117,8 @@ export const createTournamentSchema = z.object({
   endDate: isoDate,
   timezone: z.string().trim().refine(isValidTimeZone, "时区无效"),
   namePolicy: z.enum(["CODES_ONLY", "DISPLAY_NAMES"]),
+  /** 未传时保持逐场指派（接口向后兼容）；建赛向导默认提交共用裁判账号。 */
+  refereeMode: z.enum(["SHARED_ACCOUNT", "PER_MATCH"]).default("PER_MATCH"),
   rulePreset: z.enum(Object.keys(RULE_PRESETS) as [RulePresetKey, ...RulePresetKey[]]),
   registrationOpensAt: localDateTime,
   registrationClosesAt: localDateTime,
@@ -185,6 +187,7 @@ export async function createTournament(actorUserId: string, rawInput: unknown) {
           endDate: new Date(`${input.endDate}T00:00:00.000Z`),
           timezone: input.timezone,
           namePolicy: input.namePolicy,
+          refereeMode: input.refereeMode,
           ...window,
         },
         select: { id: true, slug: true },

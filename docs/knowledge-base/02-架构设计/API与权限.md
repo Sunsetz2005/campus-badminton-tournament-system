@@ -20,7 +20,7 @@ tags:
 | `/api/auth/[...all]` | GET/POST | Better Auth；公开注册不受模拟种子开关影响并始终关闭，登录建立数据库会话 |
 | `/api/health` | GET | 只返回服务状态、数据库连通状态和服务端时间 |
 | `/api/public/tournaments/[slug]` | GET | 只读白名单 DTO，不返回账号、内部 ID 或审计字段 |
-| `/api/matches/[matchCode]/control` | POST | 必须登录、账号启用、拥有赛事 `REFEREE` 角色且被指派为该场主裁判；建立最小活动控制会话；已登录用户的 403 拒绝写入脱敏审计 |
+| `/api/matches/[matchCode]/control` | POST | 必须登录、账号启用、拥有赛事 `REFEREE` 角色，且被指派为该场主裁判（逐场指派模式）或该赛事为共用裁判账号模式；建立最小活动控制会话；已登录用户的 403 拒绝写入脱敏审计 |
 | `/api/matches/[matchCode]/state` | GET | 获指派主裁判或该赛事裁判长读取权威快照；`afterVersion` 未变时返回轻量 `unchanged` |
 | `/api/matches/[matchCode]/control` | POST/DELETE | 取得/同设备恢复或主动释放写租约 |
 | `/api/matches/[matchCode]/control/heartbeat` | PUT | 当前 token、会话和代次一致时按服务器时间续租 120 秒 |
@@ -60,7 +60,11 @@ tags:
 | `/api/admin/tournaments/[slug]/fixtures/[fixtureId]/lineup/amend` | POST | **仅本赛事 `CHIEF_REFEREE`**：名单公开后修改一个尚未开始、无事件、无有效控制会话的小场；原因必填 |
 | `/api/admin/tournaments/[slug]/competitions/[code]/groups/[groupCode]/ranking` | POST | **仅本赛事 `CHIEF_REFEREE`**：组内全部结束才可确认；须抽签时须给完整顺序与说明；确认后回填「某组第几名」 |
 
-`requireAssignedReferee` 仍只允许拥有 `REFEREE` 且被指派的主裁判正常取得租约。裁判长不绕过流程普通取权，而是使用专用 takeover 接口；现有管理员模拟账号同时获授 `CHIEF_REFEREE`，每次敏感操作审计实际使用的裁判长角色，不依赖 `ADMIN`。
+`requireAssignedReferee` 只允许拥有 `REFEREE` 的账号正常取得租约：逐场指派模式（`Tournament.refereeMode=PER_MATCH`）还要求该场有效的主裁判指派；共用裁判账号模式（`SHARED_ACCOUNT`）下本赛事裁判员角色即覆盖本赛事全部比赛，不跨赛事。同一账号多台设备时，每场仍只允许一个活动控制会话（按设备会话区分），第二台设备只读；写命令事务内复核角色未被撤销、模式未切回逐场指派。
+
+裁判账号由赛事 `ADMIN` 在赛事概览开通：`POST /api/admin/tournaments/[slug]/referees`（用户名 3—30 位字母数字下划线点；口令可自定义 8—64 位，留空则生成 16 位并只在本次响应返回；不要求首次改口令，避免第一位登录的裁判把其他人锁在门外；审计不含口令）、`PATCH .../referees` 切换执裁方式、`POST .../referees/[userId]/password` 重置口令并注销该账号全部登录、`POST .../referees/[userId]/disable` 撤销角色、停用账号、注销登录并吊销其活动控制会话。重置与停用只允许「本赛事开通、只担任本赛事裁判员、非平台管理员、非队伍负责人」的账号。
+
+裁判长不绕过流程普通取权，而是使用专用 takeover 接口；现有管理员模拟账号同时获授 `CHIEF_REFEREE`，每次敏感操作审计实际使用的裁判长角色，不依赖 `ADMIN`。
 
 ## 状态变更命令信封
 

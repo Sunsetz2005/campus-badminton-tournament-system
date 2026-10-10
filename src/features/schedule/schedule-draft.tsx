@@ -155,7 +155,18 @@ export function AutoScheduleBanner({
 }
 
 /** 自动建议：选范围、最早开始时间，生成草稿。不会动已开始的比赛，也不会直接发布。 */
-export function SuggestPanel({ slug, competitions, days }: { slug: string; competitions: string[]; days: DayWindowValue[] }) {
+export function SuggestPanel({
+  slug,
+  competitions,
+  days,
+  showReferees = true,
+}: {
+  slug: string;
+  competitions: string[];
+  days: DayWindowValue[];
+  /** 共用裁判账号模式不逐场指派主裁判，也就不提供「同时建议主裁判」。 */
+  showReferees?: boolean;
+}) {
   const router = useRouter();
   const [competitionCode, setCompetitionCode] = useState("");
   const [stage, setStage] = useState<"ALL" | "GROUPS" | "KNOCKOUT">("ALL");
@@ -170,7 +181,7 @@ export function SuggestPanel({ slug, competitions, days }: { slug: string; compe
       competitionCode: competitionCode || null,
       stage,
       notBefore: notBefore || null,
-      assignReferees,
+      assignReferees: showReferees && assignReferees,
     });
   }
 
@@ -223,10 +234,10 @@ export function SuggestPanel({ slug, competitions, days }: { slug: string; compe
           <input onChange={(event) => setNotBefore(event.target.value)} type="datetime-local" value={notBefore} />
         </label>
       </div>
-      <label className={styles.checkRow}>
+      {showReferees ? <label className={styles.checkRow}>
         <input checked={assignReferees} onChange={(event) => setAssignReferees(event.target.checked)} type="checkbox" />
         <span>同时建议主裁判（优先让每位裁判固定一块场地，避免同一时间执裁两场）</span>
-      </label>
+      </label> : null}
       <p className={styles.hint}>
         建议会覆盖所选范围内尚未开始比赛的草稿安排；小组赛一组固定一块场地、对抗的小场按顺序连打，淘汰赛一场对抗占用设置的场地数并行。
         这是可解释的建议，不保证最优，发布前请检查并手工调整。
@@ -256,7 +267,19 @@ export interface SlotEditorValue {
 }
 
 /** 手工调整一场比赛：场地、开始时间、预计时长、主裁判。保存后立即显示这一场的复检结果。 */
-export function SlotEditor({ slug, value, courts, referees }: { slug: string; value: SlotEditorValue; courts: Option[]; referees: Option[] }) {
+export function SlotEditor({
+  slug,
+  value,
+  courts,
+  referees,
+  showReferee = true,
+}: {
+  slug: string;
+  value: SlotEditorValue;
+  courts: Option[];
+  referees: Option[];
+  showReferee?: boolean;
+}) {
   const router = useRouter();
   const [courtCode, setCourtCode] = useState(value.courtCode ?? "");
   const [start, setStart] = useState(value.startLocal ?? "");
@@ -336,13 +359,15 @@ export function SlotEditor({ slug, value, courts, referees }: { slug: string; va
             <span>预计时长（分钟）</span>
             <input aria-label="预计时长" inputMode="numeric" max={300} min={5} onChange={(event) => setDuration(Number.parseInt(event.target.value || "0", 10))} type="number" value={duration} />
           </label>
-          <label className={styles.field}>
-            <span>主裁判</span>
-            <select aria-label="主裁判" onChange={(event) => setRefereeId(event.target.value)} value={refereeId}>
-              <option value="">暂不指派</option>
-              {referees.map((referee) => <option key={referee.id} value={referee.id}>{referee.name}</option>)}
-            </select>
-          </label>
+          {showReferee ? (
+            <label className={styles.field}>
+              <span>主裁判</span>
+              <select aria-label="主裁判" onChange={(event) => setRefereeId(event.target.value)} value={refereeId}>
+                <option value="">暂不指派</option>
+                {referees.map((referee) => <option key={referee.id} value={referee.id}>{referee.name}</option>)}
+              </select>
+            </label>
+          ) : null}
         </div>
         <label className={styles.checkRow}>
           <input checked={estimated} onChange={(event) => setEstimated(event.target.checked)} type="checkbox" />

@@ -41,6 +41,13 @@ enum NamePublicationPolicy {
   DISPLAY_NAMES
 }
 
+// 裁判执裁方式：SHARED_ACCOUNT 为全体裁判共用本赛事的裁判员账号、可执裁任意一场；
+// PER_MATCH 为按赛程逐场指派主裁判，只能执裁指派给自己的比赛。
+enum RefereeMode {
+  SHARED_ACCOUNT
+  PER_MATCH
+}
+
 // TEAM 是团体赛（学院对抗）：报名单位是一支队伍，每场对抗由若干单打/双打「小场」组成。
 enum CompetitionKind {
   MS
@@ -314,6 +321,7 @@ model Tournament {
   status                TournamentStatus          @default(DRAFT)
   phase                 TournamentPhase           @default(PREPARING)
   namePolicy            NamePublicationPolicy     @default(CODES_ONLY)
+  refereeMode           RefereeMode               @default(PER_MATCH)
   publishedAt           DateTime?
   regulations           String?
   registrationOpensAt   DateTime?

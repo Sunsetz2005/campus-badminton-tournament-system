@@ -68,6 +68,7 @@ export function CreateTournamentWizard({ defaultTimezone }: { defaultTimezone: s
   const [rules, setRules] = useState({
     rulePreset: "traditional-21",
     namePolicy: "CODES_ONLY",
+    refereeMode: "SHARED_ACCOUNT",
     registrationOpensAt: "",
     registrationClosesAt: "",
     regulations: "",
@@ -327,6 +328,17 @@ export function CreateTournamentWizard({ defaultTimezone }: { defaultTimezone: s
               <span><strong>公开姓名与代表队</strong><br /><span className={styles.muted}>学号和联系方式无论如何都不会公开。</span></span>
             </label>
           </fieldset>
+          <fieldset className={styles.fieldset}>
+            <legend>执裁方式</legend>
+            <label className={styles.checkRow}>
+              <input checked={rules.refereeMode === "SHARED_ACCOUNT"} name="refereeMode" onChange={() => setRules({ ...rules, refereeMode: "SHARED_ACCOUNT" })} type="radio" />
+              <span><strong>共用裁判账号（推荐）</strong><br /><span className={styles.muted}>全体裁判用同一个裁判员账号登录，任意一场都可以直接开始，排赛程时不用逐场指派。</span></span>
+            </label>
+            <label className={styles.checkRow}>
+              <input checked={rules.refereeMode === "PER_MATCH"} name="refereeMode" onChange={() => setRules({ ...rules, refereeMode: "PER_MATCH" })} type="radio" />
+              <span><strong>逐场指派主裁判</strong><br /><span className={styles.muted}>每位裁判各用自己的账号，只能执裁赛程里指派给自己的比赛。</span></span>
+            </label>
+          </fieldset>
           <div className={styles.fieldGrid}>
             <label className={styles.field}>
               <span>报名开始（{basics.timezone}）</span>
@@ -372,6 +384,7 @@ export function CreateTournamentWizard({ defaultTimezone }: { defaultTimezone: s
             <div><dt>时区</dt><dd>{basics.timezone}</dd></div>
             <div><dt>规则</dt><dd>{ruleLabel}（演示配置）</dd></div>
             <div><dt>公开姓名</dt><dd>{rules.namePolicy === "CODES_ONLY" ? "只公开编号" : "公开姓名"}</dd></div>
+            <div><dt>执裁方式</dt><dd>{rules.refereeMode === "SHARED_ACCOUNT" ? "共用裁判账号" : "逐场指派主裁判"}</dd></div>
             <div>
               <dt>报名窗口</dt>
               <dd>{rules.registrationOpensAt ? rules.registrationOpensAt.replace("T", " ") : "未设置"} — {rules.registrationClosesAt ? rules.registrationClosesAt.replace("T", " ") : "未设置"}</dd>

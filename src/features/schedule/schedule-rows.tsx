@@ -61,6 +61,7 @@ export function ScheduleRows({
   referees,
   canEdit = false,
   canReplaceReferee = false,
+  showReferees = true,
 }: {
   rows: ScheduleRowView[];
   mode: "draft" | "published";
@@ -70,6 +71,8 @@ export function ScheduleRows({
   referees: Option[];
   canEdit?: boolean;
   canReplaceReferee?: boolean;
+  /** 共用裁判账号模式不逐场指派主裁判，隐藏裁判列与换裁判入口。 */
+  showReferees?: boolean;
 }) {
   if (!rows.length) return <p className="empty-state">没有符合条件的比赛。</p>;
   const dayOf = (row: ScheduleRowView) => row[mode].startLocal?.slice(0, 10) ?? "";
@@ -107,12 +110,12 @@ export function ScheduleRows({
                 <div className={local.meta}>
                   <span>{row.competitionCode} · {row.fixtureLabel ?? row.stageName}</span>
                   {row.rubber ? <span>{row.rubber}</span> : null}
-                  <span>裁判：{slot.refereeName ?? "未指派"}</span>
+                  {showReferees ? <span>裁判：{slot.refereeName ?? "未指派"}</span> : null}
                   <span>{row.code}</span>
                 </div>
                 {was ? (
                   <span className={local.was}>
-                    已发布：{was.startLocal ? `${was.startLocal.replace("T", " ")} ${was.courtName ?? ""}` : "未排"} · 裁判 {was.refereeName ?? "未指派"}
+                    已发布：{was.startLocal ? `${was.startLocal.replace("T", " ")} ${was.courtName ?? ""}` : "未排"} {showReferees ? ` · 裁判 ${was.refereeName ?? "未指派"}` : ""}
                   </span>
                 ) : null}
                 {mode === "published" && row.delay?.cause && row.status === "NOT_STARTED" ? <span className={local.meta}>原因：{row.delay.cause}</span> : null}
@@ -134,6 +137,7 @@ export function ScheduleRows({
                   <SlotEditor
                     courts={courts}
                     referees={referees}
+                    showReferee={showReferees}
                     slug={slug}
                     value={{
                       code: row.code,
@@ -151,7 +155,7 @@ export function ScheduleRows({
                   </div>
                 ) : null
               ) : null}
-              {mode === "published" && canReplaceReferee && (row.status === "NOT_STARTED" || row.status === "IN_PROGRESS") ? (
+              {mode === "published" && canReplaceReferee && showReferees && (row.status === "NOT_STARTED" || row.status === "IN_PROGRESS") ? (
                 <ReplaceRefereeForm currentId={slot.refereeId} matchCode={row.code} referees={referees} slug={slug} />
               ) : null}
             </li>

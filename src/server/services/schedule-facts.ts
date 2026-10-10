@@ -1,4 +1,4 @@
-import type { Prisma } from "@/generated/prisma/client";
+import type { Prisma, RefereeMode } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
 import { RUBBER_LABEL, type RubberKind } from "@/domain/registration/team-roster";
 import { projectDelays, type DelayProjection } from "@/domain/schedule/delay";
@@ -188,6 +188,8 @@ export interface ScheduleFacts {
   draft: Map<string, Placement>;
   courts: (CourtFacts & { sortOrder: number })[];
   referees: RefereeFacts[];
+  /** 共用裁判账号模式不逐场指派主裁判。 */
+  refereeMode: RefereeMode;
   days: { id: string; day: string; startMinute: number; endMinute: number }[];
   windows: Interval[];
   names: Map<string, string>;
@@ -198,7 +200,7 @@ export interface ScheduleFacts {
 
 export async function loadScheduleFacts(client: Client, tournamentId: string): Promise<ScheduleFacts> {
   const [tournament, config, rows, fixtures, entries, courts, refereeRoles, days] = await Promise.all([
-    client.tournament.findUniqueOrThrow({ where: { id: tournamentId }, select: { timezone: true } }),
+    client.tournament.findUniqueOrThrow({ where: { id: tournamentId }, select: { timezone: true, refereeMode: true } }),
     loadScheduleConfig(client, tournamentId),
     client.match.findMany({ where: { stage: { competition: { tournamentId } } }, select: scheduleMatchSelect, orderBy: { code: "asc" } }),
     client.fixture.findMany({ where: { competition: { tournamentId } }, select: fixtureSelect }),
@@ -361,6 +363,7 @@ export async function loadScheduleFacts(client: Client, tournamentId: string): P
 
   return {
     timeZone: tournament.timezone,
+    refereeMode: tournament.refereeMode,
     config,
     rows,
     rowById: new Map(rows.map((row) => [row.id, row])),

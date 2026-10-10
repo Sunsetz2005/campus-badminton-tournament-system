@@ -15,7 +15,9 @@ import {
   TournamentProfileForm,
   type InviteRow,
 } from "@/features/management/tournament-admin-panels";
+import { RefereeAccountsPanel } from "@/features/management/referee-admin-panels";
 import { tournamentPhaseLabels } from "@/features/public-results/model";
+import { listRefereeAccounts } from "@/server/services/referee-account-service";
 import { requireManagedTournamentPage } from "@/server/auth/page-authorization";
 import { StatusBadge } from "@/ui/status-badge";
 
@@ -41,6 +43,7 @@ export default async function TournamentOverviewPage({ params }: { params: Promi
       status: true,
       phase: true,
       namePolicy: true,
+      refereeMode: true,
       regulations: true,
       summary: true,
       posterAlt: true,
@@ -71,6 +74,7 @@ export default async function TournamentOverviewPage({ params }: { params: Promi
       },
     },
   });
+  const refereeAccounts = isAdmin ? await listRefereeAccounts(access.id) : [];
   const statusCounts = await prisma.registration.groupBy({
     by: ["competitionId", "status"],
     where: { tournamentId: access.id },
@@ -204,6 +208,13 @@ export default async function TournamentOverviewPage({ params }: { params: Promi
               key={`${tournament.name}|${tournament.startDate?.toISOString()}|${tournament.endDate?.toISOString()}`}
               slug={tournament.slug}
             />
+          </section>
+          <section aria-labelledby="referee-title" className={styles.section}>
+            <div className={styles.sectionTitle}>
+              <h2 id="referee-title">裁判账号</h2>
+              <p>裁判用这里开通的账号登录，在「我的执裁」进入比赛记分。公众注册始终关闭，裁判账号只能在这里开通。</p>
+            </div>
+            <RefereeAccountsPanel accounts={refereeAccounts} mode={tournament.refereeMode} slug={tournament.slug} />
           </section>
           <section aria-labelledby="poster-title" className={styles.section}>
             <div className={styles.sectionTitle}>

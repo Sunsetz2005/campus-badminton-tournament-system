@@ -28,61 +28,55 @@ export async function requireTournamentRole(
   return assignment;
 }
 
-export async function requireAssignedReferee(userId: string, matchCode: string) {
-  const match = await prisma.match.findUnique({
-    where: { code: matchCode },
-    select: {
-      id: true,
-      code: true,
-      version: true,
-      controlGeneration: true,
-      lifecycleStatus: true,
-      stage: { select: { competition: { select: { tournamentId: true } } } },
-      officialAssignments: {
-        where: { userId, active: true, role: "MAIN_REFEREE" },
-        select: { id: true },
-      },
-    },
-  });
-  if (!match) throw new AppError(404, "match_not_found", "比赛不存在。");
+const matchAccessSelect = (userId: string) => ({
+  id: true,
+  code: true,
+  version: true,
+  controlGeneration: true,
+  lifecycleStatus: true,
+  stage: { select: { competition: { select: { tournamentId: true, tournament: { select: { refereeMode: true } } } } } },
+  officialAssignments: {
+    where: { userId, active: true, role: "MAIN_REFEREE" as const },
+    select: { id: true },
+  },
+});
 
-  const tournamentId = match.stage.competition.tournamentId;
-  await requireTournamentRole(userId, tournamentId, ["REFEREE"]);
-  if (match.officialAssignments.length === 0) {
+async function loadMatchForAccess(userId: string, matchCode: string) {
+  const match = await prisma.match.findUnique({ where: { code: matchCode }, select: matchAccessSelect(userId) });
+  if (!match) throw new AppError(404, "match_not_found", "比赛不存在。");
+  const { tournamentId, tournament } = match.stage.competition;
+  const { officialAssignments, ...rest } = match;
+  return {
+    ...rest,
+    tournamentId,
+    refereeMode: tournament.refereeMode,
+    /** 共用裁判账号模式下，持有本赛事裁判员角色即可执裁任意一场；逐场指派模式下必须有该场主裁判指派。 */
+    coveredByAssignment: tournament.refereeMode === "SHARED_ACCOUNT" || officialAssignments.length > 0,
+  };
+}
+
+export async function requireAssignedReferee(userId: string, matchCode: string) {
+  const match = await loadMatchForAccess(userId, matchCode);
+  await requireTournamentRole(userId, match.tournamentId, ["REFEREE"]);
+  if (!match.coveredByAssignment) {
     throw new AppError(403, "not_assigned", "你没有被指派执裁这场比赛。");
   }
-  return { ...match, tournamentId };
+  return match;
 }
 
 export async function getMatchAccess(userId: string, matchCode: string) {
-  const match = await prisma.match.findUnique({
-    where: { code: matchCode },
-    select: {
-      id: true,
-      code: true,
-      version: true,
-      controlGeneration: true,
-      lifecycleStatus: true,
-      stage: { select: { competition: { select: { tournamentId: true } } } },
-      officialAssignments: {
-        where: { userId, active: true, role: "MAIN_REFEREE" },
-        select: { id: true },
-      },
-    },
-  });
-  if (!match) throw new AppError(404, "match_not_found", "比赛不存在。");
-  const tournamentId = match.stage.competition.tournamentId;
+  const match = await loadMatchForAccess(userId, matchCode);
   const roles = await prisma.roleAssignment.findMany({
-    where: { userId, tournamentId, role: { in: ["REFEREE", "CHIEF_REFEREE"] } },
+    where: { userId, tournamentId: match.tournamentId, role: { in: ["REFEREE", "CHIEF_REFEREE"] } },
     select: { role: true },
   });
   const roleSet = new Set(roles.map((item) => item.role));
-  const assignedReferee = roleSet.has("REFEREE") && match.officialAssignments.length > 0;
+  const assignedReferee = roleSet.has("REFEREE") && match.coveredByAssignment;
   const chiefReferee = roleSet.has("CHIEF_REFEREE");
   if (!assignedReferee && !chiefReferee) {
     throw new AppError(403, "forbidden", "你没有读取该比赛执裁状态的权限。");
   }
-  return { ...match, tournamentId, assignedReferee, chiefReferee };
+  return { ...match, assignedReferee, chiefReferee };
 }
 
 export async function requireChiefReferee(userId: string, matchCode: string) {

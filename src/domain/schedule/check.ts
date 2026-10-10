@@ -67,6 +67,8 @@ export interface ScheduleCheckInput {
   courts: readonly CourtFacts[];
   /** 本赛事持有裁判员角色的人。 */
   referees: readonly RefereeFacts[];
+  /** 是否要求逐场指派主裁判；共用裁判账号模式不指派，也就不提示「尚未指派裁判」。缺省为要求。 */
+  refereesRequired?: boolean;
   /** 比赛日开放时段；为空表示未设置，不做该项检查。 */
   windows: readonly Interval[];
   /** 人员/队伍 ID → 显示名，只用于解释文字。 */
@@ -163,7 +165,7 @@ export function checkSchedule(input: ScheduleCheckInput): ScheduleCheckResult {
         message: `${match.label}：指派的人没有本赛事裁判员角色，不能执裁。`,
       });
     }
-    if (!placement?.refereeId) noReferee.push(match.id);
+    if (!placement?.refereeId && input.refereesRequired !== false) noReferee.push(match.id);
 
     if (input.windows.length && !input.windows.some((window) => planned.start >= window.start && planned.end <= window.end)) {
       add({

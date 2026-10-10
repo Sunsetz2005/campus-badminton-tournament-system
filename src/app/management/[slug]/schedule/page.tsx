@@ -48,6 +48,7 @@ export default async function SchedulePage({
   const basePath = `/management/${tournament.slug}/schedule`;
   const filterParams = { view, day: pick("day"), court: pick("court"), competition: pick("competition"), problems: pick("problems") };
   const courtOptions = workspace.courts.map((court) => ({ id: court.id, code: court.code, name: court.name, active: court.active }));
+  const perMatch = workspace.refereeMode === "PER_MATCH";
   const refereeOptions = workspace.referees.map((referee) => ({ id: referee.id, name: referee.name }));
   const { draftCheck } = workspace;
   const finished = tournament.phase === "FINISHED";
@@ -131,10 +132,15 @@ export default async function SchedulePage({
           </section>
           <section aria-labelledby="referees-title" className={styles.section}>
             <div className={styles.sectionTitle}>
-              <h2 id="referees-title">可指派的裁判员</h2>
-              <p>本赛事持有「裁判员」角色的账号。</p>
+              <h2 id="referees-title">{perMatch ? "可指派的裁判员" : "裁判"}</h2>
+              <p>
+                {perMatch
+                  ? "本赛事持有「裁判员」角色的账号。"
+                  : "本赛事使用共用裁判账号：裁判登录后可执裁任意一场，排程不逐场指派主裁判。"}
+                {" "}裁判账号与执裁方式在 <Link href={`/management/${tournament.slug}`}>赛事概览</Link> 的「裁判账号」中管理。
+              </p>
             </div>
-            {workspace.referees.length ? (
+            {!perMatch ? null : workspace.referees.length ? (
               <ul className={styles.chips}>{workspace.referees.map((referee) => <li key={referee.id}>{referee.name}</li>)}</ul>
             ) : (
               <p className={styles.info}>本赛事还没有裁判员账号，排程时不会指派主裁判。</p>
@@ -149,14 +155,14 @@ export default async function SchedulePage({
             <section aria-labelledby="suggest-title" className={styles.section}>
               <div className={styles.sectionTitle}>
                 <h2 id="suggest-title">自动排程建议</h2>
-                <p>{workspace.courts.filter((court) => court.active).length} 块可用场地 · {workspace.days.length} 个比赛日 · {workspace.referees.length} 名裁判员</p>
+                <p>{workspace.courts.filter((court) => court.active).length} 块可用场地 · {workspace.days.length} 个比赛日 · {perMatch ? `${workspace.referees.length} 名裁判员` : "共用裁判账号"}</p>
               </div>
               {!workspace.courts.length || !workspace.days.length ? (
                 <p className={styles.info}>
                   请先在 <Link href={`${basePath}?view=settings`}>场地与时段</Link> 中设置场地和比赛日，否则自动建议会全部排不下。
                 </p>
               ) : null}
-              <SuggestPanel competitions={workspace.competitions} days={workspace.days} slug={tournament.slug} />
+              <SuggestPanel competitions={workspace.competitions} days={workspace.days} showReferees={perMatch} slug={tournament.slug} />
             </section>
           ) : null}
 
@@ -211,6 +217,7 @@ export default async function SchedulePage({
               courts={courtOptions}
               mode="draft"
               referees={refereeOptions}
+              showReferees={perMatch}
               rows={workspace.draftRows}
               slug={tournament.slug}
               timeZone={workspace.timeZone}
@@ -223,7 +230,7 @@ export default async function SchedulePage({
         <section aria-labelledby="published-title" className={styles.section}>
           <div className={styles.sectionTitle}>
             <h2 id="published-title">已发布赛程与现场状态</h2>
-            <p>延误按实际开始/结束与服务器时间推算，只是提示，不会自动改动计划时间。{chief ? "裁判长可临时更换裁判。" : ""}</p>
+            <p>延误按实际开始/结束与服务器时间推算，只是提示，不会自动改动计划时间。{chief && perMatch ? "裁判长可临时更换裁判。" : ""}</p>
           </div>
           <ScheduleFilters
             basePath={basePath}
@@ -237,6 +244,7 @@ export default async function SchedulePage({
             courts={courtOptions}
             mode="published"
             referees={refereeOptions}
+            showReferees={perMatch}
             rows={workspace.publishedRows}
             slug={tournament.slug}
             timeZone={workspace.timeZone}

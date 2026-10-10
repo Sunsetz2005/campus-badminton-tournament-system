@@ -87,7 +87,7 @@ async function requireController(
     select: {
       controlGeneration: true,
       version: true,
-      stage: { select: { competition: { select: { tournamentId: true } } } },
+      stage: { select: { competition: { select: { tournamentId: true, tournament: { select: { refereeMode: true } } } } } },
     },
   });
   if (
@@ -103,7 +103,8 @@ async function requireController(
     select: { id: true },
   });
   if (!activeRole) throw new AppError(403, "role_revoked", "当前会话的赛事角色已被撤销。");
-  if (session.actingRole === "REFEREE") {
+  // 共用裁判账号模式不逐场指派，裁判员角色本身就覆盖本赛事全部比赛（上面已复核角色未被撤销）。
+  if (session.actingRole === "REFEREE" && match.stage.competition.tournament.refereeMode === "PER_MATCH") {
     const assignment = await transaction.officialAssignment.findFirst({
       where: { matchId, userId: actorUserId, role: "MAIN_REFEREE", active: true },
       select: { id: true },
