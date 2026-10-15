@@ -322,6 +322,8 @@ model Tournament {
   phase                 TournamentPhase           @default(PREPARING)
   namePolicy            NamePublicationPolicy     @default(CODES_ONLY)
   refereeMode           RefereeMode               @default(PER_MATCH)
+  // 比赛编号前缀：首次物化比赛时在全局锁下分配并唯一约束；旧赛事为空，首次需要时按原摘要算法优先沿用。
+  matchCodeTag          String?                   @unique
   publishedAt           DateTime?
   regulations           String?
   registrationOpensAt   DateTime?

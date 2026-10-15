@@ -14,6 +14,11 @@ describe("可串行化事务的有界重试", () => {
     expect(isRetryableTransactionError(prismaError("P2010", { code: "40001" }))).toBe(true);
     expect(isRetryableTransactionError(prismaError("P2010", { code: "40P01" }))).toBe(true);
     expect(isRetryableTransactionError(prismaError("P2010", { code: "23505" }))).toBe(false);
+    // 经 @prisma/adapter-pg 的 $queryRaw（如 SELECT … FOR UPDATE）被中止时，SQLSTATE 在驱动适配器错误里。
+    const adapterMeta = (originalCode: string, kind: string) => ({ driverAdapterError: { name: "DriverAdapterError", cause: { originalCode, kind } } });
+    expect(isRetryableTransactionError(prismaError("P2010", adapterMeta("40001", "TransactionWriteConflict")))).toBe(true);
+    expect(isRetryableTransactionError(prismaError("P2010", adapterMeta("40P01", "TransactionWriteConflict")))).toBe(true);
+    expect(isRetryableTransactionError(prismaError("P2010", adapterMeta("23505", "UniqueConstraintViolation")))).toBe(false);
     expect(isRetryableTransactionError(prismaError("P2002"))).toBe(false);
     expect(isRetryableTransactionError(new AppError(409, "controller_exists", "已有控制"))).toBe(false);
     expect(isRetryableTransactionError(new Error("网络错误"))).toBe(false);

@@ -76,6 +76,8 @@ async function openWithControl(page: Page, matchCode: string) {
 
 test.describe.serial("RV3-002 / RV3-004 裁判页边界交互", () => {
   test.beforeEach(resetMatches);
+  // 用例后也复位：否则种子比赛停在进行中，Vitest 集成测试的换裁判「忙碌」检查会把演示裁判误判为正在执裁。
+  test.afterEach(resetMatches);
   test.afterAll(async () => { await prisma.$disconnect(); });
 
   test("RV3-002 胜方选发球类别后，负方可以自行选择任一场地端", async ({ page }) => {
@@ -157,6 +159,7 @@ test.describe.serial("RV3-002 / RV3-004 裁判页边界交互", () => {
     const receivingSide = servingSide === "A" ? "B" : "A";
     state = await sendCommand(request, matchCode, control, state, "CORRECT_SCORE_STATE", {
       reason: "构造局末误点场景",
+      obligationModel: 2,
       replacement: {
         score: { A: 20, B: 19 }, gamesWon: state.gamesWon, completedGames: state.completedGames,
         servingSide, serverPlayerId: state.players[servingSide][0], receiverPlayerId: state.players[receivingSide][0],
@@ -216,6 +219,8 @@ const SHOT_VIEWPORTS = [
 
 test.describe.serial("RV3-002 / RV3-004 界面截图", () => {
   test.beforeEach(resetMatches);
+  // 用例后也复位：否则种子比赛停在进行中，Vitest 集成测试的换裁判「忙碌」检查会把演示裁判误判为正在执裁。
+  test.afterEach(resetMatches);
   test.afterAll(async () => { await prisma.$disconnect(); });
 
   test("抛币分步表单：五个视口", async ({ page }) => {
@@ -256,6 +261,7 @@ test.describe.serial("RV3-002 / RV3-004 界面截图", () => {
     const receivingSide = servingSide === "A" ? "B" : "A";
     state = await sendCommand(request, matchCode, control, state, "CORRECT_SCORE_STATE", {
       reason: "截图：局末场景",
+      obligationModel: 2,
       replacement: {
         score: { A: 20, B: 19 }, gamesWon: state.gamesWon, completedGames: state.completedGames,
         servingSide, serverPlayerId: state.players[servingSide][0], receiverPlayerId: state.players[receivingSide][0],

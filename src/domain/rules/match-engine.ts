@@ -149,7 +149,18 @@ export type MatchCommand =
       "CORRECT_SERVICE_ORDER",
       { reason: string; servingSide: Side; serverPlayerId: string; receiverPlayerId: string }
     >
-  | CommandBase<"CORRECT_SCORE_STATE", { reason: string; replacement: ScoreStateReplacement }>
+  | CommandBase<
+      "CORRECT_SCORE_STATE",
+      {
+        reason: string;
+        replacement: ScoreStateReplacement;
+        /**
+         * AUD-002：2 表示按“已发生 ≠ 已履行”推导更正后的待办（新命令必填，见 scoring-command-schema）。
+         * 缺省只为重放此前按旧推导写入的历史事件，不得用于新命令。
+         */
+        obligationModel?: typeof SCORE_CORRECTION_OBLIGATION_MODEL;
+      }
+    >
   | CommandBase<"UNDO_LAST_REVERSIBLE", { reason: string }>
   | CommandBase<"PAUSE_MATCH", { reason: string }>
   | CommandBase<"RESUME_MATCH", { reason: string }>
@@ -549,31 +560,78 @@ function applyRally(state: MatchState, winner: Side) {
   if (state.pendingObligations.length > 0) state.phase = "OBLIGATIONS_PENDING";
 }
 
+/** 新的比分更正命令必须携带的待办推导版本（AUD-002）。 */
+export const SCORE_CORRECTION_OBLIGATION_MODEL = 2 as const;
+
+type ObligationModel = "LEGACY" | "V2";
+
 /**
  * RV3-001 / RV3-006：更正后的待办与阈值事实只有这一份推导。
  * applyReplacement（服务端校验）与 deriveScoreCorrectionReplacement（界面收集意图）共用它，
  * 浏览器因此不会出现第二套竞赛推导算法。
+ *
+ * AUD-002（V2）：阈值“已发生”不等于待办“已履行”。更正后仍越过阈值、且原待办尚未处理的，
+ * 原样保留；已处理的不重复生成。回退到阈值之前时撤回该阈值；若当时的换边已经实际执行，
+ * 改为生成物理场地核对待办，不悄悄改写物理端。
+ * 局末相位（AUD-001）：更正把刚结束的一局退回为进行中，局间间歇/换边随之撤回；
+ * 若局末换边已经执行，同样改为物理场地核对。
+ * LEGACY：此前的推导，只用于重放没有 obligationModel 的历史事件，保持逐字一致。
  */
-function deriveCorrectedObligations(state: MatchState, score: { A: number; B: number }) {
+function deriveCorrectedObligations(state: MatchState, score: { A: number; B: number }, model: ObligationModel) {
   const obligations: PendingObligation[] = state.pendingObligations
     .filter((item) => item.type === "PHYSICAL_ENDS_REVIEW")
     .map(clone);
   const triggerScore = clone(score);
   const correctedHighest = Math.max(score.A, score.B);
   const specs = thresholdObligationSpecs(state);
+  const addReview = (id: string, reason: string) => {
+    if (obligations.some((item) => item.id === id)) return;
+    obligations.push({ id, type: "PHYSICAL_ENDS_REVIEW", gameNumber: state.currentGame, triggerScore, reason });
+  };
   for (const spec of specs) {
+    const issued = state.thresholdObligationsIssued.includes(spec.id);
+    if (model === "V2" && issued) {
+      const pending = state.pendingObligations.find((item) => item.id === spec.id);
+      if (correctedHighest >= spec.threshold) {
+        if (pending) obligations.push(clone(pending));
+        continue;
+      }
+      if (!pending && spec.type === "CHANGE_ENDS") {
+        addReview(
+          `physical-review:correction:${spec.id}`,
+          "比分更正回到换边分数之前，但场上已经实际换边，需人工核对当前物理场地端。",
+        );
+      }
+    }
     // 更正后仍未越过阈值的，本局阈值事实随之撤回；已越过的保持已发生，不因更正重新生成。
-    if (state.thresholdObligationsIssued.includes(spec.id) && correctedHighest >= spec.threshold) continue;
+    if (issued && correctedHighest >= spec.threshold) continue;
     const atFirstCrossing =
       (score.A === spec.threshold && score.B < spec.threshold) ||
       (score.B === spec.threshold && score.A < spec.threshold);
     if (!atFirstCrossing) continue;
     obligations.push({ id: spec.id, type: spec.type, gameNumber: state.currentGame, triggerScore });
   }
+  if (model === "V2" && state.phase === "GAME_COMPLETE") {
+    const endChangeId = `change-ends:game:${state.currentGame}:end`;
+    if (!state.pendingObligations.some((item) => item.id === endChangeId)) {
+      addReview(
+        `physical-review:correction:${endChangeId}`,
+        "比分更正撤回了局末结果，但局末换边已经实际执行，需人工核对当前物理场地端。",
+      );
+    }
+  }
   const issuedThresholds = specs
     .filter((spec) => correctedHighest >= spec.threshold)
     .map((spec) => spec.id);
   return { obligations, issuedThresholds };
+}
+
+/** 局末相位的更正把当前局退回进行中：已完成局只保留此前各局，胜局数随之重算。 */
+function gamesBeforeCurrent(state: MatchState) {
+  const completedGames = state.completedGames.filter((game) => game.number < state.currentGame).map(clone);
+  const gamesWon = { A: 0, B: 0 };
+  for (const game of completedGames) gamesWon[game.winnerSide] += 1;
+  return { completedGames, gamesWon };
 }
 
 export interface ScoreCorrectionIntent {
@@ -593,11 +651,12 @@ export function deriveScoreCorrectionReplacement(
   state: MatchState,
   intent: ScoreCorrectionIntent,
 ): ScoreStateReplacement {
-  const { obligations } = deriveCorrectedObligations(state, intent.score);
+  const { obligations } = deriveCorrectedObligations(state, intent.score, "V2");
+  const { completedGames, gamesWon } = gamesBeforeCurrent(state);
   return {
     score: clone(intent.score),
-    gamesWon: clone(state.gamesWon),
-    completedGames: clone(state.completedGames),
+    gamesWon,
+    completedGames,
     servingSide: intent.servingSide,
     serverPlayerId: intent.serverPlayerId,
     receiverPlayerId: intent.receiverPlayerId,
@@ -609,7 +668,7 @@ export function deriveScoreCorrectionReplacement(
   };
 }
 
-function applyReplacement(state: MatchState, replacement: ScoreStateReplacement) {
+function applyReplacement(state: MatchState, replacement: ScoreStateReplacement, model: ObligationModel) {
   if (!replacement || typeof replacement !== "object") {
     throw new RuleViolation("replacement_required", "比分更正必须提供完整替换状态。");
   }
@@ -651,7 +710,7 @@ function applyReplacement(state: MatchState, replacement: ScoreStateReplacement)
   }
 
   const { obligations: expectedObligations, issuedThresholds: correctedIssuedThresholds } =
-    deriveCorrectedObligations(state, replacement.score);
+    deriveCorrectedObligations(state, replacement.score, model);
   const sortedObligations = (items: PendingObligation[]) => [...items].sort((left, right) => left.id.localeCompare(right.id));
   const expectedPhase = expectedObligations.length > 0 ? "OBLIGATIONS_PENDING" : "IN_PROGRESS";
   if (
@@ -836,7 +895,17 @@ function nextStateForCommand(state: MatchState, command: MatchCommand) {
     case "CORRECT_SCORE_STATE":
       assertScoreCorrectionAllowed(next);
       requireReason(command.payload.reason);
-      applyReplacement(next, command.payload.replacement);
+      if (
+        command.payload.obligationModel !== undefined &&
+        command.payload.obligationModel !== SCORE_CORRECTION_OBLIGATION_MODEL
+      ) {
+        throw new RuleViolation("invalid_obligation_model", "比分更正的待办推导版本无效。");
+      }
+      applyReplacement(
+        next,
+        command.payload.replacement,
+        command.payload.obligationModel === SCORE_CORRECTION_OBLIGATION_MODEL ? "V2" : "LEGACY",
+      );
       return next;
     case "PAUSE_MATCH":
       requireReason(command.payload.reason);

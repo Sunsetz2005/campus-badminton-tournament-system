@@ -164,6 +164,7 @@ async function runFullMatch(request: APIRequestContext, matchCode: string, devic
     const receivingSide = servingSide === "A" ? "B" : "A";
     await send("CORRECT_SCORE_STATE", {
       reason: `HTTP 全场验收第 ${game} 局赛点`,
+      obligationModel: 2,
       replacement: {
         score: { A: 20, B: 0 },
         gamesWon: state.gamesWon,
@@ -492,6 +493,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     const control = await readBrowserControl(page, matchCode);
     state = await sendCommand(request, matchCode, control, state, "CORRECT_SCORE_STATE", {
       reason: "换边比分面板探针",
+      obligationModel: 2,
       replacement: {
         score: { A: 20, B: 0 },
         gamesWon: state.gamesWon,

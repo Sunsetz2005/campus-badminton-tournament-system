@@ -24,6 +24,7 @@ import {
   isStarted,
   loadTieFixture,
   lockFixtureRow,
+  lockGroupRankingState,
   propagateFixtureResult,
   revokeGroupRankingInternal,
   setFixtureSide,
@@ -119,7 +120,6 @@ export async function settleIndividualFixture(transaction: Tx, fixtureId: string
       sideAEntryId: true,
       sideBEntryId: true,
       winnerEntryId: true,
-      group: { select: { code: true, rankingConfirmedAt: true } },
       competition: { select: { code: true, entryType: true, tournamentId: true } },
       matches: { select: matchFactSelect },
     },
@@ -144,7 +144,7 @@ export async function settleIndividualFixture(transaction: Tx, fixtureId: string
       outcome: fact.outcome,
     });
   }
-  if (fixture.groupId && fixture.group?.rankingConfirmedAt && fact.stage !== "CONFIRMED") {
+  if (fixture.groupId && fact.stage !== "CONFIRMED" && (await lockGroupRankingState(transaction, fixture.groupId))) {
     await revokeGroupRankingInternal(transaction, tournamentId, actorUserId, fixture.groupId, `比赛 ${fixture.code} 的结果被重开`);
   }
   return { fact, winnerEntryId };

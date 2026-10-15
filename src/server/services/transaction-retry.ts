@@ -6,7 +6,8 @@ import { Prisma } from "@/generated/prisma/client";
  * PostgreSQL 在 Serializable 隔离级别下遇到读写依赖冲突或死锁时会中止事务并要求客户端重试
  * （SQLSTATE 40001 / 40P01）。同一类冲突会以三种形状出现：
  * - 查询中途被中止：Prisma 报 `P2034`；
- * - 冲突发生在 `$queryRaw` 里：`P2010`，`meta.code` 带原始 SQLSTATE；
+ * - 冲突发生在 `$queryRaw` 里：`P2010`，原始 SQLSTATE 在 `meta.code`，或（经 `@prisma/adapter-pg` 时）在
+ *   `meta.driverAdapterError.cause` 的 `originalCode` / `kind`——CON-001 的小组行锁在可串行化事务里就以后者出现；
  * - 提交时才被中止：`@prisma/adapter-pg` 直接抛出 `DriverAdapterError`，`cause.kind` 为 `TransactionWriteConflict`
  *   （它把 40001 与 40P01 都映射成这一类）。
  * 事务整体回滚，重跑整段工作不会重复写入。
@@ -26,8 +27,12 @@ export function isRetryableTransactionError(error: unknown) {
   if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
   if (error.code === "P2034") return true;
   if (error.code === "P2010") {
-    const code = (error.meta as { code?: unknown } | undefined)?.code;
-    return typeof code === "string" && RETRYABLE_SQLSTATES.has(code);
+    const meta = error.meta as
+      | { code?: unknown; driverAdapterError?: { cause?: { originalCode?: unknown; kind?: unknown } } }
+      | undefined;
+    const cause = meta?.driverAdapterError?.cause;
+    const code = meta?.code ?? cause?.originalCode;
+    return (typeof code === "string" && RETRYABLE_SQLSTATES.has(code)) || cause?.kind === "TransactionWriteConflict";
   }
   return false;
 }

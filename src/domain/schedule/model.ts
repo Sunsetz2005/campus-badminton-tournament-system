@@ -29,8 +29,10 @@ export interface ScheduleMatchFacts {
   code: string;
   label: string;
   competitionCode: string;
-  /** 1 = 小组/循环阶段，2 = 淘汰阶段。 */
+  /** 阶段先后，只用于排序；纯淘汰赛的淘汰阶段也是 1。 */
   stageOrder: number;
+  /** 阶段类型：按“小组/淘汰”筛选比赛时用它，不能用阶段序号推断（AUD-006）。 */
+  stageType: "ROUND_ROBIN" | "KNOCKOUT";
   kind: "GROUP" | "KNOCKOUT" | "THIRD_PLACE" | "STANDALONE";
   /** 同一项目同一小组的比赛共享同一个键；淘汰赛为 null。 */
   groupKey: string | null;

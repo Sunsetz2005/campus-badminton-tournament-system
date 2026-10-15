@@ -25,6 +25,8 @@ import {
 } from "@/server/services/team-tie-service";
 import { createTournament, transitionTournamentPhase } from "@/server/services/tournament-admin-service";
 
+import { holdRowLock, settledWithin, waitUntilBlockedBy } from "../support/db-barrier";
+
 const RUN = randomBytes(3).toString("hex");
 const createdSlugs: string[] = [];
 const createdEmails: string[] = [];
@@ -497,6 +499,61 @@ describe("对抗胜负与晋级回填", () => {
     for (const fixture of cleared) {
       if (fixture.sideAGroupId === groups[1].id) expect(fixture.sideAEntryId).toBeNull();
       if (fixture.sideBGroupId === groups[1].id) expect(fixture.sideBEntryId).toBeNull();
+    }
+    await expect(prisma.auditLog.count({ where: { tournamentId, action: "GROUP_RANKING_REVOKED" } })).resolves.toBe(1);
+  });
+
+  it("CON-001 确认名次已读结果、尚未提交时在裁判台重开本组小场：重开等待确认提交后整体撤回", async () => {
+    const { slug, competitionId, tournamentId } = await publishedTournament("con001", 6, {
+      format: "GROUPS_KNOCKOUT",
+      groupCount: 2,
+      qualifiersPerGroup: 2,
+      thirdPlaceMatch: false,
+    });
+    const group = await prisma.group.findFirstOrThrow({ where: { stage: { competitionId }, code: "B" } });
+    const fixtures = await prisma.fixture.findMany({
+      where: { groupId: group.id },
+      orderBy: [{ round: "asc" }, { sequence: "asc" }],
+      include: { matches: { orderBy: { rubberOrder: "asc" } }, sideAEntry: { select: { code: true } }, sideBEntry: { select: { code: true } } },
+    });
+    const codes = [...new Set(fixtures.flatMap((fixture) => [fixture.sideAEntry?.code as string, fixture.sideBEntry?.code as string]))].sort();
+    let last: Awaited<ReturnType<typeof finishRubber>> | null = null;
+    // 编号小的一方取胜（第一场 5:0，其余 3:2），名次可直接确定。
+    for (const [index, fixture] of fixtures.entries()) {
+      await adminLineups(slug, fixture.id);
+      const winner: "A" | "B" = codes.indexOf(fixture.sideAEntry?.code as string) < codes.indexOf(fixture.sideBEntry?.code as string) ? "A" : "B";
+      const loser = winner === "A" ? "B" : "A";
+      const pattern: ("A" | "B")[] = index === 0 ? [winner, winner, winner, winner, winner] : [winner, winner, winner, loser, loser];
+      for (const [order, match] of fixture.matches.entries()) last = await finishRubber(match.id, pattern[order]);
+    }
+    const semi = await prisma.fixture.findFirstOrThrow({
+      where: { competitionId, kind: "KNOCKOUT", OR: [{ sideAGroupId: group.id }, { sideBGroupId: group.id }] },
+      select: { id: true },
+    });
+
+    // 屏障占住半决赛对阵行：确认名次读完本组成绩、写入名次后停在回填签位上，尚未提交。
+    const barrier = await holdRowLock("fixtures", semi.id);
+    const confirm = confirmGroupRanking(adminId, slug, "TEAM", "B", {});
+    confirm.catch(() => undefined);
+    await waitUntilBlockedBy(barrier.pid);
+
+    const reopen = reopenRubber(last!.code, last!.chief, last!.version);
+    reopen.catch(() => undefined);
+    // 重开要先取得同一把小组行锁才能判断名次是否已确认，因此必须等确认事务结束。
+    expect(await settledWithin(reopen, 1_000)).toBe(false);
+
+    barrier.release();
+    await barrier.done;
+    const [confirmResult, reopenResult] = await Promise.allSettled([confirm, reopen]);
+    expect(confirmResult.status).toBe("fulfilled");
+    expect(reopenResult).toMatchObject({ status: "fulfilled", value: { status: "accepted" } });
+
+    await expect(prisma.group.findUniqueOrThrow({ where: { id: group.id } })).resolves.toMatchObject({ rankingConfirmedAt: null, ranking: null });
+    const slots = await prisma.fixture.findMany({ where: { OR: [{ sideAGroupId: group.id }, { sideBGroupId: group.id }] } });
+    expect(slots.length).toBeGreaterThan(0);
+    for (const fixture of slots) {
+      if (fixture.sideAGroupId === group.id) expect(fixture.sideAEntryId).toBeNull();
+      if (fixture.sideBGroupId === group.id) expect(fixture.sideBEntryId).toBeNull();
     }
     await expect(prisma.auditLog.count({ where: { tournamentId, action: "GROUP_RANKING_REVOKED" } })).resolves.toBe(1);
   });

@@ -16,6 +16,7 @@ function match(id: string, overrides: Partial<ScheduleMatchFacts> = {}): Schedul
     label: id,
     competitionCode: "MS",
     stageOrder: 1,
+    stageType: "ROUND_ROBIN",
     kind: "GROUP",
     groupKey: null,
     fixtureId: null,

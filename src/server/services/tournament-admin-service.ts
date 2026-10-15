@@ -16,7 +16,7 @@ import {
   type RuleConfig,
 } from "@/domain/rules/rule-profile";
 import { DEFAULT_TEAM_FORMAT, validateTeamFormat, type TeamFormat } from "@/domain/registration/team-roster";
-import { isValidTimeZone, zonedLocalToUtc } from "@/domain/time/zoned-time";
+import { isCalendarDate, isValidTimeZone, zonedLocalToUtc } from "@/domain/time/zoned-time";
 import { requireManagedTournament, requireSystemAdmin } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
 
@@ -47,7 +47,7 @@ const requiredText = (min: number, max: number) =>
     .transform((value) => value.normalize("NFKC").trim().replace(/\s+/g, " "))
     .refine((value) => [...value].length >= min && [...value].length <= max, `长度应为 ${min}—${max} 个字符`);
 
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式应为 YYYY-MM-DD");
+const isoDate = z.string().refine(isCalendarDate, "日期应为真实存在的 YYYY-MM-DD");
 // 表单里未填写的时间以空字符串提交，等同于「不设置」。
 const localDateTime = z
   .union([z.literal(""), z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, "时间格式应为 YYYY-MM-DDTHH:mm")])

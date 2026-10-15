@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-import { Prisma } from "@/generated/prisma/client";
+import { Prisma, type TournamentRole } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
 import { requireAssignedReferee, requireChiefReferee } from "@/server/auth/authorization";
 import { logServerEvent } from "@/server/logging";
@@ -137,6 +137,36 @@ export async function acquireScoringSession(userId: string, matchCode: string, d
   }
 }
 
+type AuthorityClient = Pick<Prisma.TransactionClient, "match" | "roleAssignment" | "officialAssignment">;
+
+/**
+ * 控制会话持有者当前是否仍有权执裁这场比赛：赛事角色未撤销；逐场指派模式下还须仍是本场主裁判。
+ * 命令提交与心跳续租共用这一份判定（AUD-004），避免失去权限的设备只能被拦写分、却仍能长期占住控制权。
+ */
+export async function assertControllerAuthority(
+  client: AuthorityClient,
+  session: { matchId: string; userId: string; actingRole: TournamentRole },
+) {
+  const match = await client.match.findUniqueOrThrow({
+    where: { id: session.matchId },
+    select: { stage: { select: { competition: { select: { tournamentId: true, tournament: { select: { refereeMode: true } } } } } } },
+  });
+  const { tournamentId, tournament } = match.stage.competition;
+  const activeRole = await client.roleAssignment.findFirst({
+    where: { userId: session.userId, tournamentId, role: session.actingRole },
+    select: { id: true },
+  });
+  if (!activeRole) throw new AppError(403, "role_revoked", "当前会话的赛事角色已被撤销。");
+  // 共用裁判账号模式不逐场指派，裁判员角色本身就覆盖本赛事全部比赛（上面已复核角色未被撤销）。
+  if (session.actingRole === "REFEREE" && tournament.refereeMode === "PER_MATCH") {
+    const assignment = await client.officialAssignment.findFirst({
+      where: { matchId: session.matchId, userId: session.userId, role: "MAIN_REFEREE", active: true },
+      select: { id: true },
+    });
+    if (!assignment) throw new AppError(403, "assignment_revoked", "你的该场主裁判指派已失效。");
+  }
+}
+
 async function requireOwnedSession(userId: string, matchCode: string, sessionId: string, generation: number, token: string) {
   const session = await prisma.scoringSession.findUnique({
     where: { id: sessionId },
@@ -154,6 +184,18 @@ async function requireOwnedSession(userId: string, matchCode: string, sessionId:
 
 export async function heartbeatScoringSession(userId: string, matchCode: string, sessionId: string, generation: number, token: string) {
   const session = await requireOwnedSession(userId, matchCode, sessionId, generation, token);
+  try {
+    await assertControllerAuthority(prisma, session);
+  } catch (error) {
+    // 已无执裁权的会话立即释放，合法裁判不必等租约过期或请裁判长强制接管。
+    if (error instanceof AppError) {
+      await prisma.scoringSession.updateMany({
+        where: { id: session.id, status: "ACTIVE" },
+        data: { status: "REVOKED", revokedAt: new Date(), revokedReason: "AUTHORITY_REVOKED" },
+      });
+    }
+    throw error;
+  }
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_LIFETIME_MS);
   const updated = await prisma.scoringSession.updateMany({

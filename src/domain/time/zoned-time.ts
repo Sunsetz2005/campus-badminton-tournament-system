@@ -6,6 +6,19 @@
  */
 
 const LOCAL_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
+const CALENDAR_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * `YYYY-MM-DD` 是否是真实存在的自然日。只看形状的正则会放过 2026-02-31，
+ * 随后 `Date` 把它静默滚动成 3 月 3 日（AUD-007），因此必须回读年月日比对。
+ */
+export function isCalendarDate(value: string) {
+  const match = CALENDAR_DATE.exec(value);
+  if (!match) return false;
+  const [year, month, day] = match.slice(1).map(Number);
+  const check = new Date(Date.UTC(year, month - 1, day));
+  return check.getUTCFullYear() === year && check.getUTCMonth() === month - 1 && check.getUTCDate() === day;
+}
 
 export function isValidTimeZone(timeZone: string) {
   try {

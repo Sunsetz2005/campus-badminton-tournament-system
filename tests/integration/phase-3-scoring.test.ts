@@ -91,6 +91,13 @@ describe("阶段 3 权威记分事务", () => {
     const duplicate = await submitScoringCommand(refereeId, MATCH_CODE, envelope, control.controlToken);
     expect(first).toMatchObject({ status: "accepted", version: 1 });
     expect(duplicate).toMatchObject({ status: "duplicate", version: 1 });
+    // AUD-003：同一瞬间的其他合法写法（时区偏移、省略毫秒）重发时仍是同一命令。
+    const instant = new Date(envelope.occurredAt);
+    const shanghai = new Date(instant.getTime() + 8 * 3600_000).toISOString().replace(/\.000Z$/, "+08:00");
+    for (const occurredAt of [shanghai, envelope.occurredAt.replace(".000Z", "Z")]) {
+      await expect(submitScoringCommand(refereeId, MATCH_CODE, { ...envelope, occurredAt }, control.controlToken))
+        .resolves.toMatchObject({ status: "duplicate", version: 1 });
+    }
     await expect(submitScoringCommand(refereeId, MATCH_CODE, {
       ...envelope,
       payload: { valid: false, reason: "改写载荷" },

@@ -231,7 +231,7 @@ export async function getPublicSchedule(slug: string): Promise<PublicScheduleRes
   });
 
   const dates = [...new Set(matches.map((match) => match.scheduleDate))].sort();
-  const dateOptions = dates.map((date) => scheduleDateOption(timeZone, date));
+  const dateOptions = dates.map((date) => scheduleDateOption(date));
   const today = scheduleDateIn(timeZone, new Date());
 
   return {

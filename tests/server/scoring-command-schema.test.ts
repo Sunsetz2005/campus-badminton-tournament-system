@@ -42,4 +42,16 @@ describe("计分命令请求解析", () => {
       code: "legacy_command_field_not_allowed",
     });
   });
+
+  it("拒绝不带待办推导版本的新比分更正", async () => {
+    const request = new Request("http://localhost/api/matches/M/commands", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...baseEnvelope, type: "CORRECT_SCORE_STATE", payload: { reason: "误记", replacement: {} } }),
+    });
+    await expect(parseScoringCommandRequest(request)).rejects.toMatchObject({
+      status: 400,
+      code: "score_correction_model_required",
+    });
+  });
 });

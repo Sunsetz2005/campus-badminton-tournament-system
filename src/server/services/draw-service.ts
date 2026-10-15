@@ -318,10 +318,43 @@ export async function adjustDrawDraft(actorUserId: string, slug: string, competi
 
 const TAG_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 
-/** 比赛编号是全局唯一的；用赛事 ID 的摘要生成 4 位稳定标签，避免不同赛事的同名项目撞号。 */
-export function tournamentTag(tournamentId: string) {
-  const digest = createHash("sha256").update(tournamentId).digest();
+/**
+ * 由赛事 ID 摘要得到的 4 位候选标签。第 0 个候选就是此前直接使用的标签，旧赛事的编号因此保持不变；
+ * 它只是候选，不保证唯一（31^4 种取值），真正的唯一性由 `ensureMatchCodeTag` 与数据库约束保证。
+ */
+export function tournamentTag(tournamentId: string, attempt = 0) {
+  const digest = createHash("sha256").update(attempt === 0 ? tournamentId : `${tournamentId}:${attempt}`).digest();
   return [...digest.subarray(0, 4)].map((byte) => TAG_ALPHABET[byte % TAG_ALPHABET.length]).join("");
+}
+
+const MATCH_CODE_TAG_LOCK = 0x4d435447; // "MCTG"：所有赛事共用的标签分配锁。
+const MAX_TAG_ATTEMPTS = 64;
+
+/**
+ * AUD-008：取得本赛事持久化的比赛编号前缀，首次使用时分配。
+ * 在全局事务锁下依次尝试候选标签，跳过其他赛事已持有的标签，以及尚未持久化标签的旧赛事
+ * 已经用作编号前缀的标签。重抽或重试因此不会反复撞上同一个由赛事 ID 决定的冲突。
+ */
+export async function ensureMatchCodeTag(transaction: Tx, tournamentId: string) {
+  const current = await transaction.tournament.findUniqueOrThrow({ where: { id: tournamentId }, select: { matchCodeTag: true } });
+  if (current.matchCodeTag) return current.matchCodeTag;
+  await transaction.$executeRaw`SELECT pg_advisory_xact_lock(${MATCH_CODE_TAG_LOCK}::bigint)`;
+  for (let attempt = 0; attempt < MAX_TAG_ATTEMPTS; attempt += 1) {
+    const candidate = tournamentTag(tournamentId, attempt);
+    const held = await transaction.tournament.findFirst({
+      where: { matchCodeTag: candidate, id: { not: tournamentId } },
+      select: { id: true },
+    });
+    if (held) continue;
+    const usedByOther = await transaction.match.findFirst({
+      where: { code: { startsWith: `${candidate}-` }, stage: { competition: { tournamentId: { not: tournamentId } } } },
+      select: { id: true },
+    });
+    if (usedByOther) continue;
+    await transaction.tournament.update({ where: { id: tournamentId }, data: { matchCodeTag: candidate } });
+    return candidate;
+  }
+  throw new AppError(409, "match_code_tag_exhausted", "无法为本赛事分配不冲突的比赛编号前缀，请联系管理员。");
 }
 
 export function drawMatchCode(tag: string, competitionCode: string, fixtureCode: string, rubber?: { order: number; kind: string }) {
@@ -521,7 +554,7 @@ async function materialize(transaction: Tx, input: MaterializeInput) {
     fixtureRows.push({ id: created.id, fixture, stageId, groupId, sideA: created.sideAEntryId, sideB: created.sideBEntryId });
   }
 
-  const tag = tournamentTag(input.tournamentId);
+  const tag = await ensureMatchCodeTag(transaction, input.tournamentId);
   const isTeam = competition.entryType === "TEAM";
   const rubbers = competition.teamRubbers as RegistrationCompetitionKind[];
   const matches: Prisma.MatchCreateManyInput[] = [];

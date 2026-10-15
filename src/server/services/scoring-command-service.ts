@@ -17,7 +17,7 @@ import {
   loadVerifiedAggregate,
   MATCH_ENGINE_VERSION,
 } from "@/server/services/match-state-service";
-import { verifyControlToken } from "@/server/services/scoring-session-service";
+import { assertControllerAuthority, verifyControlToken } from "@/server/services/scoring-session-service";
 import { settleAfterResultChange } from "@/server/services/results-service";
 
 export interface ScoringCommandEnvelope {
@@ -36,10 +36,18 @@ const CHIEF_ONLY = new Set<MatchCommand["type"]>([
   "REOPEN_RESULT",
 ]);
 
+/**
+ * AUD-003：同一瞬间可以有多种合法写法（时区偏移、省略毫秒）。
+ * 写入、指纹与重试比对一律使用这一种标准形式，否则同一请求重发会被误判为 commandId 复用。
+ */
+function canonicalOccurredAt(occurredAt: string) {
+  return new Date(occurredAt).toISOString();
+}
+
 function commandFromEnvelope(envelope: ScoringCommandEnvelope): MatchCommand {
   return {
     commandId: envelope.commandId,
-    occurredAt: new Date(envelope.occurredAt).toISOString(),
+    occurredAt: canonicalOccurredAt(envelope.occurredAt),
     type: envelope.type,
     payload: envelope.payload,
   } as MatchCommand;
@@ -49,7 +57,7 @@ function envelopeFingerprint(matchId: string, envelope: ScoringCommandEnvelope) 
   return hashMatchValue({
     matchId,
     expectedVersion: envelope.expectedVersion,
-    occurredAt: envelope.occurredAt,
+    occurredAt: canonicalOccurredAt(envelope.occurredAt),
     type: envelope.type,
     payload: envelope.payload,
   });
@@ -87,7 +95,6 @@ async function requireController(
     select: {
       controlGeneration: true,
       version: true,
-      stage: { select: { competition: { select: { tournamentId: true, tournament: { select: { refereeMode: true } } } } } },
     },
   });
   if (
@@ -97,20 +104,7 @@ async function requireController(
   ) {
     throw new AppError(409, "not_controller", "控制会话已过期、无效或已被接管。");
   }
-  const tournamentId = match.stage.competition.tournamentId;
-  const activeRole = await transaction.roleAssignment.findFirst({
-    where: { userId: actorUserId, tournamentId, role: session.actingRole },
-    select: { id: true },
-  });
-  if (!activeRole) throw new AppError(403, "role_revoked", "当前会话的赛事角色已被撤销。");
-  // 共用裁判账号模式不逐场指派，裁判员角色本身就覆盖本赛事全部比赛（上面已复核角色未被撤销）。
-  if (session.actingRole === "REFEREE" && match.stage.competition.tournament.refereeMode === "PER_MATCH") {
-    const assignment = await transaction.officialAssignment.findFirst({
-      where: { matchId, userId: actorUserId, role: "MAIN_REFEREE", active: true },
-      select: { id: true },
-    });
-    if (!assignment) throw new AppError(403, "assignment_revoked", "你的该场主裁判指派已失效。");
-  }
+  await assertControllerAuthority(transaction, session);
   assertRoleForCommand(session.actingRole, envelope.type);
   return { session, match };
 }

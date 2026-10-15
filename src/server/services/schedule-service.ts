@@ -10,7 +10,7 @@ import { checkSchedule, warningDigest, type ScheduleCheckResult } from "@/domain
 import { delayCauseText } from "@/domain/schedule/delay";
 import { MINUTE, isMovable, type Placement } from "@/domain/schedule/model";
 import { suggestSchedule, UNPLACED_TEXT, type UnplacedReason } from "@/domain/schedule/suggest";
-import { isValidTimeZone, utcToZonedLocal, zonedLocalToUtc } from "@/domain/time/zoned-time";
+import { isCalendarDate, isValidTimeZone, utcToZonedLocal, zonedLocalToUtc } from "@/domain/time/zoned-time";
 import { requireManagedTournament, TOURNAMENT_MANAGER_ROLES } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
 import { lockTournamentRow } from "@/server/services/registration-service";
@@ -163,7 +163,7 @@ const daysSchema = z.object({
   days: z
     .array(
       z.object({
-        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式应为 YYYY-MM-DD"),
+        date: z.string().refine(isCalendarDate, "日期应为真实存在的 YYYY-MM-DD"),
         start: z.string().regex(HH_MM, "开始时间格式应为 HH:mm"),
         end: z.string().regex(HH_MM, "结束时间格式应为 HH:mm"),
       }),
@@ -436,7 +436,7 @@ export async function suggestDraft(actorUserId: string, slug: string, rawInput: 
         facts.facts
           .filter((fact) => isMovable(fact))
           .filter((fact) => !input.competitionCode || fact.competitionCode === input.competitionCode)
-          .filter((fact) => input.stage === "ALL" || (input.stage === "GROUPS" ? fact.stageOrder === 1 : fact.stageOrder > 1))
+          .filter((fact) => input.stage === "ALL" || fact.stageType === (input.stage === "GROUPS" ? "ROUND_ROBIN" : "KNOCKOUT"))
           .map((fact) => fact.id),
       );
       if (!scope.size) throw new AppError(409, "nothing_to_schedule", "所选范围内没有尚未开始的比赛。");

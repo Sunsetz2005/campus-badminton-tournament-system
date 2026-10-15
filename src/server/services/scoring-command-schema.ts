@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { MatchCommand } from "@/domain/rules/match-engine";
+import { SCORE_CORRECTION_OBLIGATION_MODEL, type MatchCommand } from "@/domain/rules/match-engine";
 import type { ScoringCommandEnvelope } from "@/server/services/scoring-command-service";
 import { AppError } from "@/server/services/errors";
 
@@ -25,6 +25,16 @@ export async function parseScoringCommandRequest(request: Request): Promise<Scor
       400,
       "legacy_command_field_not_allowed",
       "新命令必须使用 obligationRelationship；旧字段仅用于历史事件重放。",
+    );
+  }
+  if (
+    parsed.data.type === "CORRECT_SCORE_STATE" &&
+    parsed.data.payload.obligationModel !== SCORE_CORRECTION_OBLIGATION_MODEL
+  ) {
+    throw new AppError(
+      400,
+      "score_correction_model_required",
+      "新的比分更正命令必须按当前待办推导版本提交；缺省版本仅用于历史事件重放。",
     );
   }
   return {

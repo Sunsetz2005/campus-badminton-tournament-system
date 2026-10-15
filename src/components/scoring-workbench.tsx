@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 
 import { ActionButton } from "@/components/ui/action-button";
 import { ResourceState } from "@/components/ui/resource-state";
-import { deriveScoreCorrectionReplacement } from "@/domain/rules/match-engine";
+import { deriveScoreCorrectionReplacement, SCORE_CORRECTION_OBLIGATION_MODEL } from "@/domain/rules/match-engine";
 import type { MatchCommand, MatchState, PhysicalEnd, Side } from "@/domain/rules/match-engine";
 import {
   canRecordSpecialOutcome,
@@ -855,7 +855,11 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         serverPlayerId: state.format === "DOUBLES" ? state.logicalCourts![servingSide][court] : state.players[servingSide][0],
         receiverPlayerId: state.format === "DOUBLES" ? state.logicalCourts![receivingSide][court] : state.players[receivingSide][0],
       });
-      await requestPreview(makeEnvelope("CORRECT_SCORE_STATE", { reason: trimmedReason, replacement }));
+      await requestPreview(makeEnvelope("CORRECT_SCORE_STATE", {
+        reason: trimmedReason,
+        replacement,
+        obligationModel: SCORE_CORRECTION_OBLIGATION_MODEL,
+      }));
     }
   }
 

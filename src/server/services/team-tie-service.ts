@@ -48,6 +48,19 @@ export async function lockFixtureRow(transaction: Tx, fixtureId: string) {
   await transaction.$queryRaw`SELECT "id" FROM "fixtures" WHERE "id" = ${fixtureId}::uuid FOR UPDATE`;
 }
 
+/**
+ * CON-001：锁住小组行并返回锁后的名次确认时刻。
+ * 确认名次的事务全程持有小组行锁；改变本组比赛结果的结算必须先取得同一把锁再判断“名次是否已确认”，
+ * 否则在默认 Read Committed 下会读到确认事务提交前的旧值、跳过撤销，留下名次与结果不一致的混合状态。
+ * 锁顺序固定为“本场对阵 → 小组 → 下游签位”，与确认名次的“小组 → 下游签位”一致，不形成环。
+ * 可串行化事务（裁判台命令）在此处遇到并发提交会得到序列化冲突，由调用方的有界重试整段重跑。
+ */
+export async function lockGroupRankingState(transaction: Tx, groupId: string) {
+  const [row] = await transaction.$queryRaw<{ rankingConfirmedAt: Date | null }[]>`
+    SELECT "rankingConfirmedAt" FROM "competition_groups" WHERE "id" = ${groupId}::uuid FOR UPDATE`;
+  return row?.rankingConfirmedAt ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // 读取：对阵、小场与上场队员
 // ---------------------------------------------------------------------------
@@ -527,7 +540,7 @@ export async function settleTeamFixture(transaction: Tx, fixtureId: string, acto
     });
   }
 
-  if (fixture.groupId && fixture.group?.rankingConfirmedAt && !summary.complete) {
+  if (fixture.groupId && !summary.complete && (await lockGroupRankingState(transaction, fixture.groupId))) {
     await revokeGroupRankingInternal(transaction, tournamentId, actorUserId, fixture.groupId, `对抗 ${fixture.code} 的小场结果被重开`);
   }
   return summary;

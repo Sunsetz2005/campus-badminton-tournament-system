@@ -7,7 +7,7 @@ import { assertTestDatabaseUrl } from "@/db/database-safety";
 import type { RubberKind } from "@/domain/registration/team-roster";
 import { eligibleForRubber } from "@/domain/team/lineup";
 import { utcToZonedLocal } from "@/domain/time/zoned-time";
-import { generateDrawDraft, publishDraw } from "@/server/services/draw-service";
+import { generateDrawDraft, publishDraw, tournamentTag } from "@/server/services/draw-service";
 import { getPublicSchedule } from "@/server/services/public-tournament-service";
 import { createManualRegistration, reviewRegistration } from "@/server/services/registration-service";
 import { loadScheduleFacts } from "@/server/services/schedule-facts";
@@ -27,7 +27,7 @@ import {
   updateCourt,
 } from "@/server/services/schedule-service";
 import { submitScoringCommand, type ScoringCommandEnvelope } from "@/server/services/scoring-command-service";
-import { acquireScoringSession } from "@/server/services/scoring-session-service";
+import { acquireScoringSession, heartbeatScoringSession } from "@/server/services/scoring-session-service";
 import {
   createRefereeAccount,
   disableRefereeAccount,
@@ -616,6 +616,51 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
     await expect(prisma.match.count({ where: { stage: { competition: { tournamentId } }, scheduledAt: { not: null } } })).resolves.toBe(0);
   });
 
+  it("AUD-008 赛事标签冲突时分配新的持久化前缀，重抽不会反复撞号", async () => {
+    const tagOf = async (tournamentId: string) =>
+      (await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId }, select: { matchCodeTag: true } })).matchCodeTag;
+    const codesOf = (tournamentId: string) =>
+      prisma.match.findMany({ where: { stage: { competition: { tournamentId } } }, select: { id: true, code: true } });
+
+    // 无冲突时沿用原摘要标签，既有编号规则不变。
+    const first = await singlesRoundRobin("tag-a", undefined, 4);
+    expect(await tagOf(first.tournamentId)).toBe(tournamentTag(first.tournamentId));
+
+    // 另一赛事已持有本赛事的首选标签：改用下一个候选，发布成功且编号不冲突。
+    const second = await singlesRoundRobin("tag-b", async (slug) => {
+      const { id } = await prisma.tournament.findUniqueOrThrow({ where: { slug }, select: { id: true } });
+      await prisma.tournament.update({ where: { id: first.tournamentId }, data: { matchCodeTag: tournamentTag(id) } });
+    }, 4);
+    const secondTag = await tagOf(second.tournamentId);
+    expect(secondTag).not.toBe(tournamentTag(second.tournamentId));
+    expect((await codesOf(second.tournamentId)).every((match) => match.code.startsWith(`${secondTag}-`))).toBe(true);
+
+    // 尚未持久化标签的旧赛事已用某前缀写过编号：新赛事同样避开。
+    const third = await singlesRoundRobin("tag-c", async (slug) => {
+      const { id } = await prisma.tournament.findUniqueOrThrow({ where: { slug }, select: { id: true } });
+      const [legacy] = await codesOf(first.tournamentId);
+      await prisma.tournament.update({ where: { id: first.tournamentId }, data: { matchCodeTag: null } });
+      await prisma.match.update({ where: { id: legacy.id }, data: { code: `${tournamentTag(id)}-MS-LEGACY` } });
+    }, 4);
+    expect(await tagOf(third.tournamentId)).not.toBe(tournamentTag(third.tournamentId));
+  });
+
+  it("AUD-006 纯淘汰赛按阶段类型筛选：淘汰范围选中全部，小组范围为空", async () => {
+    const { slug, tournamentId } = await singlesRoundRobin(
+      "ko-only",
+      async (slug) => {
+        await addCourts(adminId, slug, { count: 4 });
+        await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "18:00" }] });
+      },
+      8,
+      { format: "KNOCKOUT" },
+    );
+    const total = await prisma.match.count({ where: { stage: { competition: { tournamentId } } } });
+    expect(total).toBeGreaterThan(0);
+    await expect(suggestDraft(adminId, slug, { stage: "GROUPS" })).rejects.toMatchObject({ status: 409, code: "nothing_to_schedule" });
+    await expect(suggestDraft(adminId, slug, { stage: "KNOCKOUT" })).resolves.toMatchObject({ scope: total });
+  });
+
   it("小组+淘汰：两场半决赛同时进行，决赛与三四名赛同时进行（同项目未定对阵不会共用运动员）", async () => {
     // 复现演示站反馈：10 人分 2 组、8 块场地。小组赛每组最多 2 场并行，只用得上 4 块场地；
     // 淘汰赛此前被当作可能撞人而全部串行在 1 块场地上。
@@ -702,10 +747,24 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
     expect(reset.password).toMatch(/^[A-Za-z0-9]{16}$/);
     expect(reset.password).not.toBe(created.password);
 
-    // 切回逐场指派：已取得的控制在下一条命令时被拒绝。
+    // AUD-004 纵深：即使模式被直接改写、没有经过服务回收，心跳也会复核指派并释放会话。
+    await prisma.tournament.update({ where: { id: tournamentId }, data: { refereeMode: "PER_MATCH" } });
+    await expect(heartbeatScoringSession(created.userId, second, controlB.sessionId, controlB.takeoverGeneration, controlB.controlToken))
+      .rejects.toMatchObject({ status: 403, code: "assignment_revoked" });
+    await expect(prisma.scoringSession.findUniqueOrThrow({ where: { id: controlB.sessionId } }))
+      .resolves.toMatchObject({ status: "REVOKED", revokedReason: "AUTHORITY_REVOKED" });
+    await prisma.tournament.update({ where: { id: tournamentId }, data: { refereeMode: "SHARED_ACCOUNT" } });
+
+    // 切回逐场指派（AUD-004）：未指派给该账号的控制会话随模式切换一并回收，心跳与命令都失效，
+    // 本场不再被旧租约占住。
     await updateRefereeMode(adminId, slug, { refereeMode: "PER_MATCH" });
+    await expect(prisma.scoringSession.findUniqueOrThrow({ where: { id: controlA.sessionId } }))
+      .resolves.toMatchObject({ status: "REVOKED", revokedReason: "REFEREE_MODE_CHANGED" });
+    await expect(heartbeatScoringSession(created.userId, first, controlA.sessionId, controlA.takeoverGeneration, controlA.controlToken))
+      .rejects.toMatchObject({ status: 409, code: "not_controller" });
     const next = { ...coinToss(controlA), type: "RECORD_SPECIAL_OUTCOME", expectedVersion: 1, payload: { type: "WO", winnerSide: "A" } } as ScoringCommandEnvelope;
     await expect(submitScoringCommand(created.userId, first, next, controlA.controlToken)).rejects.toMatchObject({ status: 403 });
+    await expect(prisma.scoringSession.count({ where: { match: { code: first }, status: "ACTIVE" } })).resolves.toBe(0);
 
     // 停用：撤销角色、注销会话、吊销控制。
     await updateRefereeMode(adminId, slug, { refereeMode: "SHARED_ACCOUNT" });

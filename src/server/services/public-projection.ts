@@ -56,12 +56,16 @@ export function scheduleDateIn(timeZone: string, value: Date): string {
   }).format(value);
 }
 
-export function scheduleDateOption(timeZone: string, isoDay: string): ScheduleDateOption {
-  const at = new Date(`${isoDay}T12:00:00Z`);
+/**
+ * `isoDay` 已经是赛事时区下的自然日，标签只是给这个日历日起名字，不能再换算一次时区：
+ * 否则 UTC+12 以东会把“UTC 中午”格式化成下一天（AUD-009）。这里固定按 UTC 解读同一日历日。
+ */
+export function scheduleDateOption(isoDay: string): ScheduleDateOption {
+  const at = new Date(`${isoDay}T00:00:00Z`);
   return {
     date: isoDay,
-    dayLabel: formatter(dayLabelFormatters, "zh-CN", timeZone, { month: "long", day: "numeric" }).format(at),
-    weekdayLabel: formatter(weekdayFormatters, "zh-CN", timeZone, { weekday: "short" }).format(at),
+    dayLabel: formatter(dayLabelFormatters, "zh-CN", "UTC", { month: "long", day: "numeric" }).format(at),
+    weekdayLabel: formatter(weekdayFormatters, "zh-CN", "UTC", { weekday: "short" }).format(at),
   };
 }
 
@@ -207,18 +211,15 @@ type RevisionRow = {
 
 /**
  * 公开更正是独立于结果有效性的一维；内部 `reason` 默认不公开。
- * 出现过被替代的版本且当前已有锁定结果 → 已公开更正；
- * 锁定之后又出现待复核/被退回 → 更正处理中。
+ * 只有“已锁定（已发布）的版本被受控重开”才算更正，其标志是出现过 SUPERSEDED：
+ * 此后最新版本重新锁定 → 已公开更正；尚未重新锁定（含第一次重开、新修订尚未提交）→ 更正处理中。
+ * 锁定前的退回（RETURNED → LOCKED）从未对外发布过，不算更正。
+ * AUD-005：不能按修订条数判断，第一次重开时可能只有一条 SUPERSEDED。
  */
 export function projectCorrectionState(revisions: readonly RevisionRow[]): CorrectionState {
-  if (revisions.length < 2) return "NONE";
-  const ordered = [...revisions].sort((first, second) => first.revision - second.revision);
-  const latest = ordered[ordered.length - 1];
-  const hadLocked = ordered.some((revision) => revision.status === "LOCKED" || revision.status === "SUPERSEDED");
-  if (!hadLocked) return "NONE";
-  if (latest.status === "PENDING" || latest.status === "RETURNED") return "UNDER_REVIEW";
-  if (latest.status === "LOCKED") return "CORRECTED";
-  return "NONE";
+  if (!revisions.some((revision) => revision.status === "SUPERSEDED")) return "NONE";
+  const latest = revisions.reduce((current, revision) => (revision.revision > current.revision ? revision : current));
+  return latest.status === "LOCKED" ? "CORRECTED" : "UNDER_REVIEW";
 }
 
 // --- 规则摘要 ---------------------------------------------------------------

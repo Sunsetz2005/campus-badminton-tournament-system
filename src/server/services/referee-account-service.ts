@@ -49,6 +49,32 @@ export async function listRefereeAccounts(tournamentId: string): Promise<Referee
 const modeSchema = z.object({ refereeMode: z.enum(["SHARED_ACCOUNT", "PER_MATCH"]) });
 
 /** 切换执裁方式。只影响此后的权限判定；已有的逐场指派保留，切回逐场指派时继续生效。 */
+/**
+ * AUD-004：改为逐场指派后，共用账号模式下取得、但本场并未指派给该账号的控制会话立即失效，
+ * 新指派的主裁判可以直接申请控制，不被旧租约挡住。
+ */
+async function revokeUnassignedRefereeSessions(transaction: Tx, tournamentId: string) {
+  const active = await transaction.scoringSession.findMany({
+    where: { status: "ACTIVE", actingRole: "REFEREE", match: { stage: { competition: { tournamentId } } } },
+    select: { id: true, matchId: true, userId: true },
+  });
+  const stale: string[] = [];
+  for (const session of active) {
+    const assignment = await transaction.officialAssignment.findFirst({
+      where: { matchId: session.matchId, userId: session.userId, role: "MAIN_REFEREE", active: true },
+      select: { id: true },
+    });
+    if (!assignment) stale.push(session.id);
+  }
+  if (stale.length > 0) {
+    await transaction.scoringSession.updateMany({
+      where: { id: { in: stale }, status: "ACTIVE" },
+      data: { status: "REVOKED", revokedAt: new Date(), revokedReason: "REFEREE_MODE_CHANGED" },
+    });
+  }
+  return stale;
+}
+
 export async function updateRefereeMode(actorUserId: string, slug: string, rawInput: unknown) {
   const { tournament } = await requireManagedTournament(actorUserId, slug, ["ADMIN"]);
   const parsed = modeSchema.safeParse(rawInput);
@@ -58,6 +84,7 @@ export async function updateRefereeMode(actorUserId: string, slug: string, rawIn
     const current = await transaction.tournament.findUniqueOrThrow({ where: { id: tournament.id }, select: { refereeMode: true } });
     if (current.refereeMode === refereeMode) return;
     await transaction.tournament.update({ where: { id: tournament.id }, data: { refereeMode } });
+    const revokedSessionIds = refereeMode === "PER_MATCH" ? await revokeUnassignedRefereeSessions(transaction, tournament.id) : [];
     await transaction.auditLog.create({
       data: {
         tournamentId: tournament.id,
@@ -66,7 +93,7 @@ export async function updateRefereeMode(actorUserId: string, slug: string, rawIn
         targetType: "Tournament",
         targetId: tournament.id,
         outcome: "SUCCESS",
-        metadata: { from: current.refereeMode, to: refereeMode },
+        metadata: { from: current.refereeMode, to: refereeMode, revokedSessionIds },
       },
     });
   });
