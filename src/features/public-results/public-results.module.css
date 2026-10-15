@@ -330,7 +330,6 @@
   --preview-muted: #64798c;
   --preview-line: #d8e4ed;
   width: min(1320px, calc(100vw - 48px));
-  margin-top: -36px;
 }
 
 .scheduleShell .previewBanner {
@@ -593,6 +592,7 @@
 .scheduleShell .scheduleCards { gap: 10px; }
 
 .scheduleShell .matchCard {
+  position: relative;
   gap: 0;
   padding: 0;
   overflow: hidden;
@@ -660,6 +660,21 @@
   letter-spacing: 0;
   white-space: nowrap;
 }
+
+/* 整张卡片都可点进详情：把详情链接的点击区铺满卡片（卡片内没有其他可交互元素）。 */
+.scheduleShell .cardDetailLink::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.scheduleShell .cardDetailLink:hover { background: transparent; }
+.scheduleShell .matchCard:hover { border-color: #9fbfd8; }
+.scheduleShell .matchCard:has(.cardDetailLink:focus-visible) { outline: 3px solid #0b6de0; outline-offset: 2px; }
+.scheduleShell .cardDetailLink:focus-visible { outline: none; }
+/* 链接一旦带 transform 就会成为 ::after 的定位容器，按下时点击区缩回箭头；按压反馈改由卡片承担。 */
+.scheduleShell .matchCard .cardDetailLink:active { transform: none; }
+.scheduleShell .matchCard:has(.cardDetailLink:active) { transform: scale(.99); }
 
 .scheduleShell .cardDetailLink {
   width: 40px;
@@ -765,7 +780,6 @@
 @media (max-width: 899px) {
   .scheduleShell {
     width: min(100%, calc(100vw - 32px));
-    margin-top: -42px;
   }
 
   .scheduleShell .previewBanner {
@@ -836,7 +850,6 @@
 @media (max-width: 520px) {
   .scheduleShell {
     width: calc(100vw - 16px);
-    margin-top: -48px;
   }
 
   .scheduleShell .previewBanner {
