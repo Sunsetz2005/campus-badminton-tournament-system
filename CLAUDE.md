@@ -89,12 +89,15 @@ API 路由用 `errorResponse(error)`（`src/server/services/errors.ts`）把 `Ap
 
 `RuleProfile → RuleProfileRevision`（不可变，有 `revision`、`configHash`、`frozenAt`）可挂在 tournament / competition / stage 上；比赛开始时冻结为 `MatchRuleSnapshot`（含 `config`、`configHash`、`sourceChain`）。**改默认规则不能影响已开始的比赛。** 所有阈值来自 `src/domain/rules/rule-profile.ts`，纯状态机位于 `src/domain/rules/match-engine.ts`。三个内置 profile 都是**演示配置**，不是核实过的正式赛事规程。
 
+重放会逐条比对事件的 `stateBefore/stateAfter`，**改动引擎对已有命令的推导会让历史比赛无法加载**。需要改语义时给命令加版本标记（如 `CORRECT_SCORE_STATE.obligationModel: 2`、S2-008 的 `obligationRelationship`）：新命令在 `scoring-command-schema.ts` 强制带标记，不带标记的只走旧推导供重放。
+
 ### 阶段 3 已接入的服务端并发原语
 
 - `Match.version` —— 乐观并发的 `expectedVersion`
 - `MatchEvent.commandId @unique` + `@@unique([matchId, version])` —— 数据库幂等与确定性重放；已接入 Serializable 服务端命令事务
 - `ScoringSession`：`tokenHash`、`takeoverGeneration`、`expiresAt`、`lastHeartbeatAt`，加上迁移里 `scoring_sessions_one_active_per_match` 的部分唯一索引（每场只允许一个 `ACTIVE`）
 - `ResultRevision`、`AuditLog`
+- 名次确认与结果重开：判断「名次是否已确认」前必须先 `lockGroupRankingState`（小组行 `FOR UPDATE`），锁顺序固定为「本场对阵 → 小组 → 下游签位」；确定性并发测试用 `tests/support/db-barrier.ts` 的第三连接屏障
 
 ### 数据库不变量写在迁移里，不只在表单里
 
