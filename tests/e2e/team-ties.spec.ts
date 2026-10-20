@@ -220,6 +220,8 @@ test.describe.serial("阶段 4-D 团体对抗：出场名单与对抗胜负", ()
         { userId: referee.id, tournamentId: tournament.id, role: "REFEREE" },
         { userId: admin.id, tournamentId: tournament.id, role: "CHIEF_REFEREE" },
       ],
+      // 示例裁判员是平台共用裁判账号，建赛时已自动持有 REFEREE 角色。
+      skipDuplicates: true,
     });
     await expect(prisma.fixture.count({ where: { competitionId: competition.id } })).resolves.toBe(6);
     await context.close();

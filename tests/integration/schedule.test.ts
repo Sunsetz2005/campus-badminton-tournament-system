@@ -10,6 +10,7 @@ import { utcToZonedLocal } from "@/domain/time/zoned-time";
 import { generateDrawDraft, publishDraw, tournamentTag } from "@/server/services/draw-service";
 import { getPublicSchedule } from "@/server/services/public-tournament-service";
 import { createManualRegistration, reviewRegistration } from "@/server/services/registration-service";
+import { listOfficiatingTournaments, loadOfficiatingTournament } from "@/server/services/officiating-service";
 import { loadScheduleFacts } from "@/server/services/schedule-facts";
 import {
   addCourts,
@@ -104,6 +105,8 @@ async function teamTournament(name: string, teamCount: number, settings: Record<
   await transitionTournamentPhase(adminId, slug, { to: "REGISTRATION_CLOSED" });
   await publishDraw(adminId, slug, "TEAM", draft.drawId, { confirm: true });
   await prisma.roleAssignment.createMany({
+    // 示例裁判员是平台共用裁判账号，建赛时已自动持有 REFEREE 角色。
+    skipDuplicates: true,
     data: [
       { userId: refereeId, tournamentId: tournament.id, role: "REFEREE" },
       { userId: referee2Id, tournamentId: tournament.id, role: "REFEREE" },
@@ -771,5 +774,34 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
     await disableRefereeAccount(adminId, slug, created.userId);
     await expect(prisma.scoringSession.count({ where: { userId: created.userId, status: "ACTIVE" } })).resolves.toBe(0);
     await expect(acquireScoringSession(created.userId, first, deviceA)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("平台共用裁判账号：建赛即成为本赛事裁判员，不指派也能开赛；「我的执裁」先列赛事再列本赛事比赛", async () => {
+    // 种子把示例裁判员标为平台共用裁判账号；第二裁判不是。
+    await expect(prisma.user.findUniqueOrThrow({ where: { id: refereeId }, select: { platformReferee: true } })).resolves.toEqual({ platformReferee: true });
+    const { slug, tournamentId } = await singlesRoundRobin("platform-ref", async (slug) => {
+      await updateRefereeMode(adminId, slug, { refereeMode: "SHARED_ACCOUNT" });
+    }, 4);
+    const roles = await prisma.roleAssignment.findMany({ where: { tournamentId, role: "REFEREE" }, select: { userId: true } });
+    expect(roles.map((role) => role.userId)).toContain(refereeId);
+    expect(roles.map((role) => role.userId)).not.toContain(referee2Id);
+
+    const matches = await prisma.match.findMany({ where: { stage: { competition: { tournamentId } } }, select: { code: true } });
+    expect(matches).toHaveLength(6);
+    const [first] = matches.map((match) => match.code).sort();
+    await expect(prisma.officialAssignment.count({ where: { match: { stage: { competition: { tournamentId } } } } })).resolves.toBe(0);
+
+    const cards = await listOfficiatingTournaments(refereeId);
+    expect(cards.find((card) => card.slug === slug)).toMatchObject({ referee: true, upcomingCount: 6, liveCount: 0, endedCount: 0 });
+    await expect(listOfficiatingTournaments(referee2Id)).resolves.not.toContainEqual(expect.objectContaining({ slug }));
+    const detail = await loadOfficiatingTournament(refereeId, slug);
+    expect(detail.matches.map((match) => match.code).sort()).toEqual(matches.map((match) => match.code).sort());
+    await expect(loadOfficiatingTournament(referee2Id, slug)).rejects.toMatchObject({ status: 403 });
+
+    const control = await acquireScoringSession(refereeId, first, randomUUID());
+    expect(control.status).toBe("acquired");
+    await expect(submitScoringCommand(refereeId, first, coinToss(control), control.controlToken)).resolves.toMatchObject({ status: "accepted" });
+    const live = await loadOfficiatingTournament(refereeId, slug);
+    expect(live.matches.find((match) => match.code === first)).toMatchObject({ status: "IN_PROGRESS", fresh: false });
   });
 });

@@ -29,12 +29,14 @@ export interface RefereeAccountView {
   status: string;
   /** 由本赛事开通的专用账号才允许在这里重置口令或停用。 */
   managedHere: boolean;
+  /** 平台共用裁判账号：自动持有每个赛事的裁判员角色。 */
+  platformReferee: boolean;
 }
 
 export async function listRefereeAccounts(tournamentId: string): Promise<RefereeAccountView[]> {
   const roles = await prisma.roleAssignment.findMany({
     where: { tournamentId, role: "REFEREE" },
-    select: { user: { select: { id: true, name: true, displayUsername: true, username: true, status: true, provisionedForTournamentId: true } } },
+    select: { user: { select: { id: true, name: true, displayUsername: true, username: true, status: true, provisionedForTournamentId: true, platformReferee: true } } },
     orderBy: { createdAt: "asc" },
   });
   return roles.map(({ user }) => ({
@@ -43,6 +45,7 @@ export async function listRefereeAccounts(tournamentId: string): Promise<Referee
     username: user.displayUsername ?? user.username,
     status: user.status,
     managedHere: user.provisionedForTournamentId === tournamentId,
+    platformReferee: user.platformReferee,
   }));
 }
 

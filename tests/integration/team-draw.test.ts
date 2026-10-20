@@ -483,7 +483,8 @@ describe("团体赛抽签编排", () => {
 
     // 团体小场出场名单属于后续阶段：此时不能开始计分。
     const rubber = fixtures.find((fixture) => fixture.kind === "GROUP")?.matches[0];
-    await prisma.roleAssignment.create({ data: { userId: refereeId, tournamentId, role: "REFEREE" } });
+    // 示例裁判员是平台共用裁判账号，建赛时已自动持有 REFEREE 角色。
+    await prisma.roleAssignment.createMany({ data: [{ userId: refereeId, tournamentId, role: "REFEREE" }], skipDuplicates: true });
     await prisma.officialAssignment.create({ data: { matchId: rubber?.id as string, userId: refereeId } });
     await expect(getAuthoritativeMatchState(refereeId, rubber?.code as string)).rejects.toMatchObject({ code: "match_not_ready" });
 
@@ -577,7 +578,8 @@ describe("个人项目抽签与执裁衔接", () => {
     expect(new Set(pairs).size).toBe(10);
 
     const target = matches[0];
-    await prisma.roleAssignment.create({ data: { userId: refereeId, tournamentId, role: "REFEREE" } });
+    // 示例裁判员是平台共用裁判账号，建赛时已自动持有 REFEREE 角色。
+    await prisma.roleAssignment.createMany({ data: [{ userId: refereeId, tournamentId, role: "REFEREE" }], skipDuplicates: true });
     await prisma.officialAssignment.create({ data: { matchId: target.id, userId: refereeId } });
     const state = await getAuthoritativeMatchState(refereeId, target.code);
     expect(state).toMatchObject({ status: "snapshot", version: 0, state: { phase: "AWAITING_COIN_TOSS" } });

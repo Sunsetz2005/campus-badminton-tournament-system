@@ -4,6 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 
+import { officiatingReturnPath } from "@/features/officiating/return-path";
 import { authClient } from "@/lib/auth-client";
 import type { NavContext } from "@/server/auth/nav-context";
 
@@ -20,6 +21,11 @@ function linksFor(navContext: NavContext) {
   return links;
 }
 
+/** 只有单场裁判工作台 /officiating/<比赛编号> 使用紧凑导航；赛事比赛列表与裁判长看板仍用完整导航。 */
+function isWorkbenchPath(pathname: string) {
+  return /^\/officiating\/(?!tournament\/|board\/)[^/]+\/?$/.test(pathname);
+}
+
 export function AppNav({ navContext }: { navContext: NavContext }) {
   const pathname = usePathname();
   if (isPublicPreviewPath(pathname)) {
@@ -28,7 +34,7 @@ export function AppNav({ navContext }: { navContext: NavContext }) {
 
   return (
     <AuthenticatedAppNav
-      compact={pathname.startsWith("/officiating/")}
+      compact={isWorkbenchPath(pathname)}
       navContext={navContext}
       pathname={pathname}
     />
@@ -94,7 +100,20 @@ function AuthenticatedAppNav({
       </div>
       <nav aria-label="主导航">
         {compact ? (
-          <Link aria-current="page" href="/officiating">返回我的执裁</Link>
+          <Link
+            aria-current="page"
+            href="/officiating"
+            onClick={(event) => {
+              // 回到进入工作台前所在的赛事比赛列表（保留查看方式与筛选）；没有记录时回「我的执裁」入口。
+              const back = officiatingReturnPath();
+              if (back) {
+                event.preventDefault();
+                router.push(back);
+              }
+            }}
+          >
+            返回我的执裁
+          </Link>
         ) : linksFor(navContext).map(([href, label]) => {
           const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
           return (

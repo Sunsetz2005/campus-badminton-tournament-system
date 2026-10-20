@@ -592,6 +592,8 @@ async function main() {
     "本地临场裁判",
     optional("DEMO_REFEREE_USERNAME"),
   );
+  // 示例裁判员就是全体裁判统一登录的平台共用裁判账号，在每个赛事都持有裁判员角色（见本函数末尾）。
+  await prisma.user.update({ where: { id: referee.id }, data: { platformReferee: true } });
   const participantEmail = process.env.DEMO_PARTICIPANT_EMAIL?.trim();
   const participantPassword = process.env.DEMO_PARTICIPANT_PASSWORD?.trim();
   if (Boolean(participantEmail) !== Boolean(participantPassword)) {
@@ -614,6 +616,8 @@ async function main() {
     status: "PUBLISHED" as const,
     phase: "RUNNING" as const,
     namePolicy: "DISPLAY_NAMES" as const,
+    // 本赛事是逐场指派权限边界的测试夹具（裁判只能执裁指派给自己的比赛），保持逐场指派。
+    refereeMode: "PER_MATCH" as const,
   };
   const tournament = await prisma.tournament.upsert({
     where: { slug: "phase-1-demo" },
@@ -1054,6 +1058,11 @@ async function main() {
   const sunshineTeams = await seedSunshineLeague(admin.id, referee.id);
   console.info(`团体赛演示赛事：本次新增 ${sunshineTeams} 支已审核队伍（共 8 支，未抽签；8 块场地、3 个比赛日）。`);
   const teamManagerSeeded = await seedDemoTeamManager(admin.id);
+  const tournamentIds = await prisma.tournament.findMany({ select: { id: true } });
+  await prisma.roleAssignment.createMany({
+    data: tournamentIds.map(({ id }) => ({ userId: referee.id, tournamentId: id, role: "REFEREE" as const })),
+    skipDuplicates: true,
+  });
 
   console.info(`公开发布边界：本次补写 ${published.count} 场；额外门户赛事 ${extraTournaments} 个。`);
 

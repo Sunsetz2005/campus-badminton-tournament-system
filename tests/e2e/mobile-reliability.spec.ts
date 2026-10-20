@@ -514,7 +514,7 @@ test.describe("阶段 8：后台与裁判长页面五视口", () => {
     );
     for (const viewport of VIEWPORTS) {
       await referee.page.setViewportSize({ width: viewport.width, height: viewport.height });
-      for (const [name, url] of [["my-matches", "/officiating"]] as const) {
+      for (const [name, url] of [["my-matches", "/officiating"], ["my-matches-by-court", "/officiating/tournament/phase-1-demo"]] as const) {
         const response = await referee.page.goto(url);
         expect(response?.status(), `${name} 状态码`).toBeLessThan(400);
         await expectNoRootOverflow(referee.page, `${viewport.name} ${name}`);

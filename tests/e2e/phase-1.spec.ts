@@ -194,13 +194,17 @@ test.describe.serial("阶段 1 浏览器权限链", () => {
     await expect(page.getByRole("heading", { name: "没有赛事管理权限" })).toBeVisible();
   });
 
-  test("裁判的全新 0:0 比赛优先展示且可进入执裁", async ({ page }) => {
+  test("裁判先选赛事，再按场地看到全新 0:0 比赛并可进入执裁", async ({ page }) => {
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     await page.goto("/officiating");
-    const freshMatch = page.locator("article.card").filter({ hasText: "MS-FRESH-001" });
+    await page.getByTestId("officiating-tournament").filter({ hasText: "阶段 1 匿名模拟赛" }).getByRole("link").click();
+    await expect(page).toHaveURL("/officiating/tournament/phase-1-demo");
+    const firstCourt = page.getByTestId("officiating-group").first();
+    await expect(firstCourt.getByRole("heading")).toHaveText("1 号场");
+    const freshMatch = page.getByTestId("assignment-card").filter({ hasText: "MS-FRESH-001" });
     await expect(freshMatch.getByText("全新 · 0:0")).toBeVisible();
-    await expect(freshMatch.getByRole("link", { name: "进入执裁" })).toBeVisible();
-    await expect(page.locator("article.card").first()).toContainText("MS-FRESH-001");
+    await expect(freshMatch).toHaveAttribute("href", "/officiating/MS-FRESH-001");
+    await expect(firstCourt.getByTestId("assignment-card").first()).toContainText("MS-FRESH-001");
   });
 
   test("管理员登录后仍不能替代主裁判取得比赛控制权", async ({ page }) => {
@@ -217,7 +221,7 @@ test.describe.serial("阶段 1 浏览器权限链", () => {
 
   test("裁判只能取得本人指派单打比赛的控制权", async ({ page }) => {
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
-    await page.goto("/officiating");
+    await page.goto("/officiating/tournament/phase-1-demo");
     await expect(page.getByText("MS-DEMO-001")).toBeVisible();
     await expect(page.getByText("MD-DEMO-001")).not.toBeVisible();
 

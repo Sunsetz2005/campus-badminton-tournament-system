@@ -223,6 +223,8 @@ model User {
   // 由赛事管理员开通的队伍负责人账号：初始口令只显示一次，首次登录必须修改。
   mustChangePassword         Boolean                   @default(false)
   provisionedForTournamentId String?                   @db.Uuid
+  // 平台共用裁判账号：在每个赛事（含此后新建的赛事）都自动持有 REFEREE 角色。
+  platformReferee            Boolean                   @default(false)
   createdAt                  DateTime                  @default(now())
   updatedAt                  DateTime                  @updatedAt
   sessions                   Session[]

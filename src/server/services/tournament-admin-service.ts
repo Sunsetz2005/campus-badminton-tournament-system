@@ -117,7 +117,7 @@ export const createTournamentSchema = z.object({
   endDate: isoDate,
   timezone: z.string().trim().refine(isValidTimeZone, "时区无效"),
   namePolicy: z.enum(["CODES_ONLY", "DISPLAY_NAMES"]),
-  /** 未传时保持逐场指派（接口向后兼容）；建赛向导默认提交共用裁判账号。 */
+  /** 未传时保持逐场指派（接口向后兼容）；建赛向导固定提交共用裁判账号，不再让创建者选择。 */
   refereeMode: z.enum(["SHARED_ACCOUNT", "PER_MATCH"]).default("PER_MATCH"),
   rulePreset: z.enum(Object.keys(RULE_PRESETS) as [RulePresetKey, ...RulePresetKey[]]),
   registrationOpensAt: localDateTime,
@@ -222,6 +222,17 @@ export async function createTournament(actorUserId: string, rawInput: unknown) {
       await transaction.roleAssignment.create({
         data: { userId: actorUserId, tournamentId: tournament.id, role: "ADMIN" },
       });
+      // 平台共用裁判账号自动成为新赛事的裁判员，建赛后不必再逐个赛事开通或指派裁判。
+      const platformReferees = await transaction.user.findMany({
+        where: { platformReferee: true, status: "ACTIVE" },
+        select: { id: true },
+      });
+      if (platformReferees.length) {
+        await transaction.roleAssignment.createMany({
+          data: platformReferees.map((user) => ({ userId: user.id, tournamentId: tournament.id, role: "REFEREE" as const })),
+          skipDuplicates: true,
+        });
+      }
       await transaction.auditLog.create({
         data: {
           tournamentId: tournament.id,

@@ -133,6 +133,8 @@ test.describe.serial("阶段 4-C 赛程与裁判排班：从对阵表到赛程�
         { userId: referee.id, tournamentId: tournament.id, role: "REFEREE" },
         { userId: admin.id, tournamentId: tournament.id, role: "CHIEF_REFEREE" },
       ],
+      // 示例裁判员是平台共用裁判账号，建赛时已自动持有 REFEREE 角色。
+      skipDuplicates: true,
     });
     await expect(prisma.match.count({ where: { fixture: { competitionId: competition.id } } })).resolves.toBe(30);
     await context.close();
@@ -222,13 +224,14 @@ test.describe.serial("阶段 4-C 赛程与裁判排班：从对阵表到赛程�
     await admin.context.close();
 
     const { context, page } = await loggedIn(browser, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!, { width: 390, height: 844 });
-    await page.goto("/officiating");
+    // 按时间查看时卡片写出场地名（按场地查看时场地名在分组标题里）。
+    await page.goto(`/officiating/tournament/${slug}?view=time`);
     const card = page.getByTestId("assignment-card").filter({ hasText: assignment.match.code });
     await expect(card).toContainText("10-17");
     await expect(card).toContainText("场地");
     await noHorizontalOverflow(page);
     await shot(page, "04-my-assignments-mobile");
-    await card.getByRole("link", { name: "进入执裁" }).click();
+    await card.click();
     await expect(page).toHaveURL(`/officiating/${assignment.match.code}`);
     await expect(page.getByText(assignment.match.code).first()).toBeVisible();
     await shot(page, "05-workbench-from-schedule-mobile");

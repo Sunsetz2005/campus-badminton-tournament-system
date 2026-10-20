@@ -49,6 +49,8 @@ beforeAll(async () => {
   await transitionTournamentPhase(adminId, slug, { to: "REGISTRATION_CLOSED" });
   await publishDraw(adminId, slug, "MS", draft.drawId, { confirm: true });
   await prisma.roleAssignment.createMany({
+    // 示例裁判员是平台共用裁判账号，建赛时已自动持有 REFEREE 角色。
+    skipDuplicates: true,
     data: [
       { userId: refereeId, tournamentId: tournament.id, role: "REFEREE" },
       { userId: adminId, tournamentId: tournament.id, role: "CHIEF_REFEREE" },

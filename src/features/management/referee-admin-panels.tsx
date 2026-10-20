@@ -15,6 +15,7 @@ export interface RefereeAccountRow {
   username: string | null;
   status: string;
   managedHere: boolean;
+  platformReferee: boolean;
 }
 
 /** 系统生成的口令只在本次页面状态里显示；刷新或离开后无法再看到，只能重置。 */
@@ -97,6 +98,7 @@ export function RefereeAccountsPanel({
             <li key={account.id}>
               <strong>{account.name}</strong>
               <span className={styles.muted}>用户名 {account.username ?? "（未设置，用邮箱登录）"}</span>
+              {account.platformReferee ? <span className={styles.muted}>平台共用裁判账号 · 所有赛事通用</span> : null}
               {account.status !== "ACTIVE" ? <span className={styles.conflictMark}>已停用</span> : null}
               {account.managedHere && account.status === "ACTIVE" ? (
                 <>

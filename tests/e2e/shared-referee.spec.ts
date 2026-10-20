@@ -86,11 +86,13 @@ test.describe.serial("共用裁判账号：开通、登录、任意一场开赛"
     await ok(await request.post(`${api}/phase`, { data: { to: "REGISTRATION_CLOSED" } }));
     await ok(await request.post(`${api}/competitions/MS/draws/${draft.drawId}/publish`, { data: { confirm: true } }));
 
-    // 赛事概览：执裁方式已是共用账号，还没有裁判账号时明确提示。
+    // 赛事概览：执裁方式已是共用账号；平台共用裁判账号建赛时已自动成为本赛事裁判员，不需要再开通。
     await admin.page.goto(`/management/${slug}`);
     const panel = admin.page.getByTestId("referee-accounts");
     await expect(panel.getByRole("radio", { name: /共用裁判账号/ })).toBeChecked();
-    await expect(panel).toContainText("还没有可用的裁判员账号");
+    await expect(panel).toContainText("平台共用裁判账号");
+    await expect(panel).not.toContainText("还没有可用的裁判员账号");
+    // 也可以为本赛事另开一个专用裁判账号。
     await panel.getByLabel("登录用户名").fill(refereeUsername);
     await panel.getByLabel("口令（留空自动生成）").fill(refereePassword);
     await panel.getByRole("button", { name: "开通裁判账号" }).click();
@@ -99,14 +101,20 @@ test.describe.serial("共用裁判账号：开通、登录、任意一场开赛"
     await expect(panel).not.toContainText("还没有可用的裁判员账号");
     await admin.context.close();
 
-    // 裁判用用户名登录：没有任何逐场指派，也能看到全部 6 场并进入。
+    // 裁判用用户名登录：「我的执裁」先列赛事，进入后没有任何逐场指派也能看到全部 6 场并进入。
     const phone = await loggedIn(browser, refereeUsername, refereePassword, { width: 390, height: 844 });
     await phone.page.goto("/officiating");
+    await phone.page.getByTestId("officiating-tournament").filter({ hasText: "共用裁判账号端到端" }).getByRole("link").click();
+    await expect(phone.page).toHaveURL(`/officiating/tournament/${slug}`);
     const cards = phone.page.getByTestId("assignment-card");
     await expect(cards).toHaveCount(6);
-    await expect(cards.first()).toContainText("共用裁判账号");
-    const matchCode = (await cards.first().locator("h2").textContent())!.trim();
-    await cards.first().getByRole("link", { name: "进入执裁" }).click();
+    // 三种查看方式都列出同样 6 场。
+    for (const view of ["时间", "项目", "场地"]) {
+      await phone.page.getByRole("navigation", { name: "查看方式" }).getByRole("link", { name: `按${view}` }).click();
+      await expect(cards).toHaveCount(6);
+    }
+    const matchCode = (await cards.first().locator(".officiating-match-code").textContent())!.trim();
+    await cards.first().click();
     await expect(phone.page).toHaveURL(`/officiating/${matchCode}`);
     await phone.page.getByRole("button", { name: "取得本机控制权" }).click();
     await expect(phone.page.locator(".scoring-workbench, body")).toContainText("本机可写");
