@@ -272,10 +272,12 @@ async function spectator(context: RunContext, registry: LiveRegistry, index: num
   const client = new Client(context.origin, `spectator-${index}`, context.metrics, context.nextIp());
   const rng = context.rng.fork(`spectator:${index}`);
   await sleep(rng.int(0, context.level.spectatorIntervalSeconds * 1000));
-  // 学号统一以运行标签开头；公开接口的响应里出现它就是白名单泄露（§8.8）。
+  // 学号格式固定为「运行标签 + 赛事键 + 4 位序号」（roster.ts）；公开响应里出现这种串就是白名单泄露（§8.8）。
+  // 只匹配完整学号格式：运行标签本身也出现在赛事 slug 里，单看标签会误报。
   const studentTag = context.runId.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 6);
+  const studentIdPattern = new RegExp(`${studentTag}(${context.level.tournaments.map((plan) => plan.key).join("|")})\\d{4}`);
   const inspect = (result: { json: unknown }, where: string) => {
-    if (JSON.stringify(result.json ?? "").includes(studentTag)) {
+    if (studentIdPattern.test(JSON.stringify(result.json ?? ""))) {
       addFinding(context, { kind: "unexpected", area: "公开白名单", title: `${where} 响应中出现学号`, detail: { where } });
     }
   };
