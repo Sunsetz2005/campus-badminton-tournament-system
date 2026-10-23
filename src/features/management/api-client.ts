@@ -12,7 +12,7 @@ export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: ApiFailur
  * 管理端与报名页共用的请求封装。只有收到服务端确认才返回 ok；
  * 网络失败按「结果未知」提示，不假装成功。
  */
-export async function sendJson<T>(url: string, method: "POST" | "PATCH", body?: unknown): Promise<ApiResult<T>> {
+export async function sendJson<T>(url: string, method: "POST" | "PATCH" | "DELETE", body?: unknown): Promise<ApiResult<T>> {
   return send<T>(url, {
     method,
     headers: body === undefined ? undefined : { "content-type": "application/json" },

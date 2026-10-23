@@ -2,7 +2,7 @@
 title: API 与权限
 stage: 7
 status: current
-updated: 2026-09-29
+updated: 2026-10-23
 tags:
   - 羽毛球赛事管理系统
   - API
@@ -64,6 +64,8 @@ tags:
 `requireAssignedReferee` 只允许拥有 `REFEREE` 的账号正常取得租约：逐场指派模式（`Tournament.refereeMode=PER_MATCH`）还要求该场有效的主裁判指派；共用裁判账号模式（`SHARED_ACCOUNT`）下本赛事裁判员角色即覆盖本赛事全部比赛，不跨赛事。带 `User.platformReferee` 标记的平台共用裁判账号在建赛事务中自动获得新赛事的 `REFEREE` 角色（2026-10-20），授权仍逐赛事落在 `RoleAssignment` 上，判定逻辑不变。「我的执裁」先按赛事列出入口（`/officiating`），赛事内页 `/officiating/tournament/[slug]` 需本赛事 `REFEREE` 或 `CHIEF_REFEREE` 角色，否则 403。同一账号多台设备时，每场仍只允许一个活动控制会话（按设备会话区分），第二台设备只读；写命令事务内复核角色未被撤销、模式未切回逐场指派。
 
 裁判账号由赛事 `ADMIN` 在赛事概览开通：`POST /api/admin/tournaments/[slug]/referees`（用户名 3—30 位字母数字下划线点；口令可自定义 8—64 位，留空则生成 16 位并只在本次响应返回；不要求首次改口令，避免第一位登录的裁判把其他人锁在门外；审计不含口令）、`PATCH .../referees` 切换执裁方式、`POST .../referees/[userId]/password` 重置口令并注销该账号全部登录、`POST .../referees/[userId]/disable` 撤销角色、停用账号、注销登录并吊销其活动控制会话。重置与停用只允许「本赛事开通、只担任本赛事裁判员、非平台管理员、非队伍负责人」的账号。
+
+裁判长由赛事 `ADMIN` 在赛事概览指定（2026-10-23，`chief-referee-service.ts`）：`POST /api/admin/tournaments/[slug]/chief-referees` 请求体 `{ userId }` 或 `{ login }`（登录用户名或邮箱，不区分大小写），把已有启用账号授予本赛事 `CHIEF_REFEREE`，返回 `200 { userId, name, username, granted }`，已是裁判长时 `granted=false` 且不重复审计；`POST .../chief-referees/accounts` 请求体 `{ username, name }` 开通裁判长个人账号，返回 `201 { userId, username, name, initialPassword }`（口令只返回这一次、`mustChangePassword=true`）；`DELETE .../chief-referees/[userId]` 撤销，返回 `200 { userId, revoked, revokedSessionIds }`，同一事务把该账号在本赛事以裁判长身份持有的活动控制会话吊销（`CHIEF_REFEREE_REVOKED`）。平台共用裁判账号不能担任裁判长（409 `platform_referee_not_allowed`），停用账号 409 `account_disabled`，账号不存在 404 `user_not_found`，非本赛事 `ADMIN` 403。一个赛事可以有多位裁判长：复核人不能是提交人，仅结果补录须由补录人以外的裁判长复核。
 
 裁判长不绕过流程普通取权，而是使用专用 takeover 接口；现有管理员模拟账号同时获授 `CHIEF_REFEREE`，每次敏感操作审计实际使用的裁判长角色，不依赖 `ADMIN`。
 

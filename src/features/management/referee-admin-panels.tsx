@@ -179,3 +179,143 @@ export function RefereeAccountsPanel({
     </div>
   );
 }
+
+export interface ChiefRefereeRow {
+  id: string;
+  name: string;
+  username: string | null;
+  status: string;
+  mustChangePassword: boolean;
+  isAdmin: boolean;
+}
+
+/**
+ * 裁判长：复核锁定结果、接管、确认名次与人工处置都需要。
+ * 复核人不能是提交人、仅结果补录也要补录人以外的裁判长复核，所以一般应有两位以上。
+ */
+export function ChiefRefereesPanel({ slug, chiefs, currentUserId }: { slug: string; chiefs: ChiefRefereeRow[]; currentUserId: string }) {
+  const { pending, run, feedback } = useAction();
+  const [login, setLogin] = useState("");
+  const [form, setForm] = useState({ username: "", name: "裁判长" });
+  const [secret, setSecret] = useState<{ username: string; password: string } | null>(null);
+  const base = `/api/admin/tournaments/${slug}/chief-referees`;
+  const active = chiefs.filter((chief) => chief.status === "ACTIVE");
+  const selfIsChief = chiefs.some((chief) => chief.id === currentUserId);
+
+  async function grant(event: FormEvent) {
+    event.preventDefault();
+    await run(async () => {
+      const result = await sendJson<{ name: string; granted: boolean }>(base, "POST", { login });
+      if (result.ok) setLogin("");
+      return result;
+    }, "已授予裁判长。");
+  }
+
+  async function create(event: FormEvent) {
+    event.preventDefault();
+    setSecret(null);
+    await run(async () => {
+      const result = await sendJson<{ username: string; initialPassword: string }>(`${base}/accounts`, "POST", form);
+      if (result.ok) {
+        setSecret({ username: result.data.username, password: result.data.initialPassword });
+        setForm({ username: "", name: "裁判长" });
+      }
+      return result;
+    }, "裁判长账号已开通，首次登录会提示修改初始口令。");
+  }
+
+  return (
+    <div className={styles.form} data-testid="chief-referees">
+      {chiefs.length ? (
+        <ul className={styles.chips} aria-label="裁判长">
+          {chiefs.map((chief) => (
+            <li key={chief.id}>
+              <strong>{chief.name}</strong>
+              <span className={styles.muted}>用户名 {chief.username ?? "（未设置，用邮箱登录）"}</span>
+              {chief.isAdmin ? <span className={styles.muted}>本赛事管理员</span> : null}
+              {chief.mustChangePassword ? <span className={styles.muted}>待首次改口令</span> : null}
+              {chief.status !== "ACTIVE" ? <span className={styles.conflictMark}>已停用</span> : null}
+              <ActionButton
+                disabled={pending}
+                onClick={() => {
+                  if (!window.confirm(`撤销「${chief.username ?? chief.name}」的裁判长？其正在以裁判长身份控制的比赛会立即释放控制权。`)) return;
+                  void run(() => sendJson(`${base}/${chief.id}`, "DELETE"), "已撤销裁判长。");
+                }}
+                size="sm"
+                variant="ghost"
+              >
+                撤销
+              </ActionButton>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {active.length >= 2 ? null : (
+        <p className={styles.alert} role="note">
+          {active.length === 0
+            ? "本赛事还没有裁判长，比赛结果无法复核锁定，名次与晋级也无法确认。"
+            : "目前只有一位裁判长。复核人不能是结果提交人，仅结果补录也须由补录人以外的裁判长复核，建议至少两位。"}
+        </p>
+      )}
+      {secret ? <OneTimeRefereePassword onDismiss={() => setSecret(null)} password={secret.password} username={secret.username} /> : null}
+
+      <form className={styles.fieldGrid3} onSubmit={grant}>
+        <label className={styles.field}>
+          <span>授予已有账号（登录用户名或邮箱）</span>
+          <input
+            autoCapitalize="none"
+            autoComplete="off"
+            maxLength={254}
+            onChange={(event) => setLogin(event.target.value)}
+            required
+            spellCheck={false}
+            value={login}
+          />
+        </label>
+        <div className={styles.field}>
+          <span aria-hidden="true">&nbsp;</span>
+          <ActionButton loading={pending} type="submit" variant="secondary">授予裁判长</ActionButton>
+        </div>
+        {selfIsChief ? null : (
+          <div className={styles.field}>
+            <span aria-hidden="true">&nbsp;</span>
+            <ActionButton
+              disabled={pending}
+              onClick={() => void run(() => sendJson(base, "POST", { userId: currentUserId }), "已把你自己设为裁判长。")}
+              variant="ghost"
+            >
+              把我设为裁判长
+            </ActionButton>
+          </div>
+        )}
+      </form>
+
+      <form className={styles.fieldGrid3} onSubmit={create}>
+        <label className={styles.field}>
+          <span>新裁判长登录用户名</span>
+          <input
+            autoCapitalize="none"
+            autoComplete="off"
+            maxLength={30}
+            onChange={(event) => setForm({ ...form, username: event.target.value })}
+            pattern="[A-Za-z0-9_.]{3,30}"
+            placeholder="如 chief01"
+            required
+            spellCheck={false}
+            title="字母、数字、下划线或点，3—30 位"
+            value={form.username}
+          />
+        </label>
+        <label className={styles.field}>
+          <span>显示名称</span>
+          <input maxLength={40} onChange={(event) => setForm({ ...form, name: event.target.value })} required value={form.name} />
+        </label>
+        <div className={styles.field}>
+          <span aria-hidden="true">&nbsp;</span>
+          <ActionButton loading={pending} type="submit" variant="secondary">开通裁判长账号</ActionButton>
+        </div>
+      </form>
+      {feedback}
+    </div>
+  );
+}

@@ -15,8 +15,9 @@ import {
   TournamentProfileForm,
   type InviteRow,
 } from "@/features/management/tournament-admin-panels";
-import { RefereeAccountsPanel } from "@/features/management/referee-admin-panels";
+import { ChiefRefereesPanel, RefereeAccountsPanel } from "@/features/management/referee-admin-panels";
 import { tournamentPhaseLabels } from "@/features/public-results/model";
+import { listChiefReferees } from "@/server/services/chief-referee-service";
 import { listRefereeAccounts } from "@/server/services/referee-account-service";
 import { requireManagedTournamentPage } from "@/server/auth/page-authorization";
 import { StatusBadge } from "@/ui/status-badge";
@@ -25,7 +26,7 @@ export const dynamic = "force-dynamic";
 
 export default async function TournamentOverviewPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const { tournament: access, role } = await requireManagedTournamentPage(slug);
+  const { tournament: access, role, user } = await requireManagedTournamentPage(slug);
   const isAdmin = role === "ADMIN";
   const now = new Date();
 
@@ -75,6 +76,7 @@ export default async function TournamentOverviewPage({ params }: { params: Promi
     },
   });
   const refereeAccounts = isAdmin ? await listRefereeAccounts(access.id) : [];
+  const chiefReferees = isAdmin ? await listChiefReferees(access.id) : [];
   const statusCounts = await prisma.registration.groupBy({
     by: ["competitionId", "status"],
     where: { tournamentId: access.id },
@@ -215,6 +217,13 @@ export default async function TournamentOverviewPage({ params }: { params: Promi
               <p>裁判用这里开通的账号登录，在「我的执裁」进入比赛记分。公众注册始终关闭，裁判账号只能在这里开通。</p>
             </div>
             <RefereeAccountsPanel accounts={refereeAccounts} mode={tournament.refereeMode} slug={tournament.slug} />
+          </section>
+          <section aria-labelledby="chief-referee-title" className={styles.section}>
+            <div className={styles.sectionTitle}>
+              <h2 id="chief-referee-title">裁判长</h2>
+              <p>裁判长复核锁定比赛结果、接管控制、确认小组名次和登记人工处置。请使用个人账号，平台共用裁判账号不能担任裁判长。</p>
+            </div>
+            <ChiefRefereesPanel chiefs={chiefReferees} currentUserId={user.id} slug={tournament.slug} />
           </section>
           <section aria-labelledby="poster-title" className={styles.section}>
             <div className={styles.sectionTitle}>
