@@ -1,0 +1,31 @@
+{
+  "kind": "ranking",
+  "title": "（请填写：例如 四人组三方同胜场、净胜局相同、净胜分区分）",
+  "basis": "（请填写依据的竞赛规程条款）",
+  "input": {
+    "entryKind": "INDIVIDUAL",
+    "entries": [
+      "P1",
+      "P2",
+      "P3",
+      "P4"
+    ],
+    "matches": [
+      {
+        "a": "P1",
+        "b": "P2",
+        "games": [
+          [
+            21,
+            0
+          ],
+          [
+            21,
+            0
+          ]
+        ]
+      }
+    ]
+  },
+  "_说明": "按规程手算后加上 expected：{\"order\": [...], \"unresolved\": [[须抽签的几方]]}。没有 expected 的用例记为待填写，不算通过。团体用例把 entryKind 改为 TEAM，每场对抗写 rubbers: [[[21,15],[21,18]], ...]。"
+}

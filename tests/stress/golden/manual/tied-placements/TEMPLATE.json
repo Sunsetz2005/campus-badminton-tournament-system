@@ -1,0 +1,19 @@
+{
+  "kind": "placements",
+  "title": "（请填写：例如 16 签不设三四名赛的并列名次）",
+  "basis": "（请填写规程条款）",
+  "input": {
+    "thirdPlaceMatch": false,
+    "fixtures": [
+      {
+        "code": "F",
+        "kind": "KNOCKOUT",
+        "round": 1,
+        "sideA": "e1",
+        "sideB": "e2",
+        "winner": "e1"
+      }
+    ]
+  },
+  "_说明": "fixtures 写全部淘汰对阵（round 从 1 起，决赛轮最大；三四名赛 kind=THIRD_PLACE）。手算后加 expected：[{\"entryId\":..., \"place\":数字或null, \"tied\":true/false}]。"
+}

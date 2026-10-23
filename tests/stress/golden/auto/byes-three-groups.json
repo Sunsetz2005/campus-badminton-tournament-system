@@ -1,0 +1,23 @@
+{
+  "kind": "byes",
+  "title": "三组各出线 2 人 → 8 签 2 个轮空给小组第一",
+  "basis": "赛事执行规则 v1.0 · 淘汰签位",
+  "input": {
+    "qualifierRanks": [
+      1,
+      1,
+      1,
+      2,
+      2,
+      2
+    ]
+  },
+  "expected": {
+    "bracketSize": 8,
+    "byes": 2,
+    "byeRanks": [
+      1,
+      1
+    ]
+  }
+}

@@ -30,6 +30,10 @@
     "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "dotenv -e .env -e .env.seed -- tsx prisma/seed.ts",
     "db:test:prepare": "dotenv -e .env.test -- tsx scripts/prepare-test-database.ts",
+    "stress:prepare": "dotenv -e .env.stress -- tsx scripts/prepare-test-database.ts",
+    "stress:build": "dotenv -e .env.stress -- tsx scripts/build-production-startup-test.ts",
+    "stress": "dotenv -e .env.stress -- tsx scripts/stress/run.ts",
+    "stress:verify": "dotenv -e .env.stress -- tsx scripts/stress/verify.ts",
     "docs:sync": "node scripts/sync-knowledge-base.mjs --apply",
     "docs:sync:dry-run": "node scripts/sync-knowledge-base.mjs --dry-run"
   },

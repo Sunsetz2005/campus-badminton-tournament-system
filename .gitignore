@@ -17,6 +17,7 @@ test-results/
 .env.*
 !.env.example
 !.env.test.example
+!.env.stress.example
 *.log
 *.db
 *.sqlite
@@ -50,3 +51,5 @@ artifacts/phase8-mobile/local-run/
 artifacts/phase7-reports/samples/*.pdf
 # 本机 PDF 渲染试验脚本；保留在工作区，不纳入发布源码。
 .pdf-try.tmp.ts
+# 全赛制并发仿真的运行产物（请求日志、服务端日志、判定结果）。
+artifacts/stress/
