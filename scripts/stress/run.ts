@@ -166,11 +166,27 @@ async function main() {
     }
     for (let index = 0; index < level.spectators; index += 1) loops.push(spectator(context, registry, index));
 
+    // 宿主暂停检测：本机睡眠（合盖、闲置）时仿真与被测服务一起停住，但服务端的租约按墙钟继续计时，
+    // 醒来后所有控制会话同时过期——那是环境假象，不是系统问题。1 秒节拍的墙钟跳变超过 20 秒即判本次运行无效。
+    let hostPause: { at: string; gapSeconds: number } | null = null;
+    let lastTick = Date.now();
+    const watchdog = setInterval(() => {
+      const now = Date.now();
+      if (now - lastTick > 20_000 && !hostPause) {
+        hostPause = { at: new Date(lastTick).toISOString(), gapSeconds: Math.round((now - lastTick) / 1000) };
+        addFinding(context, { kind: "script_error", area: "运行环境", title: `宿主暂停 ${hostPause.gapSeconds} 秒（本机睡眠？），本次运行无效`, detail: hostPause });
+      }
+      lastTick = now;
+    }, 1000);
     const deadline = Date.now() + Number(args["max-minutes"]) * 60_000;
     const stallMs = Number(args["stall-minutes"]) * 60_000;
     let lastReport = 0;
     for (;;) {
       await sleep(5000);
+      if (hostPause) {
+        outcome = "host_paused";
+        break;
+      }
       const status = await tournamentStatus(context.tournaments);
       if (Date.now() - lastReport > 30_000) {
         lastReport = Date.now();
@@ -187,6 +203,7 @@ async function main() {
         break;
       }
     }
+    clearInterval(watchdog);
     registry.stop = true;
     await Promise.allSettled(loops);
     mark("standings");
