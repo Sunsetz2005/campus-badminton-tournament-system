@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import type { MatchState, Side } from "@/domain/rules/match-engine";
 import { buildCourtViewModel } from "@/ui/court-view-model";
 import { COURT_LENGTH, COURT_LINES, COURT_WIDTH, serviceCourtBox } from "@/ui/court-geometry";
@@ -14,6 +16,8 @@ interface CourtConsoleProps {
   onSubtractPoint: (side: Side) => void;
   onCorrectPosition: (side: Side) => void;
   onChangeEnds: () => void;
+  /** 盖在场地画面上的提示层（如间歇），场地仍保留在下面、模糊显示。 */
+  overlay?: ReactNode;
 }
 
 function ShuttleIcon() {
@@ -78,6 +82,7 @@ export function CourtConsole({
   onSubtractPoint,
   onCorrectPosition,
   onChangeEnds,
+  overlay,
 }: CourtConsoleProps) {
   const view = buildCourtViewModel(state, flipped);
   const activePlay = ["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase);
@@ -216,6 +221,7 @@ export function CourtConsole({
           </section>
         ))}
         <span aria-hidden="true" className="court-net-label">球网</span>
+        {overlay}
       </div>
 
       <div className="court-position-actions">

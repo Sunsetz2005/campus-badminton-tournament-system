@@ -684,6 +684,11 @@ model Match {
   outcomeType         MatchOutcomeType?
   verificationStatus  VerificationStatus   @default(UNVERIFIED)
   resultSource        ResultSource         @default(LIVE)
+  // 系统抛币：服务端随机决定的胜方，只对抽签时的比赛版本有效（裁判长作废抛币后版本变化，可重新抛）。
+  // 记录抛币命令时胜方必须与之一致；刷新页面不会重抽。
+  coinTossDrawSide    MatchSide?
+  coinTossDrawVersion Int?
+  coinTossDrawnAt     DateTime?
   // 已发布赛程的计划开始/结束（结束 = 开始 + 预计时长，不是保证时长）；实际开始/结束另记。
   scheduledAt         DateTime?
   scheduledEndAt      DateTime?

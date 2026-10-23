@@ -9,6 +9,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 
 import { prisma } from "../../src/db/client";
 import type { MatchState } from "../../src/domain/rules/match-engine";
+import { clearedCoinTossDraw, presetCoinTossWinner } from "../support/coin-toss";
 
 type ScoringControl = { controlToken: string; sessionId: string; takeoverGeneration: number };
 
@@ -32,7 +33,7 @@ async function resetMatches() {
   await prisma.match.updateMany({
     where: { id: { in: ids } },
     data: {
-      version: 0, controlGeneration: 1, lifecycleStatus: "READY", outcomeType: null,
+      version: 0, controlGeneration: 1, ...clearedCoinTossDraw, lifecycleStatus: "READY", outcomeType: null,
       verificationStatus: "UNVERIFIED", startedAt: null, endedAt: null,
     },
   });
@@ -86,24 +87,24 @@ test.describe.serial("RV3-002 / RV3-004 裁判页边界交互", () => {
     await openWithControl(page, matchCode);
 
     // 确认提交前不产生任何事件：选择过程不是命令。
-    await page.locator('input[name="coin-toss-winner"][value="A"]').check();
+    await presetCoinTossWinner(page, "A");
     await page.locator('input[name="coin-toss-category"][value="SERVICE"]').check();
     await page.locator('input[name="coin-toss-service"][value="SERVE"]').check();
     expect((await readAuthoritativeState(request, matchCode)).phase).toBe("AWAITING_COIN_TOSS");
-    await expect(page.getByRole("button", { name: "确认并记录抛币" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "确认并开始" })).toBeDisabled();
 
     // 取消重选不提交，也不保留半成品。
-    await page.getByRole("button", { name: "取消重选" }).click();
-    await expect(page.locator('input[name="coin-toss-winner"][value="A"]')).not.toBeChecked();
+    await page.getByRole("button", { name: "重选" }).click();
+    await expect(page.locator('input[name="coin-toss-category"][value="SERVICE"]')).not.toBeChecked();
+    await expect(page.getByTestId("coin-toss-winner")).toContainText("赢得抛币");
     expect((await readAuthoritativeState(request, matchCode)).phase).toBe("AWAITING_COIN_TOSS");
 
-    await page.locator('input[name="coin-toss-winner"][value="A"]').check();
     await page.locator('input[name="coin-toss-category"][value="SERVICE"]').check();
     await page.locator('input[name="coin-toss-service"][value="RECEIVE"]').check();
     // 旧版本把负方固定成 END_2；这里选 END_1 才能证明负方选择真的可用。
     await page.locator('input[name="coin-toss-end"][value="END_1"]').check();
     await expect(page.getByTestId("coin-toss-summary")).toContainText("场地端 1");
-    await page.getByRole("button", { name: "确认并记录抛币" }).click();
+    await page.getByRole("button", { name: "确认并开始" }).click();
 
     await expect(page.getByRole("button", { name: "确认首局设置并开赛" })).toBeVisible();
     const state = await readAuthoritativeState(request, matchCode);
@@ -121,11 +122,11 @@ test.describe.serial("RV3-002 / RV3-004 裁判页边界交互", () => {
     const request = page.context().request;
     await openWithControl(page, matchCode);
 
-    await page.locator('input[name="coin-toss-winner"][value="B"]').check();
+    await presetCoinTossWinner(page, "B");
     await page.locator('input[name="coin-toss-category"][value="END"]').check();
     await page.locator('input[name="coin-toss-end"][value="END_1"]').check();
     await page.locator('input[name="coin-toss-service"][value="SERVE"]').check();
-    await page.getByRole("button", { name: "确认并记录抛币" }).click();
+    await page.getByRole("button", { name: "确认并开始" }).click();
 
     await expect(page.getByRole("button", { name: "确认首局设置并开赛" })).toBeVisible();
     const state = await readAuthoritativeState(request, matchCode);
@@ -144,11 +145,11 @@ test.describe.serial("RV3-002 / RV3-004 裁判页边界交互", () => {
     const matchCode = "MS-DEMO-001";
     const request = page.context().request;
     await openWithControl(page, matchCode);
-    await page.locator('input[name="coin-toss-winner"][value="A"]').check();
+    await presetCoinTossWinner(page, "A");
     await page.locator('input[name="coin-toss-category"][value="SERVICE"]').check();
     await page.locator('input[name="coin-toss-service"][value="SERVE"]').check();
     await page.locator('input[name="coin-toss-end"][value="END_2"]').check();
-    await page.getByRole("button", { name: "确认并记录抛币" }).click();
+    await page.getByRole("button", { name: "确认并开始" }).click();
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("0");
 
@@ -227,7 +228,7 @@ test.describe.serial("RV3-002 / RV3-004 界面截图", () => {
     mkdirSync(SHOT_ROOT, { recursive: true });
     const matchCode = "MD-DEMO-002";
     await openWithControl(page, matchCode);
-    await page.locator('input[name="coin-toss-winner"][value="A"]').check();
+    await presetCoinTossWinner(page, "A");
     await page.locator('input[name="coin-toss-category"][value="END"]').check();
     await page.locator('input[name="coin-toss-end"][value="END_1"]').check();
     await page.locator('input[name="coin-toss-service"][value="RECEIVE"]').check();
@@ -247,11 +248,11 @@ test.describe.serial("RV3-002 / RV3-004 界面截图", () => {
     const matchCode = "MS-DEMO-001";
     const request = page.context().request;
     await openWithControl(page, matchCode);
-    await page.locator('input[name="coin-toss-winner"][value="A"]').check();
+    await presetCoinTossWinner(page, "A");
     await page.locator('input[name="coin-toss-category"][value="SERVICE"]').check();
     await page.locator('input[name="coin-toss-service"][value="SERVE"]').check();
     await page.locator('input[name="coin-toss-end"][value="END_2"]').check();
-    await page.getByRole("button", { name: "确认并记录抛币" }).click();
+    await page.getByRole("button", { name: "确认并开始" }).click();
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("0");
 

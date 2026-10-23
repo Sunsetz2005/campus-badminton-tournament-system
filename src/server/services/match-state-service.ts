@@ -63,6 +63,9 @@ async function loadMatchFacts(transaction: Transaction, matchId: string) {
       rubberKind: true,
       rubberOrder: true,
       notPlayedAt: true,
+      coinTossDrawSide: true,
+      coinTossDrawVersion: true,
+      coinTossDrawnAt: true,
       fixture: { select: { lineupsRevealedAt: true } },
       players: {
         orderBy: [{ side: "asc" }, { slot: "asc" }],
@@ -257,6 +260,10 @@ export async function getAuthoritativeMatchState(userId: string, matchCode: stri
         rubber: match.rubberKind ? { kind: match.rubberKind, order: match.rubberOrder } : null,
         lifecycleStatus: match.lifecycleStatus,
         verificationStatus: match.verificationStatus,
+        // 只返回对当前版本仍有效的系统抛币结果（裁判长作废抛币后旧结果失效）。
+        coinTossDraw: match.coinTossDrawSide && match.coinTossDrawVersion === aggregate.state.version
+          ? { winnerSide: match.coinTossDrawSide, drawnAt: match.coinTossDrawnAt!.toISOString(), version: match.coinTossDrawVersion }
+          : null,
       },
       state: aggregate.state,
       events: aggregate.events.slice(-30).map((event) => ({

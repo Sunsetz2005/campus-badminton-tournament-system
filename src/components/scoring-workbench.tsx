@@ -48,6 +48,8 @@ type MatchView = {
   playerNames: Record<string, string>;
   lifecycleStatus: string;
   verificationStatus: string;
+  /** 服务端系统抛币结果；只在对当前比赛版本有效时返回。 */
+  coinTossDraw?: { winnerSide: Side; drawnAt: string; version: number } | null;
 };
 
 type SnapshotResponse = {
@@ -255,6 +257,8 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   const [setupServerId, setSetupServerId] = useState("");
   const [setupReceiverId, setSetupReceiverId] = useState("");
   const [setupSelectionScope, setSetupSelectionScope] = useState("");
+  // 本机临时收起的间歇提示（按待办 ID 记，下一次间歇会重新弹出）。
+  const [hiddenIntervalId, setHiddenIntervalId] = useState<string | null>(null);
   const [flipped, setFlipped] = useState(() =>
     readStoredValue(safeStorage("session"), `badminton-view-flipped:${matchCode}`) === "true",
   );
@@ -929,6 +933,10 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         READ_ONLY: "只读",
       } as const)[syncState];
   const sideName = (side: Side) => side === "A" ? match?.sideAName : match?.sideBName;
+  // 裁判长作废抛币会改变比赛版本，旧的系统抛币结果随之失效。
+  const coinTossWinner = match?.coinTossDraw && state && match.coinTossDraw.version === state.version ? match.coinTossDraw.winnerSide : null;
+  const intervalObligation = state?.pendingObligations.find((item) => item.type === "INTERVAL") ?? null;
+  const intervalOverlayOpen = Boolean(intervalObligation && hiddenIntervalId !== intervalObligation.id);
   const playerName = (id: string | null) => id ? match?.playerNames[id] ?? id : "待确认";
   const intervalStartedAt = snapshot?.events
     ? [...snapshot.events].reverse().find(
@@ -987,6 +995,24 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       receiverPlayerId: effectiveSetupReceiverId,
       logicalCourts: state.format === "DOUBLES" ? setupCourts : null,
     });
+  }
+
+  /** 系统抛币：服务端随机决定胜方并保存；同一比赛版本重复请求得到同一结果。 */
+  async function drawCoinToss(): Promise<Side | null> {
+    if (!control || !canWrite) return null;
+    try {
+      const body = await responseJson(await fetch(`/api/matches/${encodeURIComponent(matchCode)}/coin-toss`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${control.controlToken}` },
+        body: JSON.stringify({ scoringSessionId: control.sessionId, takeoverGeneration: control.takeoverGeneration }),
+      })) as { winnerSide: Side; drawnAt: string; version: number };
+      // 不立即写回快照：由抛币表单在同一次更新里开始动画，避免结果先于动画闪现。刷新后服务器快照带回同一结果。
+      return body.winnerSide;
+    } catch (error) {
+      setMessageTone("error");
+      setMessage(error instanceof Error ? error.message : "抛币失败，请重试。");
+      return null;
+    }
   }
 
   function flipLocalView() {
@@ -1095,6 +1121,21 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         playerName={playerName}
         sideName={(side) => sideName(side) ?? `${side} 方`}
         state={courtState ?? state}
+        overlay={intervalObligation && intervalOverlayOpen ? (
+          <IntervalOverlay
+            betweenGames={state.phase === "GAME_COMPLETE"}
+            busy={syncState === "SUBMITTING" || syncState === "UNKNOWN"}
+            canWrite={canWrite}
+            changeEndsPending={state.pendingObligations.some((item) => item.type === "CHANGE_ENDS")}
+            key={`${intervalObligation.id}:${intervalStartedAt}`}
+            onAcknowledge={() => void send("ACKNOWLEDGE_INTERVAL", { obligationId: intervalObligation.id })}
+            onChangeEnds={() => openActionSheet({ kind: "ENDS" })}
+            onHide={() => setHiddenIntervalId(intervalObligation.id)}
+            seconds={state.phase === "GAME_COMPLETE" ? state.ruleConfig.betweenGamesSeconds : state.ruleConfig.intervalSeconds}
+            serverTime={snapshot.serverTime}
+            startedAt={intervalStartedAt ?? snapshot.serverTime}
+          />
+        ) : null}
       />
 
       {/* 本机可写且无异常时不再重复说明；只读或异常原因必须保留，不能为了简洁隐藏。 */}
@@ -1122,9 +1163,10 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
           <p>作废会由服务器恢复到录入前的完整权威状态，不会在浏览器本地拼接比分或站位。</p>
         </section>
       ) : null}
-      {state.pendingObligations.some((item) => item.type === "INTERVAL") ? (
+      {intervalObligation && !intervalOverlayOpen ? (
         <IntervalClock
           key={`${intervalStartedAt}:${snapshot.serverTime}`}
+          onShow={() => setHiddenIntervalId(null)}
           seconds={state.phase === "GAME_COMPLETE" ? state.ruleConfig.betweenGamesSeconds : state.ruleConfig.intervalSeconds}
           serverTime={snapshot.serverTime}
           startedAt={intervalStartedAt ?? snapshot.serverTime}
@@ -1153,7 +1195,10 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       <PhaseActions
         canWrite={canWrite}
         chief={snapshot.access.chiefReferee}
+        coinTossWinner={coinTossWinner}
+        onCoinTossDraw={drawCoinToss}
         flipped={flipped}
+        intervalOverlayOpen={intervalOverlayOpen}
         scope="URGENT"
         sideName={(side) => sideName(side) ?? `${side} 方`}
         state={state}
@@ -1182,6 +1227,8 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
           <PhaseActions
             canWrite={canWrite}
             chief={snapshot.access.chiefReferee}
+            coinTossWinner={coinTossWinner}
+            onCoinTossDraw={drawCoinToss}
             flipped={flipped}
             scope="SECONDARY"
             sideName={(side) => sideName(side) ?? `${side} 方`}
@@ -1487,9 +1534,13 @@ function ResultImpactNotice({ action, matchCode, onBlocked }: { action: "CONFIRM
  * - URGENT：时机敏感、误藏会影响执裁的操作（抛币、间歇/换边待办、暂停后恢复），保持首屏可见。
  * - SECONDARY：更正、异常结果、提交/复核等次要操作，收进折叠抽屉。
  */
-function PhaseActions({ canWrite, chief, flipped, scope, sideName, state, onSend, onCorrection, onEndingUndo, onReasonCommand, onServiceOrder, onSpecial }: {
+function PhaseActions({ canWrite, chief, coinTossWinner, flipped, intervalOverlayOpen = false, scope, sideName, state, onCoinTossDraw, onSend, onCorrection, onEndingUndo, onReasonCommand, onServiceOrder, onSpecial }: {
   canWrite: boolean;
   chief: boolean;
+  coinTossWinner: Side | null;
+  /** 间歇遮罩已在场地上提供确认按钮时，这里不再重复。 */
+  intervalOverlayOpen?: boolean;
+  onCoinTossDraw: () => Promise<Side | null>;
   flipped: boolean;
   scope: "URGENT" | "SECONDARY";
   sideName: (side: Side) => string;
@@ -1506,10 +1557,10 @@ function PhaseActions({ canWrite, chief, flipped, scope, sideName, state, onSend
   return (
     <section className={`phase-actions ${urgent ? "phase-actions-urgent" : "phase-actions-secondary"}`} aria-label={urgent ? "需要立即处理的阶段操作" : "次要阶段操作"}>
       {urgent && state.phase === "AWAITING_COIN_TOSS" ? (
-        <CoinTossForm canWrite={canWrite} flipped={flipped} onSend={onSend} sideName={sideName} />
+        <CoinTossForm canWrite={canWrite} drawnWinner={coinTossWinner} flipped={flipped} onDraw={onCoinTossDraw} onSend={onSend} sideName={sideName} />
       ) : null}
       {secondary && state.phase === "AWAITING_OPENING_SETUP" && chief ? <button className="button danger" disabled={!canWrite} onClick={() => onReasonCommand("裁判长作废抛币", "INVALIDATE_COIN_TOSS", { reason: "" })}>裁判长作废抛币</button> : null}
-      {urgent ? state.pendingObligations.map((item) => item.type === "INTERVAL" ?
+      {urgent ? state.pendingObligations.map((item) => item.type === "INTERVAL" ? intervalOverlayOpen ? null :
         <button className="button" disabled={!canWrite} key={item.id} onClick={() => void onSend("ACKNOWLEDGE_INTERVAL", { obligationId: item.id })}>确认间歇完成</button> :
         item.type === "CHANGE_ENDS" ? <button className="button secondary" disabled={!canWrite} key={item.id} onClick={() => onReasonCommand("记录漏换边后补做", "RECORD_MISSED_CHANGE_ENDS", { obligationId: item.id, reason: "" })}>记录漏换后补做</button> : null) : null}
       {secondary && (state.phase === "IN_PROGRESS" || state.phase === "OBLIGATIONS_PENDING") ? <>
@@ -1548,22 +1599,40 @@ function PhaseActions({ canWrite, chief, flipped, scope, sideName, state, onSend
   );
 }
 
+/** 抛币动画时长；减少动态效果时直接显示结果。 */
+const COIN_FLIP_MS = 1_900;
+
+function prefersReducedMotion() {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+}
+
 /**
- * RV3-002：抛币开局表单。
- * 引擎 deriveCoinToss 早就支持四类组合，这里只是把胜方/负方的真实选择完整收集起来，
- * 不再把负方固定成 END_2 或 SERVE。表单没有任何随机数：刷新不会改变已选内容，
- * 取消不提交，确认前先看摘要。场地端标签跟随本机视角，便于对照真实球场。
+ * 系统抛币开局（RV3-002 的四类组合不变）：
+ * 胜方由服务端随机决定并保存——这里只播放动画并展示结果，浏览器不生成随机数，刷新也不会重抛。
+ * 胜方/负方的发球与场地端选择仍由裁判按选手的真实选择录入，确认前不发送任何比赛命令。
+ * 场地端标签跟随本机视角，便于对照真实球场。
  */
-function CoinTossForm({ canWrite, flipped, onSend, sideName }: {
+function CoinTossForm({ canWrite, drawnWinner, flipped, onDraw, onSend, sideName }: {
   canWrite: boolean;
+  drawnWinner: Side | null;
   flipped: boolean;
+  onDraw: () => Promise<Side | null>;
   onSend: (type: MatchCommand["type"], payload: MatchCommand["payload"]) => Promise<unknown>;
   sideName: (side: Side) => string;
 }) {
-  const [winnerSide, setWinnerSide] = useState<Side | null>(null);
   const [winnerCategory, setWinnerCategory] = useState<"SERVICE" | "END" | null>(null);
   const [serviceDecision, setServiceDecision] = useState<"SERVE" | "RECEIVE" | null>(null);
   const [end, setEnd] = useState<PhysicalEnd | null>(null);
+  const [drawing, setDrawing] = useState(false);
+  const [spinning, setSpinning] = useState(false);
+  // 硬币正面是 A 方、背面是 B 方；已有结果（刷新后）直接停在胜方一面。
+  const [rotation, setRotation] = useState(() => (drawnWinner === "B" ? 180 : 0));
+  const [localWinner, setLocalWinner] = useState<Side | null>(null);
+  const drawn = drawnWinner ?? localWinner;
+  const winnerSide = spinning ? null : drawn;
+  // 停止时始终停在胜方一面（另一台设备只读看到结果时也一样）。
+  const restAngle = drawn === "B" ? 180 : 0;
+  const shownRotation = spinning || ((rotation % 360) + 360) % 360 === restAngle ? rotation : restAngle;
 
   // END_1 在未翻转时位于画面左侧；翻转只改本机显示，不改物理事实。
   const endLabel = (value: PhysicalEnd) => {
@@ -1572,10 +1641,26 @@ function CoinTossForm({ canWrite, flipped, onSend, sideName }: {
   };
 
   function reset() {
-    setWinnerSide(null);
     setWinnerCategory(null);
     setServiceDecision(null);
     setEnd(null);
+  }
+
+  async function toss() {
+    if (drawing || drawn) return;
+    setDrawing(true);
+    const winner = await onDraw();
+    setDrawing(false);
+    if (!winner) return;
+    setLocalWinner(winner);
+    if (prefersReducedMotion()) {
+      setRotation(winner === "B" ? 180 : 0);
+      return;
+    }
+    // 至少转 6 圈，落在胜方那一面。
+    setSpinning(true);
+    setRotation((current) => current - (current % 360) + 360 * 6 + (winner === "B" ? 180 : 0));
+    window.setTimeout(() => setSpinning(false), COIN_FLIP_MS);
   }
 
   const loserSide: Side | null = winnerSide ? (winnerSide === "A" ? "B" : "A") : null;
@@ -1602,26 +1687,35 @@ function CoinTossForm({ canWrite, flipped, onSend, sideName }: {
 
   return (
     <form className="coin-toss-form" aria-labelledby="coin-toss-title" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-      <h3 id="coin-toss-title">记录抛币结果</h3>
-      <fieldset>
-        <legend>1. 抛币胜方</legend>
-        {(["A", "B"] as const).map((side) => (
-          <label key={side}>
-            <input
-              checked={winnerSide === side}
-              disabled={!canWrite}
-              name="coin-toss-winner"
-              onChange={() => { setWinnerSide(side); setWinnerCategory(null); setServiceDecision(null); setEnd(null); }}
-              type="radio"
-              value={side}
-            />
-            {sideName(side)} 胜
-          </label>
-        ))}
-      </fieldset>
+      <h3 id="coin-toss-title">抛币</h3>
+      <div className="coin-toss-stage" data-testid="coin-toss-stage">
+        <div className={`coin-toss-arc${spinning ? " is-tossing" : ""}`}>
+          <div
+            aria-hidden="true"
+            className="coin-toss-coin"
+            style={{ transform: `rotateY(${shownRotation}deg)`, transitionDuration: spinning ? `${COIN_FLIP_MS}ms` : "0ms" }}
+          >
+            <span className="coin-face coin-face-a"><b>A</b><small>{sideName("A")}</small></span>
+            <span className="coin-face coin-face-b"><b>B</b><small>{sideName("B")}</small></span>
+          </div>
+        </div>
+        <div aria-live="polite" className="coin-toss-result">
+          {winnerSide ? (
+            <p data-testid="coin-toss-winner"><strong>{sideName(winnerSide)}</strong> 赢得抛币</p>
+          ) : spinning ? (
+            <p>抛币中…</p>
+          ) : drawn ? null : canWrite ? (
+            <button className="button" data-testid="coin-toss-draw" disabled={drawing} onClick={() => void toss()} type="button">
+              {drawing ? "正在抛币…" : "开始抛币"}
+            </button>
+          ) : (
+            <p>等待持有控制权的设备抛币。</p>
+          )}
+        </div>
+      </div>
       {winnerSide ? (
         <fieldset>
-          <legend>2. 胜方先选哪一类</legend>
+          <legend>1. {sideName(winnerSide)} 先选哪一类</legend>
           {([["SERVICE", "选发球或接发"], ["END", "选场地端"]] as const).map(([value, label]) => (
             <label key={value}>
               <input
@@ -1640,7 +1734,7 @@ function CoinTossForm({ canWrite, flipped, onSend, sideName }: {
       {winnerSide && winnerCategory === "SERVICE" ? (
         <>
           <fieldset>
-            <legend>3. {sideName(winnerSide)} 的发球选择</legend>
+            <legend>2. {sideName(winnerSide)} 的发球选择</legend>
             {([["SERVE", "先发球"], ["RECEIVE", "先接发球"]] as const).map(([value, label]) => (
               <label key={value}>
                 <input checked={serviceDecision === value} disabled={!canWrite} name="coin-toss-service" onChange={() => setServiceDecision(value)} type="radio" value={value} />
@@ -1650,7 +1744,7 @@ function CoinTossForm({ canWrite, flipped, onSend, sideName }: {
           </fieldset>
           {serviceDecision ? (
             <fieldset>
-              <legend>4. {sideName(loserSide!)} 选择场地端</legend>
+              <legend>3. {sideName(loserSide!)} 选择场地端</legend>
               {(["END_1", "END_2"] as const).map((value) => (
                 <label key={value}>
                   <input checked={end === value} disabled={!canWrite} name="coin-toss-end" onChange={() => setEnd(value)} type="radio" value={value} />
@@ -1664,7 +1758,7 @@ function CoinTossForm({ canWrite, flipped, onSend, sideName }: {
       {winnerSide && winnerCategory === "END" ? (
         <>
           <fieldset>
-            <legend>3. {sideName(winnerSide)} 选择场地端</legend>
+            <legend>2. {sideName(winnerSide)} 选择场地端</legend>
             {(["END_1", "END_2"] as const).map((value) => (
               <label key={value}>
                 <input checked={end === value} disabled={!canWrite} name="coin-toss-end" onChange={() => setEnd(value)} type="radio" value={value} />
@@ -1674,7 +1768,7 @@ function CoinTossForm({ canWrite, flipped, onSend, sideName }: {
           </fieldset>
           {end ? (
             <fieldset>
-              <legend>4. {sideName(loserSide!)} 的发球选择</legend>
+              <legend>3. {sideName(loserSide!)} 的发球选择</legend>
               {([["SERVE", "先发球"], ["RECEIVE", "先接发球"]] as const).map(([value, label]) => (
                 <label key={value}>
                   <input checked={serviceDecision === value} disabled={!canWrite} name="coin-toss-service" onChange={() => setServiceDecision(value)} type="radio" value={value} />
@@ -1687,7 +1781,7 @@ function CoinTossForm({ canWrite, flipped, onSend, sideName }: {
       ) : null}
       {complete && servingSide && end && winnerSide && loserSide ? (
         <p className="coin-toss-summary" data-testid="coin-toss-summary">
-          5. 确认摘要：{sideName(winnerSide)} 胜；
+          4. 确认摘要：{sideName(winnerSide)} 赢得抛币；
           {winnerCategory === "SERVICE"
             ? `${sideName(winnerSide)} 选${serviceDecision === "SERVE" ? "先发球" : "先接发球"}，${sideName(loserSide)} 选${endLabel(end)}`
             : `${sideName(winnerSide)} 选${endLabel(end)}，${sideName(loserSide)} 选${serviceDecision === "SERVE" ? "先发球" : "先接发球"}`}
@@ -1695,29 +1789,81 @@ function CoinTossForm({ canWrite, flipped, onSend, sideName }: {
           {sideName(winnerCategory === "SERVICE" ? loserSide : winnerSide)} 站 {endLabel(end)}。
         </p>
       ) : null}
-      <div className="coin-toss-actions">
-        <button className="button" disabled={!canWrite || !complete} type="submit">确认并记录抛币</button>
-        <button className="button secondary" disabled={!winnerSide} onClick={reset} type="button">取消重选</button>
-      </div>
-      <p className="coin-toss-note">这里只记录场上真实抛币结果，不代替抛币，也不生成随机结果；确认前不会发送任何命令。</p>
+      {winnerSide ? (
+        <div className="coin-toss-actions">
+          <button className="button" disabled={!canWrite || !complete} type="submit">确认并开始</button>
+          <button className="button secondary" disabled={!winnerCategory} onClick={reset} type="button">重选</button>
+        </div>
+      ) : null}
+      <p className="coin-toss-note">胜负由服务器随机决定并保存，刷新或换设备都不会重抛；选手的选择在确认前不会写入比赛记录。</p>
     </form>
   );
 }
 
-function IntervalClock({ seconds, startedAt, serverTime }: { seconds: number; startedAt: string; serverTime: string }) {
+/** 间歇倒计时：按服务器时间推算，归零只提醒，不自动处罚或改分。 */
+function useIntervalRemaining(seconds: number, startedAt: string, serverTime: string) {
   const [now, setNow] = useState(() => Date.now());
   const [serverOffset] = useState(() => Date.parse(serverTime) - Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
-  const remaining = Math.max(0, seconds - Math.floor((now + serverOffset - Date.parse(startedAt)) / 1_000));
+  return Math.max(0, seconds - Math.floor((now + serverOffset - Date.parse(startedAt)) / 1_000));
+}
+
+const formatClock = (remaining: number) => `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`;
+
+/** 收起间歇遮罩后的细条提示，可以随时重新打开。 */
+function IntervalClock({ seconds, startedAt, serverTime, onShow }: { seconds: number; startedAt: string; serverTime: string; onShow: () => void }) {
+  const remaining = useIntervalRemaining(seconds, startedAt, serverTime);
   const announcement = [60, 30, 10, 0].includes(remaining) ? `间歇剩余 ${remaining} 秒` : "";
   return (
     <p className="interval-clock">
-      间歇提醒 <strong>{Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, "0")}</strong>
+      间歇中 <strong>{formatClock(remaining)}</strong>
       <span>归零只提醒，不自动处罚或改分。</span>
+      <button className="button secondary" onClick={onShow} type="button">显示间歇提示</button>
       <span aria-atomic="true" aria-live="polite" className="visually-hidden">{announcement}</span>
     </p>
+  );
+}
+
+/**
+ * 间歇遮罩：直接盖在场地画面上（场地模糊），裁判一眼就知道为什么不能继续加分。
+ * 只是提示与快捷入口——确认仍然发送 ACKNOWLEDGE_INTERVAL 并等服务器确认；「先看场地」只在本机收起。
+ */
+function IntervalOverlay({ betweenGames, busy, canWrite, changeEndsPending, seconds, startedAt, serverTime, onAcknowledge, onChangeEnds, onHide }: {
+  betweenGames: boolean;
+  busy: boolean;
+  canWrite: boolean;
+  changeEndsPending: boolean;
+  seconds: number;
+  startedAt: string;
+  serverTime: string;
+  onAcknowledge: () => void;
+  onChangeEnds: () => void;
+  onHide: () => void;
+}) {
+  const remaining = useIntervalRemaining(seconds, startedAt, serverTime);
+  const announcement = [60, 30, 10, 0].includes(remaining) ? `间歇剩余 ${remaining} 秒` : "";
+  useEffect(() => {
+    // 平板上轻震一下提醒裁判抬头；不支持的设备静默忽略。
+    if (canWrite) navigator.vibrate?.(180);
+  }, [canWrite]);
+  return (
+    <div aria-labelledby="interval-overlay-title" className={`court-overlay interval-overlay${remaining === 0 ? " is-due" : ""}`} data-testid="interval-overlay" role="dialog">
+      <p className="court-overlay-eyebrow">{betweenGames ? "局间休息" : "局中间歇"}</p>
+      <h2 id="interval-overlay-title">间歇</h2>
+      <p className="interval-overlay-clock" aria-hidden="true">{remaining === 0 ? "时间到" : formatClock(remaining)}</p>
+      <span aria-atomic="true" aria-live="polite" className="visually-hidden">{announcement}</span>
+      {changeEndsPending ? <p className="interval-overlay-note">本局还需双方换边</p> : null}
+      <div className="court-overlay-actions">
+        <button className="button" disabled={!canWrite || busy} onClick={onAcknowledge} type="button">确认间歇完成</button>
+        {changeEndsPending ? (
+          <button className="button secondary" disabled={!canWrite || busy} onClick={onChangeEnds} type="button">确认换边</button>
+        ) : null}
+        <button className="court-overlay-dismiss" onClick={onHide} type="button">先看场地</button>
+      </div>
+      {!canWrite ? <p className="interval-overlay-note">本机只读，由持有控制权的设备确认。</p> : null}
+    </div>
   );
 }

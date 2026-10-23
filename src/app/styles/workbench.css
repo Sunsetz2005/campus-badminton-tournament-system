@@ -137,6 +137,38 @@
 .interval-clock { display: flex; align-items: center; gap: 14px; margin: 0; padding: 14px 18px; color: #68450b; background: #fff2d8; border-radius: 12px; }
 .interval-clock strong { font-size: 1.45rem; font-variant-numeric: tabular-nums; }
 .interval-clock span { color: var(--muted); }
+.interval-clock .button { margin-left: auto; }
+
+/* 盖在场地画面上的提示层：场地模糊保留在下面，提示居中。 */
+.court-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  padding: 12px;
+  color: #fff;
+  text-align: center;
+  background: rgba(9, 32, 24, .5);
+  -webkit-backdrop-filter: blur(7px) saturate(.75);
+  backdrop-filter: blur(7px) saturate(.75);
+  animation: court-overlay-in 280ms var(--ease-out) both;
+}
+.court-overlay-eyebrow { margin: 0; font-size: .82rem; font-weight: 800; letter-spacing: .12em; opacity: .85; }
+.court-overlay h2 { margin: 0; color: #fff; font-size: clamp(1.8rem, 5vw, 3rem); font-weight: 900; letter-spacing: .2em; line-height: 1.05; text-shadow: 0 2px 12px rgba(0,0,0,.35); }
+.interval-overlay-clock { margin: 0; font-family: var(--font-num); font-size: clamp(1.6rem, 4.4vw, 2.6rem); font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.interval-overlay.is-due .interval-overlay-clock { color: #ffd166; animation: interval-due-pulse 1.2s var(--ease-in-out) infinite; }
+.interval-overlay-note { margin: 0; color: #fff3c4; font-size: .88rem; font-weight: 700; }
+.court-overlay-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 10px; margin-top: 6px; }
+.court-overlay-actions .button { min-height: 48px; padding-inline: 22px; font-size: 1rem; }
+.court-overlay-dismiss { min-height: 44px; padding: 0 12px; color: #fff; background: transparent; border: 0; font: inherit; font-size: .9rem; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+@keyframes court-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes interval-due-pulse { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) {
+  .court-overlay, .interval-overlay.is-due .interval-overlay-clock { animation: none; }
+}
 .inline-actions { display: inline-flex; flex-wrap: wrap; gap: 10px; }
 .phase-actions { padding: 18px; background: white; border: 1px solid var(--line); border-radius: 16px; }
 
@@ -151,6 +183,45 @@
 .coin-toss-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .coin-toss-note { margin: 0; color: var(--muted); font-size: .76rem; line-height: 1.5; }
 .coin-toss-form :focus-visible { outline: 3px solid #ffb000; outline-offset: 3px; }
+.coin-toss-stage { display: grid; justify-items: center; gap: 14px; padding: 18px 12px 6px; perspective: 900px; }
+.coin-toss-arc { width: 148px; height: 148px; }
+.coin-toss-arc.is-tossing { animation: coin-toss-arc 1900ms cubic-bezier(.3, 0, .3, 1) both; }
+.coin-toss-coin { position: relative; width: 100%; height: 100%; transform-style: preserve-3d; transition-property: transform; transition-timing-function: cubic-bezier(.12, .7, .2, 1); }
+.coin-face {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 2px;
+  padding: 18px;
+  color: #5b3d06;
+  background: radial-gradient(circle at 35% 30%, #fff4c7 0%, #f3cf64 45%, #c99419 100%);
+  border: 5px solid #b78313;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 4px rgba(255, 245, 205, .55), 0 10px 24px rgba(99, 67, 12, .28);
+  backface-visibility: hidden;
+  text-align: center;
+}
+.coin-face b { font-family: var(--font-num); font-size: 2.6rem; line-height: 1; }
+.coin-face small { display: -webkit-box; max-width: 100%; overflow: hidden; font-size: .78rem; font-weight: 800; line-height: 1.25; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.coin-face-b { color: #233a52; background: radial-gradient(circle at 35% 30%, #f4f8fc 0%, #c9d4df 45%, #8a9bad 100%); border-color: #73879b; transform: rotateY(180deg); }
+.coin-toss-result { min-height: 48px; display: grid; place-items: center; text-align: center; }
+.coin-toss-result p { margin: 0; color: #63430c; font-size: 1.05rem; font-weight: 700; }
+.coin-toss-result strong { font-size: 1.3rem; }
+[data-testid="coin-toss-winner"] { animation: coin-toss-reveal 420ms var(--ease-out) both; }
+@keyframes coin-toss-arc {
+  0% { transform: translateY(0) scale(1); }
+  45% { transform: translateY(-70px) scale(1.12); }
+  80% { transform: translateY(0) scale(1); }
+  88% { transform: translateY(-10px) scale(1.02); }
+  100% { transform: translateY(0) scale(1); }
+}
+@keyframes coin-toss-reveal { from { opacity: 0; transform: translateY(6px) scale(.96); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .coin-toss-arc.is-tossing, [data-testid="coin-toss-winner"] { animation: none; }
+  .coin-toss-coin { transition: none; }
+}
 @media (min-width: 801px) { .coin-toss-form fieldset { flex: 1 1 320px; } }
 .button.danger { background: #982f2a; }
 .history-panel { padding: 22px; background: white; border: 1px solid var(--line); border-radius: 16px; }

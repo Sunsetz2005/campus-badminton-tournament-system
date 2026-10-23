@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { prisma } from "../../src/db/client";
+import { clearedCoinTossDraw, presetCoinTossWinner } from "../support/coin-toss";
 
 /**
  * R3-002 / R3-003 的浏览器注入回归。
@@ -34,7 +35,7 @@ async function recordCoinToss(page: Page, options?: {
   const category = options?.category ?? "SERVICE";
   const service = options?.service ?? "SERVE";
   const end = options?.end ?? "END_2";
-  await page.locator(`input[name="coin-toss-winner"][value="${winner}"]`).check();
+  await presetCoinTossWinner(page, winner);
   await page.locator(`input[name="coin-toss-category"][value="${category}"]`).check();
   if (category === "SERVICE") {
     await page.locator(`input[name="coin-toss-service"][value="${service}"]`).check();
@@ -43,7 +44,7 @@ async function recordCoinToss(page: Page, options?: {
     await page.locator(`input[name="coin-toss-end"][value="${end}"]`).check();
     await page.locator(`input[name="coin-toss-service"][value="${service}"]`).check();
   }
-  await page.getByRole("button", { name: "确认并记录抛币" }).click();
+  await page.getByRole("button", { name: "确认并开始" }).click();
 }
 
 async function resetMatch() {
@@ -57,7 +58,7 @@ async function resetMatch() {
   await prisma.match.update({
     where: { id: match.id },
     data: {
-      version: 0, controlGeneration: 1, lifecycleStatus: "READY",
+      version: 0, controlGeneration: 1, ...clearedCoinTossDraw, lifecycleStatus: "READY",
       outcomeType: null, verificationStatus: "UNVERIFIED", startedAt: null, endedAt: null,
     },
   });

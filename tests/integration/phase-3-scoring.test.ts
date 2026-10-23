@@ -5,7 +5,7 @@ import { assertTestDatabaseUrl } from "@/db/database-safety";
 import type { MatchCommand, MatchState, ScoreStateReplacement } from "@/domain/rules/match-engine";
 import { AppError } from "@/server/services/errors";
 import { getAuthoritativeMatchState } from "@/server/services/match-state-service";
-import { submitScoringCommand, type ScoringCommandEnvelope } from "@/server/services/scoring-command-service";
+import { drawCoinToss, submitScoringCommand, type ScoringCommandEnvelope } from "@/server/services/scoring-command-service";
 import {
   acquireScoringSession,
   heartbeatScoringSession,
@@ -50,7 +50,7 @@ async function resetMatch() {
     where: { id: matchId },
     data: {
       version: 0,
-      controlGeneration: 1,
+      controlGeneration: 1, coinTossDrawSide: null, coinTossDrawVersion: null, coinTossDrawnAt: null,
       lifecycleStatus: "READY",
       outcomeType: null,
       verificationStatus: "UNVERIFIED",
@@ -103,6 +103,27 @@ describe("阶段 3 权威记分事务", () => {
       payload: { valid: false, reason: "改写载荷" },
     }, control.controlToken)).rejects.toMatchObject({ code: "command_id_reused" } satisfies Partial<AppError>);
     await expect(prisma.matchEvent.count({ where: { matchId } })).resolves.toBe(1);
+  });
+
+  it("系统抛币：同一版本只抽一次，记录的胜方必须一致；裁判长作废抛币后可重抽", async () => {
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "3bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    const request = { scoringSessionId: control.sessionId, takeoverGeneration: control.takeoverGeneration };
+    const first = await drawCoinToss(refereeId, MATCH_CODE, request, control.controlToken);
+    expect(first).toMatchObject({ status: "drawn", version: 0 });
+    await expect(drawCoinToss(refereeId, MATCH_CODE, request, control.controlToken)).resolves.toMatchObject({ status: "existing", winnerSide: first.winnerSide });
+    await expect(drawCoinToss(refereeId, MATCH_CODE, request, "wrong-token")).rejects.toMatchObject({ code: "not_controller" });
+    const loser = first.winnerSide === "A" ? "B" : "A";
+    const choice = { winnerChoice: { kind: "SERVICE", decision: "SERVE" }, loserChoice: { kind: "END", end: "END_2" } } as const;
+    await expect(submitScoringCommand(refereeId, MATCH_CODE, command(control, 0, "RECORD_COIN_TOSS", { valid: true, winnerSide: loser, ...choice }), control.controlToken))
+      .rejects.toMatchObject({ code: "coin_toss_draw_mismatch" });
+    await expect(submitScoringCommand(refereeId, MATCH_CODE, command(control, 0, "RECORD_COIN_TOSS", { valid: true, winnerSide: first.winnerSide, ...choice }), control.controlToken))
+      .resolves.toMatchObject({ status: "accepted", version: 1 });
+    await expect(drawCoinToss(refereeId, MATCH_CODE, request, control.controlToken)).rejects.toMatchObject({ code: "coin_toss_not_awaited" });
+    const chief = await takeoverScoringSession(chiefId, MATCH_CODE, "3ccccccc-cccc-4ccc-8ccc-cccccccccccc", "抛币作废测试");
+    await submitScoringCommand(chiefId, MATCH_CODE, command(chief, 1, "INVALIDATE_COIN_TOSS", { reason: "重新抛币" }), chief.controlToken);
+    const redraw = await drawCoinToss(chiefId, MATCH_CODE, { scoringSessionId: chief.sessionId, takeoverGeneration: chief.takeoverGeneration }, chief.controlToken);
+    expect(redraw).toMatchObject({ status: "drawn", version: 2 });
+    await expect(prisma.auditLog.count({ where: { targetId: matchId, action: "COIN_TOSS_DRAWN" } })).resolves.toBe(2);
   });
 
   it("两个同版本并发命令仅一个成功", async () => {

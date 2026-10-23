@@ -23,6 +23,7 @@ tags:
 | `/api/matches/[matchCode]/control` | POST | 必须登录、账号启用、拥有赛事 `REFEREE` 角色，且被指派为该场主裁判（逐场指派模式）或该赛事为共用裁判账号模式；建立最小活动控制会话；已登录用户的 403 拒绝写入脱敏审计 |
 | `/api/matches/[matchCode]/state` | GET | 获指派主裁判或该赛事裁判长读取权威快照；`afterVersion` 未变时返回轻量 `unchanged` |
 | `/api/matches/[matchCode]/control` | POST/DELETE | 取得/同设备恢复或主动释放写租约 |
+| `/api/matches/[matchCode]/coin-toss` | POST | 系统抛币：须持有本场有效控制会话（Bearer 控制令牌＋会话 ID＋接管代次）且比赛处于待抛币；服务端随机决定胜方并按当前比赛版本保存、写审计 `COIN_TOSS_DRAWN`；同版本重复请求返回同一结果。之后 `RECORD_COIN_TOSS` 的胜方必须与之一致（422 `coin_toss_draw_mismatch`），裁判长作废抛币后版本变化可重抽 |
 | `/api/matches/[matchCode]/control/heartbeat` | PUT | 当前 token、会话和代次一致时按服务器时间续租 120 秒 |
 | `/api/matches/[matchCode]/control/takeover` | POST | `CHIEF_REFEREE` 填写原因后原子撤销旧会话、提高代次并建立新会话 |
 | `/api/matches/[matchCode]/commands` | POST | 单事务执行授权、租约、幂等、版本、纯引擎、事件、快照、局分投影和审计 |

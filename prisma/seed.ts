@@ -1058,11 +1058,11 @@ async function main() {
   const sunshineTeams = await seedSunshineLeague(admin.id, referee.id);
   console.info(`团体赛演示赛事：本次新增 ${sunshineTeams} 支已审核队伍（共 8 支，未抽签；8 块场地、3 个比赛日）。`);
   const teamManagerSeeded = await seedDemoTeamManager(admin.id);
-  const tournamentIds = await prisma.tournament.findMany({ select: { id: true } });
-  await prisma.roleAssignment.createMany({
-    data: tournamentIds.map(({ id }) => ({ userId: referee.id, tournamentId: id, role: "REFEREE" as const })),
-    skipDuplicates: true,
-  });
+  // 单条语句插入：先读赛事 ID 再写会与并发删除测试赛事的进程竞争（外键失败）。
+  await prisma.$executeRaw`
+    INSERT INTO "role_assignments" ("id", "userId", "tournamentId", "role", "createdAt")
+    SELECT gen_random_uuid(), ${referee.id}::uuid, t."id", 'REFEREE', now() FROM "tournaments" t
+    ON CONFLICT ("userId", "tournamentId", "role") DO NOTHING`;
 
   console.info(`公开发布边界：本次补写 ${published.count} 场；额外门户赛事 ${extraTournaments} 个。`);
 

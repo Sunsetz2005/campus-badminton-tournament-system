@@ -5,6 +5,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 
 import { prisma } from "../../src/db/client";
 import type { MatchState } from "../../src/domain/rules/match-engine";
+import { clearedCoinTossDraw, presetCoinTossWinner } from "../support/coin-toss";
 
 /**
  * 裁判工作台场地化改造的前后截图证据。
@@ -61,7 +62,7 @@ async function recordCoinToss(page: Page, options?: {
   const category = options?.category ?? "SERVICE";
   const service = options?.service ?? "SERVE";
   const end = options?.end ?? "END_2";
-  await page.locator(`input[name="coin-toss-winner"][value="${winner}"]`).check();
+  await presetCoinTossWinner(page, winner);
   await page.locator(`input[name="coin-toss-category"][value="${category}"]`).check();
   if (category === "SERVICE") {
     await page.locator(`input[name="coin-toss-service"][value="${service}"]`).check();
@@ -70,7 +71,7 @@ async function recordCoinToss(page: Page, options?: {
     await page.locator(`input[name="coin-toss-end"][value="${end}"]`).check();
     await page.locator(`input[name="coin-toss-service"][value="${service}"]`).check();
   }
-  await page.getByRole("button", { name: "确认并记录抛币" }).click();
+  await page.getByRole("button", { name: "确认并开始" }).click();
 }
 
 async function resetMatches() {
@@ -89,7 +90,7 @@ async function resetMatches() {
     where: { id: { in: ids } },
     data: {
       version: 0,
-      controlGeneration: 1,
+      controlGeneration: 1, ...clearedCoinTossDraw,
       lifecycleStatus: "READY",
       outcomeType: null,
       verificationStatus: "UNVERIFIED",

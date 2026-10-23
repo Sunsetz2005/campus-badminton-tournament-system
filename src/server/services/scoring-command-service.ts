@@ -1,3 +1,5 @@
+import { randomInt } from "node:crypto";
+
 import { Prisma, type TournamentRole } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
 import {
@@ -73,6 +75,18 @@ function assertNewCommandPolicy(state: MatchState, command: MatchCommand) {
   if (errors.length) throw new AppError(422, "invalid_special_outcome", `${errors.join("；")}。`);
 }
 
+/** 本场当前版本已有系统抛币结果时，记录的胜方必须就是它，不能借手动记录绕开随机结果。 */
+function assertMatchesCoinTossDraw(
+  match: { version: number; coinTossDrawSide: "A" | "B" | null; coinTossDrawVersion: number | null },
+  command: MatchCommand,
+) {
+  if (command.type !== "RECORD_COIN_TOSS" || !command.payload.valid) return;
+  if (match.coinTossDrawSide === null || match.coinTossDrawVersion !== match.version) return;
+  if (command.payload.winnerSide !== match.coinTossDrawSide) {
+    throw new AppError(422, "coin_toss_draw_mismatch", "抛币胜方必须与系统抛币结果一致。");
+  }
+}
+
 function assertRoleForCommand(role: TournamentRole, type: MatchCommand["type"]) {
   if (CHIEF_ONLY.has(type) && role !== "CHIEF_REFEREE") {
     throw new AppError(403, "chief_referee_required", "该命令必须由裁判长执行。");
@@ -86,7 +100,7 @@ async function requireController(
   transaction: Prisma.TransactionClient,
   matchId: string,
   actorUserId: string,
-  envelope: ScoringCommandEnvelope,
+  envelope: Pick<ScoringCommandEnvelope, "scoringSessionId" | "takeoverGeneration" | "type">,
   controlToken: string,
 ) {
   const session = await transaction.scoringSession.findUnique({ where: { id: envelope.scoringSessionId } });
@@ -95,6 +109,8 @@ async function requireController(
     select: {
       controlGeneration: true,
       version: true,
+      coinTossDrawSide: true,
+      coinTossDrawVersion: true,
     },
   });
   if (
@@ -293,6 +309,7 @@ export async function submitScoringCommand(
     }
     const command = commandFromEnvelope(envelope);
     assertNewCommandPolicy(aggregate.state, command);
+    assertMatchesCoinTossDraw(match, command);
     const result = applyCommand(aggregate, command);
     if (result.status === "rejected") throw new AppError(422, result.error.code, result.error.message);
     if (result.status === "duplicate") throw new AppError(409, "event_history_duplicate", "内存历史与数据库幂等记录不一致。");
@@ -377,4 +394,48 @@ export function parseControlToken(header: string | null) {
 
 export function canonicalCommandForTests(matchId: string, envelope: ScoringCommandEnvelope) {
   return { fingerprint: envelopeFingerprint(matchId, envelope), commandFingerprint: fingerprintMatchCommand(commandFromEnvelope(envelope)), serialized: stableStringify(envelope) };
+}
+
+export interface CoinTossDrawRequest {
+  scoringSessionId: string;
+  takeoverGeneration: number;
+}
+
+/**
+ * 系统抛币：由持有本场控制权的设备发起，服务端用密码学随机数决定胜方并保存在比赛上。
+ * 同一比赛版本只抽一次——重复请求（刷新、网络重试、换设备）返回同一结果，不能靠重抽改变胜负；
+ * 裁判长作废抛币会改变比赛版本，之后可以重新抛。抛币本身不写比赛事件，胜方选择仍由 RECORD_COIN_TOSS 记录。
+ */
+export async function drawCoinToss(actorUserId: string, matchCode: string, request: CoinTossDrawRequest, controlToken: string) {
+  const access = await getMatchAccess(actorUserId, matchCode);
+  return transactWithRetry(() => prisma.$transaction(async (transaction) => {
+    await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${access.id}::uuid FOR UPDATE`;
+    const { match } = await requireController(transaction, access.id, actorUserId, { ...request, type: "RECORD_COIN_TOSS" }, controlToken);
+    const aggregate = await loadVerifiedAggregate(transaction, access.id);
+    if (aggregate.state.phase !== "AWAITING_COIN_TOSS") {
+      throw new AppError(409, "coin_toss_not_awaited", "本场当前不需要抛币。");
+    }
+    if (match.coinTossDrawSide && match.coinTossDrawVersion === match.version) {
+      const existing = await transaction.match.findUniqueOrThrow({ where: { id: access.id }, select: { coinTossDrawnAt: true } });
+      return { status: "existing" as const, winnerSide: match.coinTossDrawSide, drawnAt: existing.coinTossDrawnAt!.toISOString(), version: match.version };
+    }
+    const winnerSide = randomInt(2) === 0 ? "A" as const : "B" as const;
+    const drawnAt = new Date();
+    await transaction.match.update({
+      where: { id: access.id },
+      data: { coinTossDrawSide: winnerSide, coinTossDrawVersion: match.version, coinTossDrawnAt: drawnAt },
+    });
+    await transaction.auditLog.create({
+      data: {
+        tournamentId: access.tournamentId,
+        actorUserId,
+        action: "COIN_TOSS_DRAWN",
+        targetType: "Match",
+        targetId: access.id,
+        outcome: "SUCCESS",
+        metadata: { matchCode, winnerSide, version: match.version },
+      },
+    });
+    return { status: "drawn" as const, winnerSide, drawnAt: drawnAt.toISOString(), version: match.version };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

@@ -5,6 +5,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 
 import { prisma } from "../../src/db/client";
 import type { MatchState } from "../../src/domain/rules/match-engine";
+import { clearedCoinTossDraw, presetCoinTossWinner } from "../support/coin-toss";
 
 type ScoringControl = {
   controlToken: string;
@@ -34,7 +35,7 @@ async function recordCoinToss(page: Page, options?: {
   const category = options?.category ?? "SERVICE";
   const service = options?.service ?? "SERVE";
   const end = options?.end ?? "END_2";
-  await page.locator(`input[name="coin-toss-winner"][value="${winner}"]`).check();
+  await presetCoinTossWinner(page, winner);
   await page.locator(`input[name="coin-toss-category"][value="${category}"]`).check();
   if (category === "SERVICE") {
     await page.locator(`input[name="coin-toss-service"][value="${service}"]`).check();
@@ -43,7 +44,7 @@ async function recordCoinToss(page: Page, options?: {
     await page.locator(`input[name="coin-toss-end"][value="${end}"]`).check();
     await page.locator(`input[name="coin-toss-service"][value="${service}"]`).check();
   }
-  await page.getByRole("button", { name: "确认并记录抛币" }).click();
+  await page.getByRole("button", { name: "确认并开始" }).click();
 }
 
 async function resetMatches() {
@@ -59,7 +60,7 @@ async function resetMatches() {
     where: { id: { in: ids } },
     data: {
       version: 0,
-      controlGeneration: 1,
+      controlGeneration: 1, ...clearedCoinTossDraw,
       lifecycleStatus: "READY",
       outcomeType: null,
       verificationStatus: "UNVERIFIED",
@@ -389,7 +390,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await expect(page.getByRole("button", { name: "模拟选手 01 赢得一分" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "左侧换位" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "右侧换位" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "换边" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: /^换边/ })).toBeDisabled();
 
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     const addPoint = page.getByRole("button", { name: "模拟选手 01 赢得一分" });
@@ -454,7 +455,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await expect(page.getByRole("button", { name: "模拟组合 03/04 赢得一分" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "左侧换位" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "右侧换位" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "换边" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: /^换边/ })).toBeDisabled();
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     await expect(page.getByRole("button", { name: "模拟组合 03/04 赢得一分" })).toBeEnabled();
     await expect(page.getByTestId("badminton-court").locator('[data-role="SERVER"]')).toHaveCount(1);
@@ -516,7 +517,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await expect(page.getByRole("button", { name: "左侧换位" })).toHaveAccessibleName(/左侧换位\s*模拟组合 03\/04/);
     await expect(page.getByRole("button", { name: "右侧换位" })).toHaveAccessibleName(/右侧换位\s*模拟组合 05\/06/);
 
-    await page.getByRole("button", { name: "换边" }).click();
+    await page.getByRole("button", { name: /^换边/ }).click();
     const endsDialog = page.getByRole("dialog", { name: "核对并更正物理场地端" });
     await endsDialog.getByRole("button", { name: "生成服务器预览" }).click();
     await expect(endsDialog.getByText("物理端 A END_1 → END_2")).toBeVisible();

@@ -5,6 +5,7 @@ import { expect, test, type Browser, type BrowserContextOptions, type Page } fro
 
 import { prisma } from "../../src/db/client";
 import { assertTestDatabaseUrl } from "../../src/db/database-safety";
+import { clearedCoinTossDraw, presetCoinTossWinner } from "../support/coin-toss";
 
 /**
  * 阶段 8：手机、平板、桌面五个视口的响应式与跨设备可靠性验收。
@@ -100,7 +101,7 @@ async function resetMatches() {
     where: { id: { in: ids } },
     data: {
       version: 0,
-      controlGeneration: 1,
+      controlGeneration: 1, ...clearedCoinTossDraw,
       lifecycleStatus: "READY",
       outcomeType: null,
       verificationStatus: "UNVERIFIED",
@@ -135,11 +136,11 @@ async function setSinglesSideAName(name: string | null) {
 }
 
 async function recordDefaultCoinToss(page: Page) {
-  await page.locator('input[name="coin-toss-winner"][value="A"]').check();
+  await presetCoinTossWinner(page, "A");
   await page.locator('input[name="coin-toss-category"][value="SERVICE"]').check();
   await page.locator('input[name="coin-toss-service"][value="SERVE"]').check();
   await page.locator('input[name="coin-toss-end"][value="END_2"]').check();
-  await page.getByRole("button", { name: "确认并记录抛币" }).click();
+  await page.getByRole("button", { name: "确认并开始" }).click();
 }
 
 async function serverVersion(page: Page, matchCode: string) {
@@ -398,7 +399,7 @@ test.describe.serial("阶段 8：裁判工作台五视口、长姓名与两设�
     const acquire = page.getByRole("button", { name: "取得本机控制权" });
     await acquire.click();
     const plusA = page.getByRole("button", { name: `${LONG_NAME} 赢得一分` });
-    const coinToss = page.getByRole("button", { name: "确认并记录抛币" });
+    const coinToss = page.getByRole("button", { name: "开始抛币" }).or(page.getByTestId("coin-toss-winner"));
     await expect(plusA.or(coinToss).first()).toBeVisible();
     if (await coinToss.isVisible()) {
       // 单独运行本用例时比赛尚未开局。
