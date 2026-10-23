@@ -9,7 +9,7 @@ import type { CheckResult } from "../verify/checks";
 
 interface Verification {
   golden: { passed: number; failed: { file: string; detail: string }[]; pending: string[] };
-  tournaments: { key: string; slug: string; checks: CheckResult[] }[];
+  tournaments: { key: string; slug: string; checks: CheckResult[]; delays?: Record<string, unknown> }[];
   passed: boolean;
 }
 
@@ -76,6 +76,14 @@ export function writeReport(runDir: string, run: Record<string, unknown>, verifi
     }
   }
 
+  push("## 计划与实际偏差（分钟，只统计不判错）", "");
+  for (const tournament of verification.tournaments) {
+    if (!tournament.delays) continue;
+    const d = tournament.delays as { startLagMinutes: unknown; endLagMinutes: unknown; actualDurationMinutes: unknown; earlyStarts: number; lateOverFiveMinutes: number };
+    push(`- ${tournament.key}：开始偏差 ${JSON.stringify(d.startLagMinutes)}；结束偏差 ${JSON.stringify(d.endLagMinutes)}；实际时长 ${JSON.stringify(d.actualDurationMinutes)}；提前开赛 ${d.earlyStarts} 场，晚开超过 5 分钟 ${d.lateOverFiveMinutes} 场`);
+  }
+  push("");
+  if (String(run.outcome) === "host_paused") push("> **本次运行无效**：检测到宿主暂停（本机睡眠），租约在暂停期间过期，相关发现不代表系统问题。", "");
   push("## 发现", "");
   if (!findings.length) push("本次运行没有记录到发现。", "");
   for (const [kind, label] of Object.entries(KIND_LABEL)) {

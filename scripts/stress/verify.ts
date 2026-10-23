@@ -14,6 +14,7 @@ import { runManualGoldenCases } from "./oracle/golden";
 import { writeReport } from "./report/write";
 import { checkRanking, runAll, type CheckResult } from "./verify/checks";
 import { loadTournamentData } from "./verify/data";
+import { delayStats } from "./verify/delays";
 
 export interface RunResultFile {
   outcome: string;
@@ -39,14 +40,14 @@ export async function verifyRun(runDir: string, run: RunResultFile) {
     set.add(review.commandId);
     accepted.set(review.matchCode, set);
   }
-  const perTournament: { key: string; slug: string; checks: CheckResult[] }[] = [];
+  const perTournament: { key: string; slug: string; checks: CheckResult[]; delays: ReturnType<typeof delayStats> }[] = [];
   for (const tournament of run.tournaments) {
     const data = await loadTournamentData(tournament.slug);
     // 只有本次仿真执裁过的比赛才做请求↔事件对应；其余比赛（未开赛）在 events 检查里只看版本连续。
     const checks = runAll(data, accepted);
     if (golden.failed.length === 0) checks.push(await checkRanking(data));
     else checks.push({ name: "ranking", title: "小组名次、淘汰签位与最终名次独立重算", passed: false, checked: 0, failures: golden.failed.map((item) => ({ subject: item.file, detail: `人工核对用例未通过：${item.detail}` })), notes: ["oracle 未通过人工核对用例，排名类判定停止"] });
-    perTournament.push({ key: tournament.key, slug: tournament.slug, checks });
+    perTournament.push({ key: tournament.key, slug: tournament.slug, checks, delays: delayStats(data) });
   }
   const verification = { verifiedAt: new Date().toISOString(), golden, tournaments: perTournament, passed: perTournament.every((item) => item.checks.every((check) => check.passed)) };
   writeFileSync(path.join(runDir, "verify.json"), JSON.stringify(verification, null, 2));
