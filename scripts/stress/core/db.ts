@@ -6,9 +6,28 @@
  *    仿真按页面会显示的范围读取，相当于操作员在页面上看到后再点按钮；
  * 2. 判定：事件、快照、签位等内部表，只在判定阶段读取。
  */
-import { prisma } from "../../../src/db/client";
+import { prisma as base } from "../../../src/db/client";
+import { sleep } from "./clock";
 
-export { prisma };
+/** 连接类错误（库重启、连接被断开）：仿真自己的只读查询等库恢复后重试，最多 90 秒，不让数据库故障注入把仿真进程带崩。 */
+const CONNECTION_ERRORS = /P1001|P1017|P2037|53300|too many clients|57P01|57P03|ECONNREFUSED|ECONNRESET|DatabaseNotReachable|Connection terminated|terminating connection/;
+
+export const prisma = base.$extends({
+  query: {
+    async $allOperations({ args, query }) {
+      const started = Date.now();
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          return await query(args);
+        } catch (error) {
+          const text = error instanceof Error ? `${(error as { code?: string }).code ?? ""} ${error.message}` : String(error);
+          if (!CONNECTION_ERRORS.test(text) || Date.now() - started > 90_000) throw error;
+          await sleep(Math.min(2000, 200 * attempt));
+        }
+      }
+    },
+  },
+}) as unknown as typeof base; // 扩展后的客户端少了 `$on` 等类型成员，但查询接口不变；要传给 src 服务函数，类型按原客户端看待。
 
 export async function tournamentIdOf(slug: string) {
   return (await prisma.tournament.findUniqueOrThrow({ where: { slug }, select: { id: true } })).id;

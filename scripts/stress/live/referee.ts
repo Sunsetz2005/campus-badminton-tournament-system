@@ -60,6 +60,8 @@ export interface MatchRunResult {
   /** 执裁的仿真裁判（人）与其账号；共用账号模式下账号都是同一个。 */
   official?: string;
   officialUserId?: string;
+  /** 中途换人时每段的执裁人（逐场指派模式下判定按时间切分核对）。 */
+  officialSegments?: { key: string; userId: string; from: number }[];
 }
 
 const HEARTBEAT_MS = 30_000;
@@ -131,6 +133,47 @@ export class MatchDriver {
     return result;
   }
 
+  /** 已受理的 commandId（注入会把多个驱动的结果并成一条）。 */
+  acceptedIds() {
+    return [...this.accepted];
+  }
+
+  markAccepted(commandId: string) {
+    this.accepted.add(commandId);
+  }
+
+  /** 按当前状态拼一条命令信封；注入用它构造重复、过期版本、乱序等请求。 */
+  envelope(type: string, payload: Record<string, unknown>, overrides: { commandId?: string; expectedVersion?: number } = {}) {
+    return {
+      commandId: overrides.commandId ?? randomUUID(),
+      occurredAt: new Date().toISOString(),
+      expectedVersion: overrides.expectedVersion ?? this.state!.version,
+      scoringSessionId: this.control!.sessionId,
+      takeoverGeneration: this.control!.takeoverGeneration,
+      type,
+      payload,
+    };
+  }
+
+  /** 原样发一次命令信封（不重试、不对账）；受理则记入 accepted 并采用新状态。 */
+  async post(envelope: ReturnType<MatchDriver["envelope"]>, options: { timeoutMs?: number; note?: string; control?: Control; duringOutage?: boolean } = {}) {
+    const control = options.control ?? this.control!;
+    const result = await this.client.call<{ state?: MatchStateView; status?: string }>("POST", `/api/matches/${this.matchCode}/commands`, envelope, {
+      route: "/api/matches/[code]/commands",
+      headers: { Authorization: `Bearer ${control.controlToken}` },
+      note: options.note ?? envelope.type,
+      timeoutMs: options.timeoutMs,
+      duringOutage: options.duringOutage,
+    });
+    this.commands.push({ commandId: envelope.commandId, type: envelope.type, status: result.status, code: result.code, version: result.json?.state?.version ?? null, ms: result.ms });
+    this.bump(result);
+    if (result.ok) {
+      this.accepted.add(envelope.commandId);
+      if (result.json?.state && (!this.state || result.json.state.version >= this.state.version)) this.state = result.json.state;
+    }
+    return result;
+  }
+
   /** 发一条命令；返回成功后的新状态，失败返回 null（并已按错误类型恢复本地状态）。 */
   async send(type: string, payload: Record<string, unknown>): Promise<CallResult<{ state?: MatchStateView; status?: string }>> {
     const envelope = {
@@ -142,7 +185,9 @@ export class MatchDriver {
       type,
       payload,
     };
-    for (let attempt = 0; attempt < 6; attempt += 1) {
+    // 5xx / 网络错误按时间重试（与工作台一致：响应未知时一直按原 ID 对账），上限 90 秒，足以跨过数据库重启这类短停机。
+    const giveUpAt = Date.now() + 90_000;
+    for (let attempt = 0; attempt < 200 && Date.now() < giveUpAt; attempt += 1) {
       const result = await this.client.call<{ state?: MatchStateView; status?: string }>("POST", `/api/matches/${this.matchCode}/commands`, envelope, {
         route: "/api/matches/[code]/commands",
         headers: this.auth(),
@@ -157,7 +202,7 @@ export class MatchDriver {
       }
       if (result.status === 0 || result.status >= 500) {
         // 响应未知：先按原 ID 对账，已受理就采用其结果，否则原样重发（服务端按 commandId 幂等）。
-        await sleep(200 * (attempt + 1));
+        await sleep(Math.min(2000, 200 * (attempt + 1)));
         const lookup = await this.client.call<{ state?: MatchStateView; status?: string }>("GET", `/api/matches/${this.matchCode}/commands/${envelope.commandId}`, undefined, {
           route: "/api/matches/[code]/commands/[id]",
         });
@@ -193,7 +238,11 @@ export class MatchDriver {
   }
 
   /** 从当前状态一直打到提交（或遇到无法继续的拒绝）。 */
-  async play(options: { onRally?: () => Promise<void> } = {}): Promise<MatchRunResult> {
+  /**
+   * `onPhase` 在每一步之前调用；返回 "pause" 时本驱动停下（不释放控制），结局记为 stopped、reason 为 paused——
+   * 注入在此做交接或并发请求，之后可由同一个或另一个驱动接着 play()。
+   */
+  async play(options: { onRally?: () => Promise<void>; onPhase?: (state: MatchStateView) => Promise<"continue" | "pause"> } = {}): Promise<MatchRunResult> {
     const startedAt = Date.now();
     const finish = (outcome: MatchRunResult["outcome"], reason?: string): MatchRunResult => ({
       matchCode: this.matchCode,
@@ -214,6 +263,7 @@ export class MatchDriver {
     while (this.state && guard < 2000) {
       guard += 1;
       await this.heartbeatIfDue();
+      if (options.onPhase && (await options.onPhase(this.state)) === "pause") return finish("stopped", "paused");
       const state = this.state;
       const rule = state.ruleConfig;
       let result: CallResult | null = null;

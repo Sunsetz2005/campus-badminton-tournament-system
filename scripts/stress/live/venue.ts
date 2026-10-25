@@ -34,6 +34,8 @@ export interface LiveRegistry {
   playing: Map<string, number>;
   /** 最近一次看到系统有实际进展（新事件或比赛状态变化）的时刻，由 run.ts 的进展探针更新。 */
   lastProgressAt: number;
+  /** 注入借用的场地 → 比赛：本场地的调度协程打完手上这场后停下，等注入把借用的比赛打完。 */
+  borrowedCourts: Map<string, string>;
   stop: boolean;
 }
 
@@ -57,6 +59,10 @@ export async function courtLoop(options: {
   /** 名单未齐（match_not_ready）的团体小场 → 暂缓到何时。暂缓期间本场地先打别的比赛，避免队头一场开不了就堵住整块场地。 */
   const notReadyUntil = new Map<string, number>();
   while (!registry.stop) {
+    if (registry.borrowedCourts.has(court.id)) {
+      await sleep(1000);
+      continue;
+    }
     let view;
     try {
       view = await cache.get();
@@ -164,7 +170,8 @@ export async function courtLoop(options: {
       if (!acquired.ok) {
         context.log(`${court.name} 取得 ${next.code} 控制失败：${acquired.status} ${acquired.code}`);
         outcome = `acquire_${acquired.status}`;
-        if (acquired.status !== 409) registry.abandoned.add(next.code);
+        // 5xx / 网络错误是暂时的（数据库故障注入期间），稍后再来；其余拒绝说明这场开不了。
+        if (acquired.status !== 409 && acquired.status !== 0 && acquired.status < 500) registry.abandoned.add(next.code);
         await sleep(2000);
         continue;
       }
@@ -174,7 +181,7 @@ export async function courtLoop(options: {
         await driver.release();
         outcome = first.code ?? "state_failed";
         if (first.code === "match_not_ready") notReadyUntil.set(next.code, Date.now() + 15_000);
-        if (first.code !== "match_not_ready") {
+        if (first.code !== "match_not_ready" && first.status !== 0 && first.status < 500) {
           registry.abandoned.add(next.code);
           addFinding(context, { kind: "blocked", area: "执裁", title: `${next.code} 读取权威状态失败`, detail: { status: first.status, code: first.code, message: first.message } });
         }

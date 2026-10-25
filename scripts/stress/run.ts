@@ -8,7 +8,8 @@
  * 参数：--level L0|L1|L2|L3  --clock C8|C3|R1  --seed <整数>  --external（连接已在运行的实例，不自起服务）
  *       --same-ip（所有模拟客户端共用一个来源，§13.2）  --public-rate <每分钟>  --max-minutes <总时限>
  *       --referee-mode SHARED_ACCOUNT|PER_MATCH（只作用于主赛事 M；卫星赛事固定共用账号，§13.9）
- *       --scenarios ties,delays（强制同分 / 延误七情形；默认 C3 档两者都开，其余档只开 ties）
+ *       --scenarios ties,delays,inject（强制同分 / 延误七情形 / 异常注入；默认 C3 档开前两者，其余档只开 ties）
+ *       --only commands,sessions,handover,pending,restart,lineup,confirm,reopen（异常注入只跑指定组）
  *
  * 所有写入只经 HTTP 接口；本进程的数据库会话是只读的（readonly-env.ts 必须最先导入）。
  * 产物写到 artifacts/stress/<seed>-<时间>/；运行时生成的口令写到未提交的 .local/stress/。
@@ -29,6 +30,9 @@ import { Rng } from "./core/rng";
 import { Server } from "./core/server";
 import { chiefReviewLoop, groupRankingLoop, type RankingRecord, type ReviewRecord } from "./live/chief";
 import { GlobalScheduleView, OfficiatingCache } from "./live/officiating";
+import { injectionLoop } from "./live/injections";
+import { teamInjectionLoop, teamOutcomeProbes } from "./live/team-injections";
+import { planRefereeOverrun, refereeInjectionLoop } from "./live/referee-injections";
 import { createOfficialRecord, provisionNamedReferees, rotationStats, simulatedOfficials } from "./live/officials";
 import { delayWatchLoop, narrowFirstDay, planDelayScenarios, rescheduleLoop, summarizeDelayScenarios, type DelayObservation } from "./scenario/delays";
 import { planForcedTies } from "./scenario/ties";
@@ -58,6 +62,8 @@ const { values: args } = parseArgs({
     scenarios: { type: "string" },
     /** 故障注入，逗号分隔：lineup-500、lineup-500-saved、lineup-withhold、review-hold=<现实秒数>。 */
     inject: { type: "string" },
+    /** 异常注入（--scenarios inject）只跑指定组，逗号分隔：commands、sessions、handover、pending、browser、restart、dbfaults、lineup、confirm、reopen；逐场指派：swap-before、swap-busy、swap-mid、swap-mid-other、overrun。 */
+    only: { type: "string" },
   },
 });
 
@@ -102,6 +108,7 @@ async function main() {
   for (const key of injectArgs.keys()) if (!["lineup-500", "lineup-500-saved", "lineup-withhold", "review-hold"].includes(key)) throw new Error(`未知注入 ${key}`);
   const context: RunContext = {
     runId,
+    probes: [],
     inject: {
       lineup500: injectArgs.has("lineup-500-saved") ? "saved" : injectArgs.has("lineup-500") ? "unsent" : null,
       lineup500Used: false,
@@ -144,7 +151,7 @@ async function main() {
   };
   writeFileSync(path.join(runDir, "params.json"), JSON.stringify({ args, environment, level, clock: clockProfile }, null, 2));
 
-  const registry: LiveRegistry = { active: new Map(), results: [], activePlayers: new Map(), intentionalWaits: new Map(), abandoned: new Set(), playing: new Map(), lastProgressAt: Date.now(), stop: false };
+  const registry: LiveRegistry = { active: new Map(), results: [], activePlayers: new Map(), intentionalWaits: new Map(), abandoned: new Set(), playing: new Map(), lastProgressAt: Date.now(), borrowedCourts: new Map(), stop: false };
   const reviews: ReviewRecord[] = [];
   const lineups: LineupRecord[] = [];
   const rankings: RankingRecord[] = [];
@@ -152,6 +159,7 @@ async function main() {
   const delayObservations = new Map<string, DelayObservation>();
   const mark = (name: string) => (phases[name] = Date.now());
   let outcome = "completed";
+  let refereeOverrun: Awaited<ReturnType<typeof planRefereeOverrun>> = null;
 
   try {
     mark("serverStart");
@@ -186,6 +194,7 @@ async function main() {
           log(`[注入] ${first.code} 复核延后现实 ${context.inject.reviewHoldSeconds} 秒（约 ${Math.round(context.clock.ms(context.inject.reviewHoldSeconds) / 1000)} 秒墙钟）`);
         }
       }
+      if (main && scenarios.has("inject") && plan.refereeMode === "PER_MATCH") refereeOverrun = await planRefereeOverrun(context, tournament);
       if (main && scenarios.has("delays")) {
         await planDelayScenarios(context, tournament);
         await narrowFirstDay(context, tournament, startsAt);
@@ -196,6 +205,9 @@ async function main() {
     mark("live");
     const refereeUser = await prisma.user.findFirstOrThrow({ where: { email: context.refereeLogin.login.toLowerCase() }, select: { id: true } });
     const loops: Promise<unknown>[] = [];
+    // 协程抛错只记为脚本错误：未处理的拒绝会让 Node 直接退出，跳过 finally，留下被测服务和停着的数据库容器。
+    const track = (loop: Promise<unknown>) =>
+      loops.push(loop.catch((error) => addFinding(context, { kind: "script_error", area: "仿真", title: "协程异常退出", detail: { message: error instanceof Error ? `${error.message}\n${error.stack}` : String(error) } })));
     const sharedModes = context.tournaments.filter((item) => item.plan.refereeMode === "SHARED_ACCOUNT").map((item) => item.plan.key);
     if (sharedModes.length) {
       addFinding(context, {
@@ -223,17 +235,26 @@ async function main() {
           device = new Client(origin, `tablet-${tournament.plan.key}-${court.code}`, metrics, context.nextIp());
           await device.signIn(context.refereeLogin.login, context.refereeLogin.password);
         }
-        loops.push(courtLoop({ context, tournament, court, device, cache, registry, rng: context.rng.fork(`court:${tournament.plan.key}:${court.code}`), clock: context.clock }));
+        track(courtLoop({ context, tournament, court, device, cache, registry, rng: context.rng.fork(`court:${tournament.plan.key}:${court.code}`), clock: context.clock }));
+      }
+      if (tournament.plan.key === "M" && scenarios.has("inject")) {
+        const only = args.only ? new Set(args.only.split(",").map((item) => item.trim())) : undefined;
+        // 逐场指派模式只做 §13.9 裁判相关注入；§7 通用、团体与共用账号交接在共用账号模式的轮次里做。
+        if (perMatch) track(refereeInjectionLoop({ context, tournament, registry, server, rng: context.rng.fork("inject:referee"), overrun: refereeOverrun, only }));
+        else {
+          track(injectionLoop({ context, tournament, registry, server, rng: context.rng.fork("inject"), only }));
+          track(teamInjectionLoop({ context, tournament, registry, rng: context.rng.fork("inject:team"), reviews, only }));
+        }
       }
       if (tournament.delayScenarios.length) {
-        loops.push(delayWatchLoop({ context, tournament, registry, observations: delayObservations }));
-        loops.push(rescheduleLoop({ context, tournament, registry }));
+        track(delayWatchLoop({ context, tournament, registry, observations: delayObservations }));
+        track(rescheduleLoop({ context, tournament, registry }));
       }
-      tournament.chiefs.forEach((_, index) => loops.push(chiefReviewLoop({ context, tournament, index, registry, reviews, rng: context.rng.fork(`chief:${tournament.plan.key}:${index}`) })));
-      loops.push(groupRankingLoop({ context, tournament, registry, rng: context.rng.fork(`ranking:${tournament.plan.key}`), confirmations: rankings }));
-      loops.push(lineupLoop({ context, tournament, registry, rng: context.rng.fork(`lineup:${tournament.plan.key}`), records: lineups }));
+      tournament.chiefs.forEach((_, index) => track(chiefReviewLoop({ context, tournament, index, registry, reviews, rng: context.rng.fork(`chief:${tournament.plan.key}:${index}`) })));
+      track(groupRankingLoop({ context, tournament, registry, rng: context.rng.fork(`ranking:${tournament.plan.key}`), confirmations: rankings }));
+      track(lineupLoop({ context, tournament, registry, rng: context.rng.fork(`lineup:${tournament.plan.key}`), records: lineups }));
     }
-    for (let index = 0; index < level.spectators; index += 1) loops.push(spectator(context, registry, index));
+    for (let index = 0; index < level.spectators; index += 1) track(spectator(context, registry, index));
 
     // 宿主暂停检测：本机睡眠（合盖、闲置）时仿真与被测服务一起停住，但服务端的租约按墙钟继续计时，
     // 醒来后所有控制会话同时过期——那是环境假象，不是系统问题。1 秒节拍的墙钟跳变超过 20 秒即判本次运行无效。
@@ -310,6 +331,9 @@ async function main() {
   }
 
   const finalStatus = context.tournaments.length ? await tournamentStatus(context.tournaments) : null;
+  if (scenarios.has("inject")) {
+    for (const tournament of context.tournaments.filter((item) => item.plan.key === "M")) await teamOutcomeProbes(context, tournament).catch((error) => log(`团体提前决出汇总失败：${error}`));
+  }
   for (const tournament of context.tournaments) {
     if (tournament.delayScenarios.length) await summarizeDelayScenarios(tournament, delayObservations, { reviews, lineups }).catch((error) => log(`延误情形汇总失败：${error}`));
   }
@@ -335,6 +359,7 @@ async function main() {
     lineups,
     rankings,
     findings: context.findings,
+    probes: context.probes,
     metrics: metrics.summary(),
     server: { starts: server.starts, log: Server.scanLog(path.join(runDir, "server.log")) },
   };

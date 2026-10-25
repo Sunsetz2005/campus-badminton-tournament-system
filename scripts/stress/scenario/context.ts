@@ -58,6 +58,8 @@ export interface TournamentRuntime {
   reviewHolds: Map<string, number>;
   /** 复核延后到指定时刻（墙钟毫秒）。用于需要「等到某个截止过去」的情形（D7）。 */
   reviewHoldUntil: Map<string, number>;
+  /** 由异常注入亲自提交名单的团体对抗（fixture.id），名单协程跳过。 */
+  lineupReserved: Set<string>;
   tieScenarios: TieScenario[];
   delayScenarios: DelayScenario[];
   /** 具名裁判（逐场指派模式）或仿真裁判（共用账号模式）。 */
@@ -79,8 +81,25 @@ export interface Injections {
   reviewHoldSeconds: number;
 }
 
+/** 异常注入的一项期望 / 实际对照（M4）。「未触发」表示构造条件没有出现，不等于通过。 */
+export type ProbeVerdict = "符合" | "不符" | "设计未定义" | "未触发" | "脚本错误";
+
+export interface ProbeRecord {
+  at: string;
+  id: string;
+  group: string;
+  title: string;
+  expected: string;
+  actual: string;
+  verdict: ProbeVerdict;
+  match?: string;
+  detail?: Record<string, unknown>;
+}
+
 export interface RunContext {
   runId: string;
+  /** 异常注入的期望 / 实际对照。 */
+  probes: ProbeRecord[];
   inject: Injections;
   runDir: string;
   origin: string;
@@ -105,5 +124,12 @@ export function addFinding(context: RunContext, finding: Omit<Finding, "at">) {
   const entry = { at: new Date().toISOString(), ...finding };
   context.findings.push(entry);
   context.log(`[发现:${finding.kind}] ${finding.area} · ${finding.title}`);
+  return entry;
+}
+
+export function recordProbe(context: RunContext, probe: Omit<ProbeRecord, "at">) {
+  const entry = { at: new Date().toISOString(), ...probe };
+  context.probes.push(entry);
+  context.log(`[注入结果:${probe.verdict}] ${probe.id} ${probe.title}${probe.match ? `（${probe.match}）` : ""}：${probe.actual}`);
   return entry;
 }

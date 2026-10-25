@@ -77,6 +77,7 @@ export async function createTournament(context: RunContext, plan: TournamentPlan
     forced: new Map(),
     reviewHolds: new Map(),
     reviewHoldUntil: new Map(),
+    lineupReserved: new Set(),
     tieScenarios: [],
     delayScenarios: [],
     officials: [],

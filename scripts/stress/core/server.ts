@@ -50,7 +50,11 @@ export class Server {
 
   async start() {
     const started = Date.now();
+    let exited = false;
     if (!this.options.external) {
+      // 端口上已有服务（例如上一轮崩溃遗留、连着另一个库）就拒绝启动：否则就绪检查会打到那个服务上，数据写进别的库。
+      const stale = await fetch(`${this.url.origin}/api/health`, { signal: AbortSignal.timeout(2000) }).then(() => true, () => false);
+      if (stale) throw new Error(`${this.url.origin} 已有服务在监听（上一轮遗留？），先停掉再运行。`);
       const child = spawn(
         "pnpm",
         ["exec", "tsx", "scripts/start-production-server.ts", "--", "--hostname", this.url.hostname, "--port", this.url.port || "3200"],
@@ -59,7 +63,21 @@ export class Server {
       this.child = child;
       child.stdout?.pipe(this.log, { end: false });
       child.stderr?.pipe(this.log, { end: false });
-      child.once("exit", (code, signal) => this.log.write(`\n[stress] server exited code=${code} signal=${signal}\n`));
+      child.once("exit", (code, signal) => {
+        exited = true;
+        this.log.write(`\n[stress] server exited code=${code} signal=${signal}\n`);
+      });
+      // 仿真进程意外退出时不留下被测服务。
+      process.once("exit", () => {
+        if (!exited) child.kill("SIGKILL");
+      });
+      // 被信号终止时 Node 不触发 exit 事件：先关掉被测服务再退出。
+      for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+        process.once(signal, () => {
+          if (!exited) child.kill("SIGKILL");
+          process.exit(128 + (signal === "SIGINT" ? 2 : signal === "SIGHUP" ? 1 : 15));
+        });
+      }
     }
     for (;;) {
       try {
@@ -68,6 +86,7 @@ export class Server {
       } catch {
         // 尚未监听
       }
+      if (exited) throw new Error("被测服务进程启动后退出，见运行目录 server.log。");
       if (Date.now() - started > 90_000) throw new Error("被测服务 90 秒内未就绪，见运行目录 server.log。");
       await sleep(250);
     }

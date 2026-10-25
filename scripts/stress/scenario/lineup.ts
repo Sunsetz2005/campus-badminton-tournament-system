@@ -38,7 +38,7 @@ export async function lineupLoop(options: { context: RunContext; tournament: Tou
   const teamByEntry = new Map(tournament.teams.map((item) => [item.entryId, item]));
   while (!registry.stop) {
     for (const fixture of await fixturesOf(competition.id)) {
-      if (fixture.lineupsRevealedAt || fixture.decidedAt) continue;
+      if (fixture.lineupsRevealedAt || fixture.decidedAt || tournament.lineupReserved.has(fixture.id)) continue;
       for (const side of ["A", "B"] as const) {
         const entryId = side === "A" ? fixture.sideAEntryId : fixture.sideBEntryId;
         if (!entryId) continue;

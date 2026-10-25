@@ -10,7 +10,11 @@ assertTestDatabaseUrl(original);
 if (!/stress/.test(databaseNameFromUrl(original!))) {
   throw new Error("仿真只连接库名含 stress 的 _test 库（例如 badminton_tournament_stress_test），请检查 .env.stress。");
 }
-process.env.STRESS_SERVER_DATABASE_URL = original;
+// application_name 区分被测服务与仿真进程的连接：数据库故障注入只断开被测服务的连接（§13.4）。
+const server = new URL(original!);
+server.searchParams.set("application_name", "stress-server");
+process.env.STRESS_SERVER_DATABASE_URL = server.toString();
 const url = new URL(original!);
 url.searchParams.set("options", "-c default_transaction_read_only=on");
+url.searchParams.set("application_name", "stress-sim");
 process.env.DATABASE_URL = url.toString();

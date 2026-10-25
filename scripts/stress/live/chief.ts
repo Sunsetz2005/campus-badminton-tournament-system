@@ -75,14 +75,18 @@ export async function chiefReviewLoop(options: {
     const record = await confirmResult(context, chief.client, target.code, rng);
     reviews.push({ matchCode: target.code, chief: chief.login, submittedSeenAt: firstSeen.get(target.code)!, ...record });
     if (record.confirmedAt) registry.lastProgressAt = Date.now();
-    else {
+    else if (record.status === 0 || record.status >= 500) {
+      // 服务端暂时故障（数据库故障注入等）：记下，稍后重试，不当作这场永远复核不了。
+      addFinding(context, { kind: "unexpected", area: "复核", title: `${target.code} 复核得到 ${record.status} ${record.code ?? ""}，稍后重试`, detail: { tournament: tournament.plan.key, ...record } });
+      await sleep(3000);
+    } else {
       failed.add(target.code);
       addFinding(context, { kind: "blocked", area: "复核", title: `${target.code} 复核锁定失败`, detail: { tournament: tournament.plan.key, ...record } });
     }
   }
 }
 
-async function confirmResult(context: RunContext, client: RunContext["admin"], matchCode: string, rng: Rng) {
+export async function confirmResult(context: RunContext, client: RunContext["admin"], matchCode: string, rng: Rng) {
   const deviceSessionId = rng.uuid();
   const takeover = await client.call<{ sessionId: string; controlToken: string; takeoverGeneration: number }>(
     "POST",
@@ -171,6 +175,8 @@ export async function groupRankingLoop(options: {
           done.add(key);
           registry.lastProgressAt = Date.now();
           context.log(`小组名次确认 ${tournament.plan.key}/${key}${lots ? "（含抽签）" : ""}`);
+        } else if (result.status === 0 || result.status >= 500) {
+          addFinding(context, { kind: "unexpected", area: "小组名次", title: `${tournament.plan.key}/${key} 名次确认得到 ${result.status} ${result.code ?? ""}，稍后重试`, detail: { status: result.status, code: result.code, message: result.message } });
         } else if (result.code !== "ranking_not_confirmable") {
           done.add(key);
           addFinding(context, { kind: "blocked", area: "小组名次", title: `${tournament.plan.key}/${key} 名次确认被拒绝`, detail: { status: result.status, code: result.code, message: result.message } });

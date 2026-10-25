@@ -28,7 +28,7 @@ export interface RunResultFile {
     tieScenarios?: Parameters<typeof checkForcedTies>[1];
     officials?: Parameters<typeof checkOfficials>[1];
   }[];
-  matches: { matchCode: string; acceptedCommandIds?: string[]; officialUserId?: string; outcome?: string }[];
+  matches: { matchCode: string; acceptedCommandIds?: string[]; officialUserId?: string; outcome?: string; officialSegments?: { userId: string; from: number }[] }[];
   reviews: { matchCode: string; commandId?: string | null }[];
   [key: string]: unknown;
 }
@@ -57,8 +57,10 @@ export async function verifyRun(runDir: string, run: RunResultFile) {
     else checks.push({ name: "ranking", title: "小组名次、淘汰签位与最终名次独立重算", passed: false, checked: 0, failures: golden.failed.map((item) => ({ subject: item.file, detail: `人工核对用例未通过：${item.detail}` })), notes: ["oracle 未通过人工核对用例，排名类判定停止"] });
     if (tournament.tieScenarios) checks.push(checkForcedTies(data, tournament.tieScenarios));
     if (tournament.officials) {
-      const matchOfficials = new Map(run.matches.filter((match) => match.officialUserId && match.outcome === "submitted").map((match) => [match.matchCode, match.officialUserId!]));
-      checks.push(checkOfficials(data, tournament.officials, matchOfficials));
+      const submitted = run.matches.filter((match) => match.officialUserId && match.outcome === "submitted");
+      const matchOfficials = new Map(submitted.filter((match) => !match.officialSegments).map((match) => [match.matchCode, match.officialUserId!]));
+      const segments = new Map(submitted.filter((match) => match.officialSegments).map((match) => [match.matchCode, match.officialSegments!]));
+      checks.push(checkOfficials(data, tournament.officials, matchOfficials, segments));
     }
     perTournament.push({ key: tournament.key, slug: tournament.slug, checks, delays: delayStats(data) });
   }

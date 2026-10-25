@@ -68,7 +68,7 @@ export function checkForcedTies(data: TournamentData, scenarios: TieScenarioReco
   return check;
 }
 
-export function checkOfficials(data: TournamentData, officials: OfficialRecord[], matchOfficials: Map<string, string>): CheckResult {
+export function checkOfficials(data: TournamentData, officials: OfficialRecord[], matchOfficials: Map<string, string>, segments: Map<string, { userId: string; from: number }[]> = new Map()): CheckResult {
   const check = result("officials", "同一名裁判不同时执裁两场；执裁人与实际一致");
   // 1. 仿真自身：同一人的执裁区间不重叠。
   for (const official of officials) {
@@ -121,6 +121,24 @@ export function checkOfficials(data: TournamentData, officials: OfficialRecord[]
       check.checked += 1;
       if (submitted.actorUserId !== officialUserId) fail(check, code, `结果提交人 ${submitted.actorUserId?.slice(0, 8)} ≠ 实际执裁 ${officialUserId.slice(0, 8)}`);
     }
+  }
+  // 4. 中途换人：按时间切分，每条执裁事件的账号是当时那一段的裁判；切换点允许一条命令的误差。提交人是最后一段的裁判。
+  for (const [code, list] of segments) {
+    const match = data.matches.find((item) => item.code === code);
+    if (!match) continue;
+    check.checked += 1;
+    const ordered = [...list].sort((x, y) => x.from - y.from);
+    const events = data.events.filter((event) => event.matchId === match.id && event.actorUserId && !reviewTypes.has(event.type));
+    const mismatched = events.filter((event) => {
+      const at = event.occurredAt.getTime();
+      const owner = [...ordered].reverse().find((segment) => segment.from <= at) ?? ordered[0];
+      return event.actorUserId !== owner.userId;
+    });
+    if (mismatched.length > 1) fail(check, code, `中途换人：${mismatched.length} 条执裁事件的账号与当时的裁判不符`);
+    const submittedRevision = data.revisions.filter((revision) => revision.matchId === match.id).sort((x, y) => y.revision - x.revision)[0];
+    const last = ordered[ordered.length - 1].userId;
+    if (submittedRevision && submittedRevision.actorUserId !== last) fail(check, code, `中途换人：结果提交人 ${submittedRevision.actorUserId?.slice(0, 8)} ≠ 接替裁判 ${last.slice(0, 8)}`);
+    check.notes.push(`${code} 中途换人 ${ordered.length - 1} 次，按时间切分核对 ${events.length} 条执裁事件`);
   }
   return check;
 }

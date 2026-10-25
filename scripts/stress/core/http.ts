@@ -25,6 +25,29 @@ export interface CallOptions {
   /** 超时即中断（客户端视角的「响应未知」）。 */
   timeoutMs?: number;
   note?: string;
+  /** 服务重启注入期间照常发出（用于记录停机窗口内的错误码）；其他请求在停机期间等待恢复。 */
+  duringOutage?: boolean;
+}
+
+/**
+ * 服务重启注入（§7「中途重启服务进程」）：停机期间普通请求原地等待，像现场设备反复重试直到服务恢复；
+ * 停机前已在途、因连接断开失败的请求，在恢复后原样重发一次（记分命令带原 commandId，服务端幂等）。
+ */
+class Outage {
+  static current: { promise: Promise<void>; release: () => void; startedAt: number } | null = null;
+  static lastEndedAt = 0;
+}
+
+export function beginOutage() {
+  let release = () => undefined as void;
+  const promise = new Promise<void>((resolve) => (release = resolve));
+  Outage.current = { promise, release, startedAt: Date.now() };
+}
+
+export function endOutage() {
+  Outage.current?.release();
+  Outage.current = null;
+  Outage.lastEndedAt = Date.now();
 }
 
 export class HttpError extends Error {
@@ -79,6 +102,17 @@ export class Client {
   }
 
   async call<T = unknown>(method: string, path: string, body?: unknown, options: CallOptions = {}): Promise<CallResult<T>> {
+    if (Outage.current && !options.duringOutage) await Outage.current.promise;
+    const issuedAt = Date.now();
+    const result = await this.callOnce<T>(method, path, body, options);
+    if (result.code === "network_error" && !options.duringOutage && (Outage.current || Outage.lastEndedAt >= issuedAt)) {
+      if (Outage.current) await Outage.current.promise;
+      return this.callOnce<T>(method, path, body, options);
+    }
+    return result;
+  }
+
+  private async callOnce<T = unknown>(method: string, path: string, body?: unknown, options: CallOptions = {}): Promise<CallResult<T>> {
     const headers: Record<string, string> = { ...(options.headers ?? {}) };
     if (this.cookies.size) headers.Cookie = this.cookieHeader();
     if (this.clientIp) headers["x-forwarded-for"] = this.clientIp;

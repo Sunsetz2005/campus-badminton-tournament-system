@@ -97,6 +97,21 @@ export function writeReport(runDir: string, run: Record<string, unknown>, verifi
     }
   }
 
+  const probes = (run.probes ?? []) as { id: string; group: string; title: string; expected: string; actual: string; verdict: string; match?: string }[];
+  if (probes.length) {
+    const tally = new Map<string, number>();
+    for (const item of probes) tally.set(item.verdict, (tally.get(item.verdict) ?? 0) + 1);
+    push("## 异常注入（期望 / 实际）", "", `- ${[...tally].map(([verdict, count]) => `${verdict} ${count}`).join("，")}`, "");
+    const cell = (text: string) => text.replace(/\|/g, "\\|").replace(/\n/g, " ");
+    for (const group of [...new Set(probes.map((item) => item.group))]) {
+      push(`### ${group}`, "", "| 编号 | 注入 | 期望 | 实际 | 结论 | 场次 |", "|---|---|---|---|---|---|");
+      for (const item of probes.filter((probe) => probe.group === group)) {
+        push(`| ${item.id} | ${cell(item.title)} | ${cell(item.expected)} | ${cell(item.actual)} | ${item.verdict} | ${item.match ?? ""} |`);
+      }
+      push("");
+    }
+  }
+
   push("## 计划与实际偏差（分钟，只统计不判错）", "");
   for (const tournament of verification.tournaments) {
     if (!tournament.delays) continue;

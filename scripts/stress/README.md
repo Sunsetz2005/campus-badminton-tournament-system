@@ -35,9 +35,33 @@ pnpm run stress -- --level L0 --clock C32 --seed 1 --max-minutes 15   # 开发�
 | `--public-rate` | 覆盖公开接口每分钟额度 |
 | `--external` | 不自起服务，连接 `BETTER_AUTH_URL` 上已在运行的实例 |
 | `--max-minutes` / `--stall-minutes` | 总时限 / 无进展判定卡住的时长 |
+| `--referee-mode SHARED_ACCOUNT\|PER_MATCH` | 主赛事 M 的裁判模式（卫星赛事固定共用账号，§13.9） |
+| `--scenarios ties,delays,inject` | 强制同分 / 延误七情形 / 异常注入（M4） |
+| `--only <组,…>` | 只跑指定注入组，见下 |
 
-被测服务以生产模式 `next start` 起在 `BETTER_AUTH_URL` 的端口（默认 3200）。生产模式下 `assertRuntimeSecurity` 禁止
-`ENABLE_TEST_FAULT_INJECTION`，因此依赖 `x-test-response-delay-ms` 的注入要单独起非生产实例（M4）。
+被测服务以生产模式 `next start` 起在 `BETTER_AUTH_URL` 的端口（默认 3200）。端口上已有服务（例如上一轮被强杀后遗留）时
+拒绝启动，免得就绪检查打到连着别的库的旧实例；仿真进程收到 SIGTERM/SIGINT 时先关掉被测服务再退出。生产模式下
+`assertRuntimeSecurity` 禁止 `ENABLE_TEST_FAULT_INJECTION`，因此「响应超时」类注入用客户端超时实现，不依赖测试头。
+
+### 异常注入（M4，`--scenarios inject`）
+
+每项注入记一条「期望 / 实际 / 结论」（符合、不符、设计未定义、未触发、脚本错误），写进 `result.json` 的 `probes`
+和报告「异常注入」一节。注入借用一场比赛，由注入协程执裁，结束时把命令并入本场结果，判定照常逐条核对。
+
+| 组 | 内容 | 模式 |
+|---|---|---|
+| `commands` | §7.1—7.4、7.8、7.10—7.12：重复/冲突 commandId、过期版本、超时对账、乱序、撤销并发、结束瞬间 | 共用账号 |
+| `sessions` | §7.5—7.7、7.9：两会话抢控制、同设备复用、裁判长接管、心跳中断；共用账号中途换人 | 共用账号 |
+| `handover` / `pending` | §13.9 裁判带设备离场三种方式；交接时有待办（间歇、换边、待提交） | 共用账号 |
+| `browser` | §13.3 无头 Chromium 驱动真实工作台：误关标签页、复制标签页、冻结（调试器暂停脚本）/ 页面被杀、在途命令断网 | 共用账号 |
+| `restart` | §7.13 命令在途时停、启被测服务 | 共用账号 |
+| `dbfaults` | §13.4 断开被测服务的库连接、60 个读客户端占满应用池；设 `STRESS_DB_CONTAINER` 时再做库重启与 max_connections 占满 | 共用账号 |
+| `lineup` / `confirm` / `reopen` | §7.14—7.16 名单截止与版本、§7.18 两名裁判长并发复核、§7.19 结果重开（下一轮未开赛 / 已开赛）；§7.17 赛后汇总 | 共用账号 |
+| `swap-before` / `swap-busy` / `swap-mid` / `swap-mid-other` / `overrun` | §13.9 换人（赛前、换上正在执裁的人、中途同设备/换设备）、裁判上一场拖长；指派冲突发布检查总是执行 | 逐场指派 |
+
+库重启与 max_connections 只能在独立容器上做：`STRESS_DB_CONTAINER` 指向的容器名必须以 `badminton-stress-` 开头，否则拒绝操作；
+连接串放在未提交的 `.env.stress-container`（同样要求库名含 `stress` 且以 `_test` 结尾）。停库期间仿真进程若退出，会在退出前把容器启动回来。
+仿真自己的只读查询遇到连接类错误（库重启、连接被断开、连接数占满）时等待恢复后重试，最多 90 秒。
 
 ## 产物
 
@@ -57,6 +81,7 @@ config/levels.ts      规模档
 core/                 rng 可复现随机 · clock 压缩时钟 · http 客户端 · metrics 指标 · server 被测服务 · db 只读查询 · time 时区
 scenario/             roster 名单生成 · setup 建赛与裁判长 · registration 报名与审核 · draw 抽签 · schedule 赛程 · lineup 出场名单
 live/                 narrative 比赛走向 · referee 单场执裁 · venue 场地调度 · chief 复核与小组名次 · officiating 我的执裁缓存
+                      injections / team-injections / referee-injections / browser / db-injections 异常注入（M4）
 ```
 
-判定（oracle/verify）与报告在 M2 加入。
+判定在 `verify.ts` 与 `verify/`，报告在 `report/`。
