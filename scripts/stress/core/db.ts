@@ -91,6 +91,7 @@ export async function matchesOfTournament(tournamentId: string) {
       lifecycleStatus: true,
       verificationStatus: true,
       notPlayedAt: true,
+      version: true,
       sideAEntryId: true,
       sideBEntryId: true,
       scheduledAt: true,
@@ -100,30 +101,44 @@ export async function matchesOfTournament(tournamentId: string) {
       courtId: true,
       fixtureId: true,
       groupId: true,
+      rubberKind: true,
+      rubberOrder: true,
       stage: { select: { type: true, competition: { select: { code: true } } } },
+      fixture: { select: { kind: true, round: true, code: true } },
+      officialAssignments: { where: { role: "MAIN_REFEREE", active: true }, select: { userId: true } },
     },
   });
 }
 
 /** 成员的学号（个人项目报名单位成员 + 团体小场上场队员），用于调度器判断「选手是否正在别场比赛」。 */
 export async function playersOfMatches(codes: string[]) {
+  return new Map([...(await playerListsOfMatches(codes))].map(([code, item]) => [code, item.ids]));
+}
+
+/**
+ * 每场的上场人员。团体小场的人来自 MatchPlayer，双方名单交齐前只有一方（或没有）——`complete` 为 false，
+ * 调用方不应缓存，否则另一方交上名单后仍按半份名单判断「选手是否在别场」（第一轮的选手重叠即由此而来）。
+ */
+export async function playerListsOfMatches(codes: string[]) {
   const rows = await prisma.match.findMany({
     where: { code: { in: codes } },
     select: {
       code: true,
-      players: { select: { participantId: true } },
+      players: { select: { participantId: true, side: true } },
       sideAEntry: { select: { members: { select: { participantId: true } } } },
       sideBEntry: { select: { members: { select: { participantId: true } } } },
       rubberKind: true,
     },
   });
   return new Map(
-    rows.map((row) => [
-      row.code,
-      row.rubberKind
-        ? row.players.map((item) => item.participantId)
-        : [...(row.sideAEntry?.members ?? []), ...(row.sideBEntry?.members ?? [])].map((item) => item.participantId),
-    ]),
+    rows.map((row) => {
+      if (row.rubberKind) {
+        const sides = new Set(row.players.map((item) => item.side));
+        return [row.code, { ids: row.players.map((item) => item.participantId), complete: sides.has("A") && sides.has("B") }] as const;
+      }
+      const ids = [...(row.sideAEntry?.members ?? []), ...(row.sideBEntry?.members ?? [])].map((item) => item.participantId);
+      return [row.code, { ids, complete: Boolean(row.sideAEntry && row.sideBEntry) }] as const;
+    }),
   );
 }
 

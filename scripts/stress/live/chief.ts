@@ -8,6 +8,7 @@
 import { randomUUID } from "node:crypto";
 
 import { loadIndividualGroupRanking } from "../../../src/server/services/results-service";
+import { loadGroupStandings } from "../../../src/server/services/team-tie-service";
 import { groupsOf, prisma } from "../core/db";
 import { sleep } from "../core/clock";
 import type { Rng } from "../core/rng";
@@ -52,12 +53,25 @@ export async function chiefReviewLoop(options: {
     const mine = view.reviewMatches
       .filter((match) => match.verificationStatus === "PENDING_REVIEW" && !failed.has(match.code))
       .filter((match) => hash(match.code) % tournament.chiefs.length === index);
-    for (const match of mine) if (!firstSeen.has(match.code)) firstSeen.set(match.code, Date.now());
-    if (!mine.length) {
+    for (const match of mine) {
+      if (firstSeen.has(match.code)) continue;
+      firstSeen.set(match.code, Date.now());
+      const hold = tournament.reviewHolds.get(match.code);
+      if (hold) registry.intentionalWaits.set(match.code, Date.now() + context.clock.ms(hold));
+      const until = tournament.reviewHoldUntil.get(match.code);
+      if (until && until > Date.now()) registry.intentionalWaits.set(match.code, until);
+    }
+    // 延误情形 3：指定比赛的复核延后（裁判长被其他事务耽搁），到点前先处理别的。
+    const due = mine.filter((match) => {
+      const hold = tournament.reviewHolds.get(match.code);
+      const until = tournament.reviewHoldUntil.get(match.code) ?? 0;
+      return (!hold || Date.now() - firstSeen.get(match.code)! >= context.clock.ms(hold)) && Date.now() >= until;
+    });
+    if (!due.length) {
       await sleep(1000);
       continue;
     }
-    const target = mine.sort((a, b) => firstSeen.get(a.code)! - firstSeen.get(b.code)!)[0];
+    const target = due.sort((a, b) => firstSeen.get(a.code)! - firstSeen.get(b.code)!)[0];
     const record = await confirmResult(context, chief.client, target.code, rng);
     reviews.push({ matchCode: target.code, chief: chief.login, submittedSeenAt: firstSeen.get(target.code)!, ...record });
     if (record.confirmedAt) registry.lastProgressAt = Date.now();
@@ -98,13 +112,24 @@ async function confirmResult(context: RunContext, client: RunContext["admin"], m
   return { confirmedAt: confirm.ok ? Date.now() : null, commandId: confirm.ok ? commandId : null, status: confirm.status, code: confirm.code };
 }
 
+export interface RankingRecord {
+  competition: string;
+  group: string;
+  at: number;
+  status: number;
+  code: string | null;
+  lots: boolean;
+  /** 系统给出的并列待裁定块（抽签前）。 */
+  unresolved?: string[][];
+}
+
 /** 小组名次确认。个人项目与团体项目共用同一接口（服务端按项目类型分派）。 */
 export async function groupRankingLoop(options: {
   context: RunContext;
   tournament: TournamentRuntime;
   registry: LiveRegistry;
   rng: Rng;
-  confirmations: { competition: string; group: string; at: number; status: number; code: string | null; lots: boolean }[];
+  confirmations: RankingRecord[];
 }) {
   const { context, tournament, registry, rng, confirmations } = options;
   const chief = tournament.chiefs[0];
@@ -122,8 +147,10 @@ export async function groupRankingLoop(options: {
         if (!ready) continue;
         let body: { order?: string[]; reason?: string } = {};
         let lots = false;
-        if (!isTeam) {
-          const { ranking } = await loadIndividualGroupRanking(prisma, group.id);
+        let lotsBlocks: string[][] = [];
+        {
+          // 个人与团体的并列块形状相同（rows[].entryId + unresolved[][]）；团体用对抗积分榜。
+          const ranking = isTeam ? (await loadGroupStandings(prisma, group.id)).standings : (await loadIndividualGroupRanking(prisma, group.id)).ranking;
           if (ranking.unresolved.length) {
             lots = true;
             const order = ranking.rows.map((row: { entryId: string }) => row.entryId);
@@ -132,13 +159,14 @@ export async function groupRankingLoop(options: {
               const shuffled = rng.shuffle(block);
               positions.forEach((position: number, slot: number) => (order[position] = shuffled[slot]));
             }
+            lotsBlocks = ranking.unresolved;
             body = { order, reason: `仿真现场抽签：并列 ${ranking.unresolved.map((block: string[]) => block.length).join("、")} 方，由裁判长主持抽签、两名裁判员见证` };
           }
         }
         const result = await chief.client.call("POST", `/api/admin/tournaments/${tournament.slug}/competitions/${competition.code}/groups/${group.code}/ranking`, body, {
           route: "/api/admin/tournaments/[slug]/competitions/[code]/groups/[group]/ranking",
         });
-        confirmations.push({ competition: competition.code, group: group.code, at: Date.now(), status: result.status, code: result.code, lots });
+        confirmations.push({ competition: competition.code, group: group.code, at: Date.now(), status: result.status, code: result.code, lots, unresolved: lotsBlocks });
         if (result.ok) {
           done.add(key);
           registry.lastProgressAt = Date.now();

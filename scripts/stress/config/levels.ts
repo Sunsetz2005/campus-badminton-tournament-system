@@ -116,6 +116,55 @@ export const LEVELS: Record<string, LevelConfig> = {
       },
     ],
   },
+  /**
+   * 方案 §9 L2：主赛事 6 块场地、每项约一半规模、团体 8 队；两个卫星赛事各 2 块场地，覆盖 3×15 与单局 21 两种计分配置，
+   * 并与主赛事同一时段、同一服务实例运行（跨赛事隔离、同一共用裁判账号跨赛事执裁）。
+   */
+  L2: {
+    name: "L2",
+    units: 10,
+    multiEventRatio: 0.3,
+    teamCrossoverRatio: 0.4,
+    spectators: 30,
+    spectatorIntervalSeconds: 10,
+    chiefs: 2,
+    referees: 20,
+    tournaments: [
+      {
+        key: "M",
+        name: "全赛制仿真主赛事",
+        rulePreset: "traditional-21",
+        refereeMode: "SHARED_ACCOUNT",
+        courts: 6,
+        events: [
+          ev("MS", 12, "GROUPS_KNOCKOUT", { groupCount: 3, qualifiersPerGroup: 2, thirdPlaceMatch: true, seeds: 3 }),
+          ev("WS", 8, "KNOCKOUT", { thirdPlaceMatch: true, seeds: 2 }),
+          ev("MD", 6, "GROUPS_KNOCKOUT", { groupCount: 2, qualifiersPerGroup: 2, thirdPlaceMatch: false }),
+          ev("WD", 5, "ROUND_ROBIN"),
+          ev("XD", 8, "GROUPS_KNOCKOUT", { groupCount: 2, qualifiersPerGroup: 2, thirdPlaceMatch: false }),
+        ],
+        team: { code: "TEAM", name: "学院团体", teams: 8, rubbers: ["MS", "WS", "XD"], rosterSize: [4, 6], format: "GROUPS_KNOCKOUT", groupCount: 2, qualifiersPerGroup: 2, thirdPlaceMatch: true, seeds: 2 },
+      },
+      {
+        key: "S1",
+        name: "仿真卫星赛事（3×15）",
+        rulePreset: "alternative-3x15",
+        refereeMode: "SHARED_ACCOUNT",
+        courts: 2,
+        events: [ev("MS", 8, "KNOCKOUT", { thirdPlaceMatch: true })],
+        team: { code: "TEAM", name: "三小场团体", teams: 4, rubbers: ["MS", "WS", "XD"], rosterSize: [4, 6], format: "ROUND_ROBIN" },
+      },
+      {
+        key: "S2",
+        name: "仿真卫星赛事（单局 21）",
+        rulePreset: "single-game-21",
+        refereeMode: "SHARED_ACCOUNT",
+        courts: 2,
+        events: [ev("WS", 8, "GROUPS_KNOCKOUT", { groupCount: 2, qualifiersPerGroup: 1, thirdPlaceMatch: false })],
+        team: null,
+      },
+    ],
+  },
   /** 方案 §9 L3 / §3：主赛事全规模 + 两个卫星赛事。 */
   L3: {
     name: "L3",

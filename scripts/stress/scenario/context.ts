@@ -7,7 +7,11 @@ import type { Clock } from "../core/clock";
 import type { Client } from "../core/http";
 import type { Metrics } from "../core/metrics";
 import type { Rng } from "../core/rng";
+import type { ForcedNarrative } from "../live/narrative";
+import type { DelayScenario } from "./delays";
+import type { Official } from "../live/officials";
 import type { TournamentRoster } from "./roster";
+import type { TieScenario } from "./ties";
 
 export type FindingKind = "blocked" | "unexpected" | "observation" | "design_undefined" | "script_error";
 
@@ -48,10 +52,36 @@ export interface TournamentRuntime {
   teams: TeamRuntime[];
   chiefs: { client: Client; userId: string; login: string }[];
   courts: string[];
+  /** 注入点指定的比赛走向（强制同分、强制长局），按比赛编号。 */
+  forced: Map<string, ForcedNarrative>;
+  /** 裁判长对指定比赛的复核延后（现实秒，经压缩时钟），用于延误情形 3。 */
+  reviewHolds: Map<string, number>;
+  /** 复核延后到指定时刻（墙钟毫秒）。用于需要「等到某个截止过去」的情形（D7）。 */
+  reviewHoldUntil: Map<string, number>;
+  tieScenarios: TieScenario[];
+  delayScenarios: DelayScenario[];
+  /** 具名裁判（逐场指派模式）或仿真裁判（共用账号模式）。 */
+  officials: Official[];
+  refereeDraft?: import("./schedule").RefereeDraftRecord;
+}
+
+/**
+ * 故障注入（只在仿真侧，不改被测系统）：用于验证仿真脚本自身对异常的处理。
+ * - lineup500：第一次负责人名单提交得到 500。`unsent` 不发请求、直接当作 500；`saved` 真实提交成功后把回应换成 500（模拟「已写入但回应丢失」）。
+ * - withholdLineup：第一个双方已定的团体对抗里，A 方负责人始终不交名单（构造永远开不了的比赛，验证卡住检测）。
+ * - reviewHoldSeconds：第一场个人比赛的复核延后（现实秒数，经压缩时钟），验证有意等待不被判卡住。
+ */
+export interface Injections {
+  lineup500: "unsent" | "saved" | null;
+  lineup500Used: boolean;
+  withholdLineup: boolean;
+  withheldKey: string | null;
+  reviewHoldSeconds: number;
 }
 
 export interface RunContext {
   runId: string;
+  inject: Injections;
   runDir: string;
   origin: string;
   level: LevelConfig;

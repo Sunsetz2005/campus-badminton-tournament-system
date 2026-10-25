@@ -74,6 +74,12 @@ export async function createTournament(context: RunContext, plan: TournamentPlan
     teams: [],
     chiefs: [],
     courts: [],
+    forced: new Map(),
+    reviewHolds: new Map(),
+    reviewHoldUntil: new Map(),
+    tieScenarios: [],
+    delayScenarios: [],
+    officials: [],
   };
 
   for (let index = 0; index < context.level.chiefs; index += 1) {

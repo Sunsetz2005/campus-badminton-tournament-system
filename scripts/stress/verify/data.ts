@@ -105,8 +105,13 @@ export async function loadTournamentData(slug: string) {
     select: { id: true, competitionId: true, members: { select: { participantId: true } } },
   });
   const participants = await prisma.participant.findMany({ where: { tournamentId: tournament.id }, select: { id: true } });
+  const revisions = await prisma.resultRevision.findMany({
+    where: { matchId: { in: matchIds } },
+    select: { matchId: true, revision: true, status: true, actorUserId: true, submittedRole: true, reviewedByUserId: true, createdAt: true },
+    orderBy: [{ matchId: "asc" }, { revision: "asc" }],
+  });
   const exclusions = await prisma.rankingExclusion.findMany({ where: { group: { stage: { competition: { tournamentId: tournament.id } } } } });
-  return { tournament, competitions, matches, events, fixtures, groups, draws, entries, participants, exclusions };
+  return { tournament, competitions, matches, events, fixtures, groups, draws, entries, participants, exclusions, revisions };
 }
 
 export type TournamentData = Awaited<ReturnType<typeof loadTournamentData>>;

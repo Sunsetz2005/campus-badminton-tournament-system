@@ -61,6 +61,27 @@ export function writeReport(runDir: string, run: Record<string, unknown>, verifi
   if (reviewWaits.length) push(`- 复核排队（看到待复核 → 锁定）：中位 ${reviewWaits[Math.floor(reviewWaits.length / 2)].toFixed(1)} 秒，最长 ${reviewWaits[reviewWaits.length - 1].toFixed(1)} 秒`);
   push(`- 请求：${metrics.total} 次，5xx ${metrics.serverErrors}，429 ${metrics.rateLimited}；服务端日志可疑行 ${server.log?.unexpected ?? 0}`, "");
 
+  // 系统发现：本轮每一次 5xx（重试成功也不抵消）+ 已知系统问题的排查结论（知识库，只读排查所得）。
+  push("## 系统发现", "");
+  push("> 已知问题与写入路径排查见知识库 `05-测试验收/并发仿真-系统发现.md`（SF-01：事务冲突 P2034 未重试即返回 500，严重度高）。", "");
+  const serverErrorLog = ((run.metrics as { serverErrorLog?: { at: number; actor: string; method: string; route: string; status: number; code: string | null; note?: string }[] } | undefined)?.serverErrorLog) ?? [];
+  if (!serverErrorLog.length) push("- 本轮没有 5xx。");
+  else {
+    push(`本轮 5xx 共 ${serverErrorLog.length} 次：`, "", "| 时间（UTC） | 接口 | 状态 | 错误码 | 客户端 | 备注 |", "|---|---|---|---|---|---|");
+    for (const entry of serverErrorLog) push(`| ${new Date(entry.at).toISOString().slice(11, 19)} | ${entry.method} ${entry.route} | ${entry.status} | ${entry.code ?? ""} | ${entry.actor} | ${entry.note ?? ""} |`);
+  }
+  const serverSide = (server.log?.samples ?? []).filter((line) => /"status":5\d\d/.test(line));
+  if (serverSide.length) {
+    push("", "服务端日志中的对应记录（截断至 300 字符）：", "");
+    for (const line of serverSide) push(`- \`${line.replace(/`/g, "'")}\``);
+  }
+  const lineupRetries = findings.filter((item) => item.area === "出场名单" && /5\d\d|重试|500 \+ 截止/.test(item.title));
+  if (lineupRetries.length) {
+    push("", "负责人遇到 5xx 后的处理：", "");
+    for (const item of lineupRetries) push(`- [${item.kind}] ${item.title}`);
+  }
+  push("");
+
   push("## 自动判定", "", "| 赛事 | 判定 | 结果 | 检查数 | 失败 |", "|---|---|---|---|---|");
   for (const tournament of verification.tournaments) {
     for (const check of tournament.checks) push(`| ${tournament.key} | ${check.title} | ${check.passed ? "通过" : "**失败**"} | ${check.checked} | ${check.failures.length} |`);
@@ -83,6 +104,50 @@ export function writeReport(runDir: string, run: Record<string, unknown>, verifi
     push(`- ${tournament.key}：开始偏差 ${JSON.stringify(d.startLagMinutes)}；结束偏差 ${JSON.stringify(d.endLagMinutes)}；实际时长 ${JSON.stringify(d.actualDurationMinutes)}；提前开赛 ${d.earlyStarts} 场，晚开超过 5 分钟 ${d.lateOverFiveMinutes} 场`);
   }
   push("");
+  const tournamentsRun = (run.tournaments ?? []) as {
+    key: string;
+    refereeMode: string;
+    delayScenarios?: { id: string; title: string; constructed: boolean; causes: string[]; watch: string[]; expected: string; note?: string; action?: Record<string, unknown>; observed?: Record<string, unknown> }[];
+    rotation?: { officials: { key: string; matches: number; officiatingMinutes: number; longestStreak: number; restSeconds: number[]; waitedSeconds: number }[]; matchesPerOfficial: { min: number; median: number; max: number } | null; unused: string[] };
+    refereeDraft?: { reassigned: unknown[]; overlaps: unknown[]; blockedPublish: { status: number; code: string | null; refereeOverlapIssues: number } | null; noReferee: number; suggested: Record<string, number> } | null;
+  }[];
+  for (const tournament of tournamentsRun.filter((item) => item.delayScenarios?.length)) {
+    push(`## 延误七情形（${tournament.key}，期望 / 实际）`, "");
+    for (const item of tournament.delayScenarios!) {
+      push(`### ${item.id} ${item.title}${item.constructed ? "" : "（未构造 / 未触发）"}`, "", `- 期望：${item.expected}`);
+      if (item.note) push(`- 说明：${item.note}`);
+      if (item.causes.length) push(`- 注入：${item.causes.join("、")}`);
+      if (item.action) push(`- 操作：\`${JSON.stringify(item.action)}\``);
+      const observed = item.observed ?? {};
+      for (const cause of (observed.causes as { code: string; plannedMinutes: number | null; actualMinutes: number | null; overrunSeen: boolean }[] | undefined) ?? []) {
+        push(`- 注入场 ${cause.code}：计划 ${cause.plannedMinutes ?? "—"} 分钟，实际 ${cause.actualMinutes ?? "—"} 分钟，系统看到超时 ${cause.overrunSeen ? "是" : "否"}`);
+      }
+      const watch = (observed.watch as { code: string; startLagMinutes: number | null; delayedShown: boolean; maxDelayMinutes: number; causes: string[]; evidenced: boolean; publicShownDelayed: boolean }[] | undefined) ?? [];
+      if (watch.length) {
+        push("", "| 观察场 | 实际开始偏差（分） | 系统标延误 | 最大延误（分） | 原因 | 有据 | 公开显示延误 |", "|---|---|---|---|---|---|---|");
+        for (const row of watch) push(`| ${row.code} | ${row.startLagMinutes ?? "未开赛"} | ${row.delayedShown ? "是" : "否"} | ${row.maxDelayMinutes} | ${row.causes.join("/") || "—"} | ${row.evidenced ? "是" : "否"} | ${row.publicShownDelayed ? "是" : "否"} |`);
+      }
+      for (const key of ["timeline", "window", "lagByRound", "lineup"]) if (observed[key]) push(`- ${key}：\`${JSON.stringify(observed[key])}\``);
+      push("");
+    }
+  }
+  for (const tournament of tournamentsRun.filter((item) => item.rotation?.officials.length)) {
+    const rotation = tournament.rotation!;
+    push(`## 裁判轮换（${tournament.key}，${tournament.refereeMode === "PER_MATCH" ? "逐场指派、个人设备" : "共用账号、场地平板，执裁人只在仿真内部可知"}）`, "");
+    if (rotation.matchesPerOfficial) push(`- 每人执裁场数：最少 ${rotation.matchesPerOfficial.min}、中位 ${rotation.matchesPerOfficial.median}、最多 ${rotation.matchesPerOfficial.max}；未上场 ${rotation.unused.length} 人`);
+    const longest = Math.max(0, ...rotation.officials.map((item) => item.longestStreak));
+    const rests = rotation.officials.flatMap((item) => item.restSeconds).sort((a, b) => a - b);
+    push(`- 最长连续执裁 ${longest} 场；休息 ${rests.length} 次，时长中位 ${rests[Math.floor(rests.length / 2)] ?? "—"} 秒`);
+    const waited = rotation.officials.reduce((sum, item) => sum + item.waitedSeconds, 0);
+    if (tournament.refereeMode === "PER_MATCH") push(`- 场地等指派裁判到场累计 ${waited} 秒（系统的延误推算只沿裁判上一场的结束时间，不知道休息）`);
+    const draft = tournament.refereeDraft;
+    if (draft) {
+      push(`- 排班：自动建议给 ${Object.keys(draft.suggested).length} 人分配，未指派 ${draft.noReferee} 场；人工改派 ${draft.reassigned.length} 场；制造冲突 ${draft.overlaps.length} 处，含冲突草稿发布结果 ${draft.blockedPublish ? `${draft.blockedPublish.status} ${draft.blockedPublish.code ?? ""}（REFEREE_OVERLAP ${draft.blockedPublish.refereeOverlapIssues} 条）` : "—"}`);
+    }
+    push("", "| 裁判 | 场数 | 执裁分钟 | 最长连续 | 休息次数 |", "|---|---|---|---|---|");
+    for (const item of rotation.officials) push(`| ${item.key} | ${item.matches} | ${item.officiatingMinutes} | ${item.longestStreak} | ${item.restSeconds.length} |`);
+    push("");
+  }
   if (String(run.outcome) === "host_paused") push("> **本次运行无效**：检测到宿主暂停（本机睡眠），租约在暂停期间过期，相关发现不代表系统问题。", "");
   push("## 发现", "");
   if (!findings.length) push("本次运行没有记录到发现。", "");

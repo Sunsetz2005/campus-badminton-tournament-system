@@ -14,13 +14,21 @@ import { runManualGoldenCases } from "./oracle/golden";
 import { writeReport } from "./report/write";
 import { checkRanking, runAll, type CheckResult } from "./verify/checks";
 import { loadTournamentData } from "./verify/data";
+import { checkForcedTies, checkOfficials } from "./verify/scenarios";
 import { delayStats } from "./verify/delays";
 
 export interface RunResultFile {
   outcome: string;
   runId: string;
-  tournaments: { key: string; slug: string; rulePreset: string; refereeMode: string }[];
-  matches: { matchCode: string; acceptedCommandIds?: string[] }[];
+  tournaments: {
+    key: string;
+    slug: string;
+    rulePreset: string;
+    refereeMode: string;
+    tieScenarios?: Parameters<typeof checkForcedTies>[1];
+    officials?: Parameters<typeof checkOfficials>[1];
+  }[];
+  matches: { matchCode: string; acceptedCommandIds?: string[]; officialUserId?: string; outcome?: string }[];
   reviews: { matchCode: string; commandId?: string | null }[];
   [key: string]: unknown;
 }
@@ -47,6 +55,11 @@ export async function verifyRun(runDir: string, run: RunResultFile) {
     const checks = runAll(data, accepted);
     if (golden.failed.length === 0) checks.push(await checkRanking(data));
     else checks.push({ name: "ranking", title: "小组名次、淘汰签位与最终名次独立重算", passed: false, checked: 0, failures: golden.failed.map((item) => ({ subject: item.file, detail: `人工核对用例未通过：${item.detail}` })), notes: ["oracle 未通过人工核对用例，排名类判定停止"] });
+    if (tournament.tieScenarios) checks.push(checkForcedTies(data, tournament.tieScenarios));
+    if (tournament.officials) {
+      const matchOfficials = new Map(run.matches.filter((match) => match.officialUserId && match.outcome === "submitted").map((match) => [match.matchCode, match.officialUserId!]));
+      checks.push(checkOfficials(data, tournament.officials, matchOfficials));
+    }
     perTournament.push({ key: tournament.key, slug: tournament.slug, checks, delays: delayStats(data) });
   }
   const verification = { verifiedAt: new Date().toISOString(), golden, tournaments: perTournament, passed: perTournament.every((item) => item.checks.every((check) => check.passed)) };

@@ -5,8 +5,10 @@
  *   pnpm run stress:build                   # 生产构建（与阶段 8 相同的构建参数）
  *   pnpm run stress -- --level L1 --clock C8 --seed 20261023
  *
- * 参数：--level L0|L1|L3  --clock C8|C3|R1  --seed <整数>  --external（连接已在运行的实例，不自起服务）
+ * 参数：--level L0|L1|L2|L3  --clock C8|C3|R1  --seed <整数>  --external（连接已在运行的实例，不自起服务）
  *       --same-ip（所有模拟客户端共用一个来源，§13.2）  --public-rate <每分钟>  --max-minutes <总时限>
+ *       --referee-mode SHARED_ACCOUNT|PER_MATCH（只作用于主赛事 M；卫星赛事固定共用账号，§13.9）
+ *       --scenarios ties,delays（强制同分 / 延误七情形；默认 C3 档两者都开，其余档只开 ties）
  *
  * 所有写入只经 HTTP 接口；本进程的数据库会话是只读的（readonly-env.ts 必须最先导入）。
  * 产物写到 artifacts/stress/<seed>-<时间>/；运行时生成的口令写到未提交的 .local/stress/。
@@ -25,8 +27,11 @@ import { Client } from "./core/http";
 import { Metrics } from "./core/metrics";
 import { Rng } from "./core/rng";
 import { Server } from "./core/server";
-import { chiefReviewLoop, groupRankingLoop, type ReviewRecord } from "./live/chief";
-import { OfficiatingCache } from "./live/officiating";
+import { chiefReviewLoop, groupRankingLoop, type RankingRecord, type ReviewRecord } from "./live/chief";
+import { GlobalScheduleView, OfficiatingCache } from "./live/officiating";
+import { createOfficialRecord, provisionNamedReferees, rotationStats, simulatedOfficials } from "./live/officials";
+import { delayWatchLoop, narrowFirstDay, planDelayScenarios, rescheduleLoop, summarizeDelayScenarios, type DelayObservation } from "./scenario/delays";
+import { planForcedTies } from "./scenario/ties";
 import { courtLoop, type LiveRegistry } from "./live/venue";
 import { addFinding, type RunContext, type TournamentRuntime } from "./scenario/context";
 import { publishDraws } from "./scenario/draw";
@@ -49,6 +54,10 @@ const { values: args } = parseArgs({
     "public-rate": { type: "string" },
     "max-minutes": { type: "string", default: "240" },
     "stall-minutes": { type: "string", default: "6" },
+    "referee-mode": { type: "string" },
+    scenarios: { type: "string" },
+    /** 故障注入，逗号分隔：lineup-500、lineup-500-saved、lineup-withhold、review-hold=<现实秒数>。 */
+    inject: { type: "string" },
   },
 });
 
@@ -59,12 +68,19 @@ function requireEnv(name: string) {
 }
 
 async function main() {
-  const level: LevelConfig | undefined = LEVELS[args.level!];
-  if (!level) throw new Error(`未知规模 ${args.level}`);
+  const baseLevel: LevelConfig | undefined = LEVELS[args.level!];
+  if (!baseLevel) throw new Error(`未知规模 ${args.level}`);
+  const refereeMode = args["referee-mode"];
+  if (refereeMode && refereeMode !== "SHARED_ACCOUNT" && refereeMode !== "PER_MATCH") throw new Error("--referee-mode 只能是 SHARED_ACCOUNT 或 PER_MATCH");
+  const level: LevelConfig = {
+    ...baseLevel,
+    tournaments: baseLevel.tournaments.map((plan) => (plan.key === "M" && refereeMode ? { ...plan, refereeMode: refereeMode as "SHARED_ACCOUNT" | "PER_MATCH" } : plan)),
+  };
   const clockProfile = CLOCKS[args.clock as keyof typeof CLOCKS];
   if (!clockProfile) throw new Error(`未知时间档 ${args.clock}`);
   const seed = Number(args.seed);
   if (!Number.isInteger(seed)) throw new Error("--seed 必须是整数");
+  const scenarios = new Set((args.scenarios ?? (clockProfile.name === "C3" ? "ties,delays" : "ties")).split(",").map((item) => item.trim()).filter(Boolean));
 
   const origin = new URL(requireEnv("BETTER_AUTH_URL")).origin;
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
@@ -82,8 +98,17 @@ async function main() {
   };
 
   let ipCounter = 10;
+  const injectArgs = new Map((args.inject ?? "").split(",").map((item) => item.trim()).filter(Boolean).map((item) => [item.split("=")[0], item.split("=")[1] ?? ""] as const));
+  for (const key of injectArgs.keys()) if (!["lineup-500", "lineup-500-saved", "lineup-withhold", "review-hold"].includes(key)) throw new Error(`未知注入 ${key}`);
   const context: RunContext = {
     runId,
+    inject: {
+      lineup500: injectArgs.has("lineup-500-saved") ? "saved" : injectArgs.has("lineup-500") ? "unsent" : null,
+      lineup500Used: false,
+      withholdLineup: injectArgs.has("lineup-withhold"),
+      withheldKey: null,
+      reviewHoldSeconds: Number(injectArgs.get("review-hold") || 0),
+    },
     runDir,
     origin,
     level,
@@ -104,6 +129,7 @@ async function main() {
 
   const server = new Server({ origin, logFile: path.join(runDir, "server.log"), publicRateLimitPerMinute: args["public-rate"], external: args.external });
   const environment = {
+    injections: args.inject ?? null,
     node: process.version,
     os: `${os.type()} ${os.release()} ${os.arch()}`,
     cpu: `${os.cpus()[0]?.model} × ${os.cpus().length}`,
@@ -113,14 +139,17 @@ async function main() {
     clock: clockProfile.name,
     seed,
     distinctClientIps: context.distinctClientIps,
+    scenarios: [...scenarios],
+    refereeModes: Object.fromEntries(level.tournaments.map((plan) => [plan.key, plan.refereeMode])),
   };
   writeFileSync(path.join(runDir, "params.json"), JSON.stringify({ args, environment, level, clock: clockProfile }, null, 2));
 
-  const registry: LiveRegistry = { active: new Map(), results: [], abandoned: new Set(), lastProgressAt: Date.now(), stop: false };
+  const registry: LiveRegistry = { active: new Map(), results: [], activePlayers: new Map(), intentionalWaits: new Map(), abandoned: new Set(), playing: new Map(), lastProgressAt: Date.now(), stop: false };
   const reviews: ReviewRecord[] = [];
   const lineups: LineupRecord[] = [];
-  const rankings: { competition: string; group: string; at: number; status: number; code: string | null; lots: boolean }[] = [];
+  const rankings: RankingRecord[] = [];
   const phases: Record<string, number> = {};
+  const delayObservations = new Map<string, DelayObservation>();
   const mark = (name: string) => (phases[name] = Date.now());
   let outcome = "completed";
 
@@ -142,23 +171,63 @@ async function main() {
       const startsAt = new Date(Date.now() + 60_000);
       await configureSchedule(context, tournament, startsAt);
       await publishDraws(context, tournament);
+      const main = plan.key === "M";
+      if (main && scenarios.has("ties")) await planForcedTies(context, tournament);
+      if (plan.refereeMode === "PER_MATCH") await provisionNamedReferees(context, tournament, level.referees);
       await suggestAndPublish(context, tournament, startsAt, "仿真首次发布");
       await mapEntries(tournament);
       tournament.courts = (await courtsOf(tournament.id)).map((court) => court.id);
+      if (main && context.inject.reviewHoldSeconds > 0) {
+        const first = (await matchesOfTournament(tournament.id))
+          .filter((match) => !match.rubberKind && match.sideAEntryId && match.sideBEntryId)
+          .sort((a, b) => (a.scheduledAt?.getTime() ?? Infinity) - (b.scheduledAt?.getTime() ?? Infinity))[0];
+        if (first) {
+          tournament.reviewHolds.set(first.code, context.inject.reviewHoldSeconds);
+          log(`[注入] ${first.code} 复核延后现实 ${context.inject.reviewHoldSeconds} 秒（约 ${Math.round(context.clock.ms(context.inject.reviewHoldSeconds) / 1000)} 秒墙钟）`);
+        }
+      }
+      if (main && scenarios.has("delays")) {
+        await planDelayScenarios(context, tournament);
+        await narrowFirstDay(context, tournament, startsAt);
+      }
     }
     writeFileSync(context.secretsFile, JSON.stringify(context.secrets, null, 2), { mode: 0o600 });
 
     mark("live");
     const refereeUser = await prisma.user.findFirstOrThrow({ where: { email: context.refereeLogin.login.toLowerCase() }, select: { id: true } });
     const loops: Promise<unknown>[] = [];
+    const sharedModes = context.tournaments.filter((item) => item.plan.refereeMode === "SHARED_ACCOUNT").map((item) => item.plan.key);
+    if (sharedModes.length) {
+      addFinding(context, {
+        kind: "design_undefined",
+        area: "裁判轮换",
+        title: `共用账号模式（${sharedModes.join("、")}）下系统无法区分是哪名裁判执裁`,
+        detail: { tournaments: sharedModes, traceableTo: "scoringSessionId → deviceSessionId（设备）", note: "执裁人只记在仿真内部的轮换表，赛后追溯需要线下签到记录（§13.9 判定补充 3）" },
+      });
+    }
     for (const tournament of context.tournaments) {
-      const cache = new OfficiatingCache(refereeUser.id, tournament.slug);
+      const perMatch = tournament.plan.refereeMode === "PER_MATCH";
+      const cache = perMatch ? new GlobalScheduleView(tournament.id) : new OfficiatingCache(refereeUser.id, tournament.slug);
       const courts = await courtsOf(tournament.id);
+      if (!perMatch) simulatedOfficials(context, tournament, tournament.plan.key === "M" ? level.referees : Math.max(2, tournament.plan.courts * 2), refereeUser.id);
+      else {
+        // 平台共用裁判账号也会被自动建议分配（见排班发现）：由一名持平板的仿真裁判用它执裁。
+        const tablet = new Client(origin, `tablet-${tournament.plan.key}-platform`, metrics, context.nextIp());
+        await tablet.signIn(context.refereeLogin.login, context.refereeLogin.password);
+        tournament.officials.push(createOfficialRecord("PLATFORM", "平台共用裁判账号", context.refereeLogin.login, refereeUser.id, tablet, context.rng.fork("officials:platform")));
+      }
       for (const court of courts) {
-        // 场地固定设备：每块场地一台平板，共用裁判账号各自登录一次。
-        const device = new Client(origin, `tablet-${tournament.plan.key}-${court.code}`, metrics, context.nextIp());
-        await device.signIn(context.refereeLogin.login, context.refereeLogin.password);
+        // 共用账号模式：场地固定设备，每块场地一台平板，共用裁判账号各自登录一次。逐场指派模式：裁判用自己的手机。
+        let device: Client | null = null;
+        if (!perMatch) {
+          device = new Client(origin, `tablet-${tournament.plan.key}-${court.code}`, metrics, context.nextIp());
+          await device.signIn(context.refereeLogin.login, context.refereeLogin.password);
+        }
         loops.push(courtLoop({ context, tournament, court, device, cache, registry, rng: context.rng.fork(`court:${tournament.plan.key}:${court.code}`), clock: context.clock }));
+      }
+      if (tournament.delayScenarios.length) {
+        loops.push(delayWatchLoop({ context, tournament, registry, observations: delayObservations }));
+        loops.push(rescheduleLoop({ context, tournament, registry }));
       }
       tournament.chiefs.forEach((_, index) => loops.push(chiefReviewLoop({ context, tournament, index, registry, reviews, rng: context.rng.fork(`chief:${tournament.plan.key}:${index}`) })));
       loops.push(groupRankingLoop({ context, tournament, registry, rng: context.rng.fork(`ranking:${tournament.plan.key}`), confirmations: rankings }));
@@ -197,9 +266,23 @@ async function main() {
         outcome = "timeout";
         break;
       }
-      if (registry.active.size === 0 && Date.now() - registry.lastProgressAt > stallMs) {
+      // 卡住：没有比赛真正在打分、没有仿真有意安排的等待（复核延后、名单 5xx 退避），且超过设定时间没有新进展。
+      // 取得控制后因名单未齐放回的反复取放不算进展；等上游比赛打完、等裁判休息结束都会有比赛在打，不会误判。
+      const now = Date.now();
+      for (const [code, until] of registry.intentionalWaits) if (until <= now) registry.intentionalWaits.delete(code);
+      if (registry.playing.size === 0 && registry.intentionalWaits.size === 0 && now - registry.lastProgressAt > stallMs) {
         outcome = "stalled";
-        addFinding(context, { kind: "blocked", area: "全局", title: `赛事在 ${args["stall-minutes"]} 分钟内没有进展`, detail: { unfinished: status.unfinished.slice(0, 50) } });
+        addFinding(context, {
+          kind: "blocked",
+          area: "全局",
+          title: `赛事在 ${args["stall-minutes"]} 分钟内没有进展，本轮结束`,
+          detail: {
+            lastProgressAt: new Date(registry.lastProgressAt).toISOString(),
+            simulatorHolding: [...registry.active.keys()],
+            abandoned: [...registry.abandoned],
+            unfinished: status.unfinished.slice(0, 100),
+          },
+        });
         break;
       }
     }
@@ -227,12 +310,25 @@ async function main() {
   }
 
   const finalStatus = context.tournaments.length ? await tournamentStatus(context.tournaments) : null;
+  for (const tournament of context.tournaments) {
+    if (tournament.delayScenarios.length) await summarizeDelayScenarios(tournament, delayObservations, { reviews, lineups }).catch((error) => log(`延误情形汇总失败：${error}`));
+  }
   const result = {
     outcome,
     runId,
     environment,
     phases,
-    tournaments: context.tournaments.map((item) => ({ key: item.plan.key, slug: item.slug, rulePreset: item.plan.rulePreset, refereeMode: item.plan.refereeMode })),
+    tournaments: context.tournaments.map((item) => ({
+      key: item.plan.key,
+      slug: item.slug,
+      rulePreset: item.plan.rulePreset,
+      refereeMode: item.plan.refereeMode,
+      tieScenarios: item.tieScenarios,
+      delayScenarios: item.delayScenarios,
+      refereeDraft: item.refereeDraft ?? null,
+      rotation: rotationStats(item.officials),
+      officials: item.officials.map((official) => ({ key: official.key, userId: official.userId, log: official.log })),
+    })),
     finalStatus: finalStatus && { ...finalStatus, unfinished: finalStatus.unfinished.slice(0, 100) },
     matches: registry.results,
     reviews,
@@ -261,7 +357,7 @@ async function tournamentStatus(tournaments: TournamentRuntime[]) {
   let pendingReview = 0;
   let notStarted = 0;
   let groupsPending = 0;
-  const unfinished: { tournament: string; code: string; lifecycle: string; verification: string; sides: string }[] = [];
+  const unfinished: { tournament: string; code: string; lifecycle: string; verification: string; sides: string; competition: string; fixture: string | null; rubber: string | null; scheduledAt: string | null; startedAt: string | null; version: number }[] = [];
   for (const tournament of tournaments) {
     for (const match of await matchesOfTournament(tournament.id)) {
       total += 1;
@@ -276,6 +372,12 @@ async function tournamentStatus(tournaments: TournamentRuntime[]) {
           lifecycle: match.lifecycleStatus,
           verification: match.verificationStatus,
           sides: `${match.sideAEntryId ? "A" : "-"}${match.sideBEntryId ? "B" : "-"}`,
+          competition: match.stage.competition.code,
+          fixture: match.fixture?.code ?? null,
+          rubber: match.rubberKind ? `${match.rubberOrder}:${match.rubberKind}` : null,
+          scheduledAt: match.scheduledAt?.toISOString() ?? null,
+          startedAt: match.startedAt?.toISOString() ?? null,
+          version: match.version,
         });
       }
     }

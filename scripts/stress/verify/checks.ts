@@ -259,7 +259,19 @@ export async function checkRanking(data: TournamentData): Promise<CheckResult> {
       confirmedOrder.set(group.id, stored.order);
       const expected = rankGroup(entries, ranked, isTeam ? "TEAM" : "INDIVIDUAL");
       const differences = compareRanking(expected, stored.order);
-      for (const difference of differences) fail(check, `${competition.code}/${group.code}`, difference);
+      // 团体的「分层后剩两队」口径文档未写（oracle 头注释）：系统顺序若与另一口径一致，标为口径差异，仍记失败，待用户裁定口径。
+      const variantMatches = isTeam && differences.length > 0 && compareRanking(rankGroup(entries, ranked, "TEAM", "AFTER_ALL"), stored.order).length === 0;
+      for (const difference of differences) fail(check, `${competition.code}/${group.code}`, variantMatches ? `口径差异：${difference}` : difference);
+      if (variantMatches) {
+        check.notes.push(`${competition.code}/${group.code} 口径差异：系统按「小场差、局差、分差全部比完仍剩两队才看相互胜负」排序，oracle 假设「每一层分出两队即回到相互胜负」；文档未写明，待裁定`);
+      }
+      // 并列待裁定块本身也要一致：系统要求抽签的集合 = 独立计算认为规则无法区分的集合。
+      const storedLots = ((group.ranking as { lots?: string[][] } | null)?.lots ?? []).map((block) => [...block].sort().join(",")).sort();
+      const expectedLots = expected.unresolved.map((block) => [...block].sort().join(",")).sort();
+      if (storedLots.join(" | ") !== expectedLots.join(" | ")) {
+        fail(check, `${competition.code}/${group.code}`, `并列待裁定块 期望 [${expectedLots.join(" | ") || "无"}] 实际 [${storedLots.join(" | ") || "无"}]`);
+      }
+      if (expectedLots.length) check.notes.push(`${competition.code}/${group.code} 出现须抽签的并列：${expectedLots.join(" | ")}`);
     }
 
     // 淘汰首轮映射（两组 / 四组）与胜者、负者去向。

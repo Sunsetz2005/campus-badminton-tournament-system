@@ -12,6 +12,8 @@
  * 团体项目（追踪矩阵 TEAM-006 的文字）：对抗胜场 → 两队看相互胜负 → 三队及以上比小场差、局差、分差 → 仍同须抽签。
  *   文档没有写「三队分层后剩两队是否回到相互胜负」，这里**按个人项目同样的做法回到直接胜负**，作为口径假设记入报告；
  *   若与系统不一致，先列为「口径差异」而不是 bug。
+ *   另一口径 `pairRule: "AFTER_ALL"`：小场差、局差、分差全部比完仍剩两队才看相互胜负（系统 standings.ts 注释所写的做法），
+ *   只用于判定里区分「口径差异」与真正的错，不作为期望值。
  */
 
 export interface RankedMatch {
@@ -36,7 +38,9 @@ export interface RankingOutcome {
 
 type Metric = "gameDiff" | "pointDiff" | "rubberDiff";
 
-export function rankGroup(entries: readonly string[], matches: readonly RankedMatch[], kind: "INDIVIDUAL" | "TEAM"): RankingOutcome {
+export type PairRule = "EACH_LEVEL" | "AFTER_ALL";
+
+export function rankGroup(entries: readonly string[], matches: readonly RankedMatch[], kind: "INDIVIDUAL" | "TEAM", pairRule: PairRule = "EACH_LEVEL"): RankingOutcome {
   const stats = new Map(entries.map((id) => [id, { wins: 0, gameDiff: 0, pointDiff: 0, rubberDiff: 0 }]));
   for (const match of matches) {
     const a = stats.get(match.a);
@@ -68,7 +72,7 @@ export function rankGroup(entries: readonly string[], matches: readonly RankedMa
       steps[block[0]] = label;
       return block;
     }
-    if (block.length === 2) {
+    if (block.length === 2 && (pairRule === "EACH_LEVEL" || level === 0 || level >= chain.length)) {
       const decided = headToHead(block[0], block[1]);
       if (decided) {
         steps[decided[0]] = `${label}→直接胜负`;

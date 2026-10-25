@@ -57,6 +57,9 @@ export interface MatchRunResult {
   narrative: ReturnType<Narrative["describe"]>;
   startedAt: number;
   endedAt: number;
+  /** 执裁的仿真裁判（人）与其账号；共用账号模式下账号都是同一个。 */
+  official?: string;
+  officialUserId?: string;
 }
 
 const HEARTBEAT_MS = 30_000;

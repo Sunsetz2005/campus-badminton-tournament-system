@@ -38,6 +38,8 @@ export class Metrics {
   total = 0;
   serverErrors = 0;
   rateLimited = 0;
+  /** 每一次 5xx（含之后重试成功的），报告逐条列出。 */
+  readonly serverErrorLog: RequestRecord[] = [];
 
   constructor(logFile: string | null) {
     this.log = logFile ? createWriteStream(logFile) : null;
@@ -45,7 +47,10 @@ export class Metrics {
 
   record(entry: RequestRecord) {
     this.total += 1;
-    if (entry.status >= 500) this.serverErrors += 1;
+    if (entry.status >= 500) {
+      this.serverErrors += 1;
+      this.serverErrorLog.push(entry);
+    }
     if (entry.status === 429) this.rateLimited += 1;
     const bucket = this.byRoute.get(`${entry.method} ${entry.route}`) ?? { latencies: [] as number[], statuses: new Map<string, number>() };
     bucket.latencies.push(entry.ms);
@@ -63,7 +68,7 @@ export class Metrics {
         statuses: Object.fromEntries([...bucket.statuses.entries()].sort()),
       }))
       .sort((a, b) => b.count - a.count);
-    return { total: this.total, serverErrors: this.serverErrors, rateLimited: this.rateLimited, durationMs: Date.now() - this.startedAt, routes };
+    return { total: this.total, serverErrors: this.serverErrors, rateLimited: this.rateLimited, durationMs: Date.now() - this.startedAt, serverErrorLog: this.serverErrorLog, routes };
   }
 
   close() {
