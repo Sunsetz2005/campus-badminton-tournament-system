@@ -34,6 +34,7 @@
     "stress:build": "dotenv -e .env.stress -- tsx scripts/build-production-startup-test.ts",
     "stress": "dotenv -e .env.stress -- tsx scripts/stress/run.ts",
     "stress:verify": "dotenv -e .env.stress -- tsx scripts/stress/verify.ts",
+    "stress:capacity": "dotenv -e .env.stress -- tsx scripts/stress/capacity.ts",
     "docs:sync": "node scripts/sync-knowledge-base.mjs --apply",
     "docs:sync:dry-run": "node scripts/sync-knowledge-base.mjs --dry-run"
   },

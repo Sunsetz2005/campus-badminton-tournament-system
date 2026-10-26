@@ -63,6 +63,16 @@ pnpm run stress -- --level L0 --clock C32 --seed 1 --max-minutes 15   # 开发�
 连接串放在未提交的 `.env.stress-container`（同样要求库名含 `stress` 且以 `_test` 结尾）。停库期间仿真进程若退出，会在退出前把容器启动回来。
 仿真自己的只读查询遇到连接类错误（库重启、连接被断开、连接数占满）时等待恢复后重试，最多 90 秒。
 
+### 容量探测（M4b，§13.1）
+
+```bash
+pnpm run stress:capacity -- --seed 20261026                                  # 最快节奏，6→12→24→48
+pnpm run stress:capacity -- --seed 20261028 --clock C8 --steps 12,24,48 --matches-per-unit 1   # 真实节奏 8 倍对照
+```
+
+每个并发单位连续打一个 4 人小组的比赛；每级记命令延迟分位、错误码、5xx、`xact_rollback` 增量、连接峰值与 CPU/内存采样，
+门槛 `--p99-ms`（默认 1000）且零 5xx。`--external` 连接已在运行的实例（此时资源采样只剩压测端）。产物在 `artifacts/stress/capacity-*`。
+
 ## 产物
 
 `artifacts/stress/<seed>-<时间>/`（已被 .gitignore 忽略）：
