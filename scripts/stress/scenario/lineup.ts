@@ -46,6 +46,8 @@ export async function lineupLoop(options: { context: RunContext; tournament: Tou
         if (submitted.has(key) || fixture.lineups.some((lineup) => lineup.side === side)) continue;
         const owner = teamByEntry.get(entryId);
         if (!owner) continue;
+        // 已退出比赛的队不再交名单（§6.1「团体小组某队中途退出」）。
+        if (tournament.withdrawn.has(entryId)) continue;
         if (context.inject.withholdLineup && side === "A" && fixture.sideBEntryId && (context.inject.withheldKey === null || context.inject.withheldKey === key)) {
           if (context.inject.withheldKey === null) {
             context.inject.withheldKey = key;
@@ -199,7 +201,7 @@ function injectedServerError(context: RunContext, actor: string) {
   return { status: 500, ok: false, json: null, code: "internal_error", message: "（注入）服务暂时不可用，请稍后重试。", ms: 0, headers: new Headers() };
 }
 
-function buildLineup(tournament: TournamentRuntime, team: TeamRuntime, rubbers: readonly string[], rng: Rng) {
+export function buildLineup(tournament: TournamentRuntime, team: TeamRuntime, rubbers: readonly string[], rng: Rng) {
   const planned = tournament.roster.teams.find((item) => item.key === team.key)!;
   const used = new Set<string>();
   return rubbers.map((kind, index) => {

@@ -55,7 +55,7 @@ export async function registerTeams(context: RunContext, tournament: TournamentR
     const manager = new Client(context.origin, `manager-${team.key}`, context.metrics, context.nextIp());
     await manager.signIn(email, provisioned.initialPassword);
     const password = strongPassword();
-    await manager.must("POST", "/api/account/password", { currentPassword: provisioned.initialPassword, newPassword: password }, { route: "/api/account/password" });
+    await manager.changePassword(provisioned.initialPassword, password);
     context.secrets[email] = password;
     await manager.must("POST", `/api/team/${slug}/teams/${created.id}/roster`, {
       competitionId: competition.id,

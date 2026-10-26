@@ -62,6 +62,18 @@ export interface MatchRunResult {
   officialUserId?: string;
   /** 中途换人时每段的执裁人（逐场指派模式下判定按时间切分核对）。 */
   officialSegments?: { key: string; userId: string; from: number }[];
+  /** 按计划录入的特殊结果（M5）：类型、退出方与服务端回应。 */
+  special?: { type: string; loser: Side | null; status: number; code: string | null; atScore: { game: number; A: number; B: number } };
+}
+
+/** 可以录入特殊结果的相位（与 src/domain/rules/special-outcome.ts 一致）。 */
+const SPECIAL_RECORDABLE = new Set(["AWAITING_COIN_TOSS", "AWAITING_OPENING_SETUP", "IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED", "GAME_COMPLETE", "AWAITING_NEXT_GAME_SETUP"]);
+
+export interface SpecialPlanInput {
+  type: "WO" | "RET" | "DSQ" | "ABANDONED";
+  loser: Side | null;
+  at: { game: number; points: number } | null;
+  reason: string;
 }
 
 const HEARTBEAT_MS = 30_000;
@@ -242,8 +254,9 @@ export class MatchDriver {
    * `onPhase` 在每一步之前调用；返回 "pause" 时本驱动停下（不释放控制），结局记为 stopped、reason 为 paused——
    * 注入在此做交接或并发请求，之后可由同一个或另一个驱动接着 play()。
    */
-  async play(options: { onRally?: () => Promise<void>; onPhase?: (state: MatchStateView) => Promise<"continue" | "pause"> } = {}): Promise<MatchRunResult> {
+  async play(options: { onRally?: () => Promise<void>; onPhase?: (state: MatchStateView) => Promise<"continue" | "pause">; special?: SpecialPlanInput | null } = {}): Promise<MatchRunResult> {
     const startedAt = Date.now();
+    let special: MatchRunResult["special"];
     const finish = (outcome: MatchRunResult["outcome"], reason?: string): MatchRunResult => ({
       matchCode: this.matchCode,
       outcome,
@@ -257,6 +270,7 @@ export class MatchDriver {
       narrative: this.narrative.describe(),
       startedAt,
       endedAt: Date.now(),
+      ...(special ? { special } : {}),
     });
     if (!this.state) await this.refresh();
     let guard = 0;
@@ -267,6 +281,24 @@ export class MatchDriver {
       const state = this.state;
       const rule = state.ruleConfig;
       let result: CallResult | null = null;
+      // 按计划录入特殊结果：弃权在开赛前（抛币前）录，退赛 / 取消资格打到指定局分时录。
+      const plan = options.special;
+      if (plan && !special && SPECIAL_RECORDABLE.has(state.phase)) {
+        const due = plan.at === null
+          ? true
+          : state.phase !== "AWAITING_COIN_TOSS" && (state.currentGame > plan.at.game || (state.currentGame === plan.at.game && state.score.A + state.score.B >= plan.at.points));
+        if (due) {
+          const winnerSide = plan.loser ? (plan.loser === "A" ? "B" : "A") : undefined;
+          const atScore = { game: state.currentGame, A: state.score.A, B: state.score.B };
+          result = await this.send("RECORD_SPECIAL_OUTCOME", { type: plan.type, ...(winnerSide ? { winnerSide } : {}), reason: plan.reason });
+          special = { type: plan.type, loser: plan.loser, status: result.status, code: result.code, atScore };
+          if (!result.ok) {
+            await this.refresh();
+            return finish("stopped", `special ${result.status} ${result.code} ${result.message ?? ""}`.trim());
+          }
+          continue;
+        }
+      }
       switch (state.phase) {
         case "AWAITING_COIN_TOSS": {
           const toss = await this.client.call<{ winnerSide: Side }>("POST", `/api/matches/${this.matchCode}/coin-toss`, {

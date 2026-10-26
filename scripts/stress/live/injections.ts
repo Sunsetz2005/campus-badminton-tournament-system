@@ -45,7 +45,7 @@ export interface Borrowed {
   segments: { official: Official; from: number }[];
 }
 
-type MatchRow = Awaited<ReturnType<typeof matchesOfTournament>>[number];
+export type MatchRow = Awaited<ReturnType<typeof matchesOfTournament>>[number];
 
 const GROUP = "§7 通用";
 const HANDOVER = "§13.9 交接（共用账号）";
@@ -86,7 +86,13 @@ async function guarded(env: Env, key: string, run: (env: Env) => Promise<void>) 
 /**
  * 借用一场比赛。`chooseOfficial` 决定由谁执裁：共用账号模式取仿真轮换表里的空闲者；逐场指派模式取系统指派的那个人（须空闲）。
  */
-export async function borrow(env: Env, label: string, chooseOfficial: (match: MatchRow) => Official | null = () => pickSharedOfficial(env.tournament.officials)): Promise<Borrowed | null> {
+export async function borrow(
+  env: Env,
+  label: string,
+  chooseOfficial: (match: MatchRow) => Official | null = () => pickSharedOfficial(env.tournament.officials),
+  /** 只借指定的比赛（M5 赛务异常按场次构造）。暂缓开赛（heldMatches）的比赛只有被这里明确选中时才借。 */
+  only?: (match: MatchRow) => boolean,
+): Promise<Borrowed | null> {
   const { context, tournament, registry } = env;
   const watched = new Set(tournament.delayScenarios.flatMap((item) => [...item.causes, ...item.watch]));
   while (!registry.stop) {
@@ -104,7 +110,11 @@ export async function borrow(env: Env, label: string, chooseOfficial: (match: Ma
           !tournament.forced.has(match.code) &&
           !watched.has(match.code) &&
           !busy.has(match.code) &&
-          !registry.borrowedCourts.has(match.courtId),
+          !registry.borrowedCourts.has(match.courtId) &&
+          // 赛务异常已为之安排特殊结果的比赛（指定场次、退出的报名单位、按规则弃权的报名单位）不借。
+          !tournament.specials.has(match.code) &&
+          ![match.sideAEntryId, match.sideBEntryId].some((id) => id && (tournament.withdrawn.has(id) || tournament.hookedEntries.has(id))) &&
+          (only ? only(match) : !tournament.heldMatches.has(match.code)),
       )
       .sort((left, right) => (left.scheduledAt?.getTime() ?? Infinity) - (right.scheduledAt?.getTime() ?? Infinity))
       .slice(0, 10);
@@ -191,8 +201,8 @@ export async function giveBack(env: Env, borrowed: Borrowed, last: MatchRunResul
   void tournament;
 }
 
-export async function withBorrowed(env: Env, label: string, body: (borrowed: Borrowed) => Promise<MatchRunResult | null>, chooseOfficial?: (match: MatchRow) => Official | null) {
-  const borrowed = await borrow(env, label, chooseOfficial);
+export async function withBorrowed(env: Env, label: string, body: (borrowed: Borrowed) => Promise<MatchRunResult | null>, chooseOfficial?: (match: MatchRow) => Official | null, only?: (match: MatchRow) => boolean) {
+  const borrowed = await borrow(env, label, chooseOfficial, only);
   if (!borrowed) return;
   let last: MatchRunResult | null = null;
   try {
@@ -206,7 +216,7 @@ export async function withBorrowed(env: Env, label: string, body: (borrowed: Bor
 
 export const eventCount = (code: string) => prisma.matchEvent.count({ where: { match: { code } } });
 
-function probe(env: Env, item: { id: string; group?: string; title: string; expected: string; actual: string; ok: boolean | "undefined" | "skipped"; match: string; detail?: Record<string, unknown> }) {
+export function probe(env: Env, item: { id: string; group?: string; title: string; expected: string; actual: string; ok: boolean | "undefined" | "skipped"; match: string; detail?: Record<string, unknown> }) {
   const verdict: ProbeVerdict = item.ok === "undefined" ? "设计未定义" : item.ok === "skipped" ? "未触发" : item.ok ? "符合" : "不符";
   recordProbe(env.context, { id: item.id, group: item.group ?? GROUP, title: item.title, expected: item.expected, actual: item.actual, verdict, match: item.match, detail: item.detail });
 }
@@ -243,14 +253,14 @@ export async function heartbeatWith(client: Client, code: string, control: Contr
   });
 }
 
-async function releaseWith(client: Client, code: string, control: Control) {
+export async function releaseWith(client: Client, code: string, control: Control) {
   return client.call("DELETE", `/api/matches/${code}/control`, { scoringSessionId: control.sessionId, takeoverGeneration: control.takeoverGeneration }, {
     route: "/api/matches/[code]/control",
     headers: { Authorization: `Bearer ${control.controlToken}` },
   });
 }
 
-async function chiefTakeover(env: Env, code: string, reason: string) {
+export async function chiefTakeover(env: Env, code: string, reason: string) {
   const chief = env.tournament.chiefs[0];
   return chief.client.call<Control>("POST", `/api/matches/${code}/control/takeover`, { deviceSessionId: randomUUID(), reason }, { route: "/api/matches/[code]/control/takeover" });
 }

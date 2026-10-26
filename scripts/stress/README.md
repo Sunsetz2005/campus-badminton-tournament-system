@@ -28,7 +28,7 @@ pnpm run stress -- --level L0 --clock C32 --seed 1 --max-minutes 15   # 开发�
 
 | 参数 | 含义 |
 |---|---|
-| `--level L0\|L1\|L3` | 规模（`config/levels.ts`）。L0 只用于调通流程 |
+| `--level L0\|L1\|L2\|L3` | 规模（`config/levels.ts`）。L0 只用于调通流程 |
 | `--clock C8\|C3\|R1\|C32` | 时间档（`core/clock.ts`）。C32 只用于开发冒烟，不作判定口径 |
 | `--seed` | 总种子；名单、抽签设种、走向、注入点各自派生子流 |
 | `--same-ip` | 所有模拟客户端共用一个来源（§13.2 同出口场景）；缺省每个客户端一个 `x-forwarded-for` |
@@ -36,7 +36,9 @@ pnpm run stress -- --level L0 --clock C32 --seed 1 --max-minutes 15   # 开发�
 | `--external` | 不自起服务，连接 `BETTER_AUTH_URL` 上已在运行的实例 |
 | `--max-minutes` / `--stall-minutes` | 总时限 / 无进展判定卡住的时长 |
 | `--referee-mode SHARED_ACCOUNT\|PER_MATCH` | 主赛事 M 的裁判模式（卫星赛事固定共用账号，§13.9） |
-| `--scenarios ties,delays,inject` | 强制同分 / 延误七情形 / 异常注入（M4） |
+| `--scenarios ties,delays,inject,ops` | 强制同分 / 延误七情形 / 异常注入（M4）/ 赛务异常（M5） |
+| `--device-mode court\|personal` | 主赛事 M 的设备：场地平板或个人手机（§13.9）；缺省共用账号用平板、逐场指派用手机 |
+| `--spectators <人数>` | 覆盖规模档观众数（§13.2 同出口场景用 300） |
 | `--only <组,…>` | 只跑指定注入组，见下 |
 
 被测服务以生产模式 `next start` 起在 `BETTER_AUTH_URL` 的端口（默认 3200）。端口上已有服务（例如上一轮被强杀后遗留）时
@@ -62,6 +64,19 @@ pnpm run stress -- --level L0 --clock C32 --seed 1 --max-minutes 15   # 开发�
 库重启与 max_connections 只能在独立容器上做：`STRESS_DB_CONTAINER` 指向的容器名必须以 `badminton-stress-` 开头，否则拒绝操作；
 连接串放在未提交的 `.env.stress-container`（同样要求库名含 `stress` 且以 `_test` 结尾）。停库期间仿真进程若退出，会在退出前把容器启动回来。
 仿真自己的只读查询遇到连接类错误（库重启、连接被断开、连接数占满）时等待恢复后重试，最多 90 秒。
+
+### 赛务异常（M5，`--scenarios ops`）
+
+`ops` 在主赛事 M 上追加两个 0 人的「延后抽签」「临时增补」男单项目，并调整男双、混双的人数与单位分布，抽签后按计划
+布置：女单首轮弃权 / 中途退赛 / 双方弃赛，男单小组退剩一人，男双一名选手先退赛后连续弃权，混双取消资格回溯，团体一队中途退出。
+裁判长对每个被挡住的小组走「排除」处理；无法补救的项目记入「预计卡住」，并按「已证实 / 未证实」核对现场是否真卡在那里。
+另含报名类（截止后补报、同项重复、跨单位重复、抽签后补报、撤签重抽、改名、批量增补 30 人）与现场类（暂停 / 转场、
+次日续赛、误点开别的比赛、退回、延期、取消）探测，以及一个 30 分钟的综合压力窗口：一个单位整体退赛、批量增补并排程、
+两场暂停、§7 命令与会话注入同时进行。每项记「符合 / 不符 / 设计未定义 / 预计卡住·已证实 / 预计卡住·未证实 / 不可测」。
+
+登录统一经过 `core/http.ts`：每次登录与改口令都记录是否遇到 429 及等待时长，报告「登录与改口令」「公开接口限流」两节据此汇总，
+并单列裁判写接口是否被限流。逐场指派 + 场地平板模式下平板在裁判之间交接（先退出再登录）；个人手机模式下裁判休息时按概率
+退出重登或清 Cookie 重登。
 
 ### 容量探测（M4b，§13.1）
 
@@ -92,6 +107,7 @@ core/                 rng 可复现随机 · clock 压缩时钟 · http 客户�
 scenario/             roster 名单生成 · setup 建赛与裁判长 · registration 报名与审核 · draw 抽签 · schedule 赛程 · lineup 出场名单
 live/                 narrative 比赛走向 · referee 单场执裁 · venue 场地调度 · chief 复核与小组名次 · officiating 我的执裁缓存
                       injections / team-injections / referee-injections / browser / db-injections 异常注入（M4）
+                      ops 赛务异常（M5）
 ```
 
 判定在 `verify.ts` 与 `verify/`，报告在 `report/`。

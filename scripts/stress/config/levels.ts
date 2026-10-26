@@ -16,6 +16,10 @@ export interface EventPlan {
   qualifiersPerGroup?: 1 | 2;
   thirdPlaceMatch?: boolean;
   seeds?: number;
+  /** 延后抽签（M5，§6.2）：建赛时不报名、不抽签，由赛务异常在运行中增补后再抽签发布。 */
+  deferDraw?: boolean;
+  /** 前若干个报名单位都来自同一学院（§6.3「无法完全避让」）。 */
+  concentrate?: number;
 }
 
 export interface TeamPlan {
@@ -54,6 +58,21 @@ export interface LevelConfig {
   spectatorIntervalSeconds: number;
   chiefs: number;
   referees: number;
+}
+
+/**
+ * 赛务异常（M5，`--scenarios ops`）对主赛事的改动：MD 改为 7 对（4 人组与 3 人组并存），XD 让一个学院占 6 对（同单位无法完全避让），
+ * 另加两个延后抽签的男子单打（MS2：截止后增补、撤销重抽、连续弃权、决赛弃权；MS3：组合压力窗口里的大面积增补）。
+ */
+export function withOpsEvents(plan: TournamentPlan): TournamentPlan {
+  return {
+    ...plan,
+    events: [
+      ...plan.events.map((event) => (event.code === "MD" ? { ...event, entries: Math.max(7, event.entries + 1) } : event.code === "XD" ? { ...event, concentrate: 6 } : event)),
+      ev("MS", 0, "KNOCKOUT", { code: "MS2", name: "男子单打（延后抽签）", thirdPlaceMatch: false, deferDraw: true }),
+      ev("MS", 0, "KNOCKOUT", { code: "MS3", name: "男子单打（临时增补）", thirdPlaceMatch: false, deferDraw: true }),
+    ],
+  };
 }
 
 const ev = (kind: EventKind, entries: number, format: DrawFormat, extra: Partial<EventPlan> = {}): EventPlan => ({

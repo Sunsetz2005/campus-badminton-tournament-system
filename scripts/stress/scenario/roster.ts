@@ -114,7 +114,7 @@ export function generateRoster(
     const taken = new Set<string>();
     for (let index = 0; index < event.entries; index += 1) {
       // 学院按轮转分配并加一点随机，保证同单位回避有冲突可测。
-      const unit = pick.chance(0.8) ? units[index % units.length] : pick.pick(units);
+      const unit = event.concentrate && index < event.concentrate ? units[0] : pick.chance(0.8) ? units[index % units.length] : pick.pick(units);
       const members: Person[] = [];
       for (let slot = 0; slot < EVENT_SIZE[event.kind]; slot += 1) {
         const gender = genderFor(event.kind, slot);

@@ -50,6 +50,22 @@ export function endOutage() {
   Outage.lastEndedAt = Date.now();
 }
 
+/** 登录与改口令的记录（§13.2 / §13.9：集中登录的 429 次数与全部登入耗时）。 */
+export interface AuthRecord {
+  at: number;
+  actor: string;
+  kind: "sign-in" | "change-password";
+  rateLimited: number;
+  ms: number;
+  ok: boolean;
+}
+export const authLog: AuthRecord[] = [];
+
+async function retryAfter(result: CallResult) {
+  const value = Number(result.headers.get("retry-after") ?? result.headers.get("x-retry-after") ?? "3");
+  await new Promise((resolve) => setTimeout(resolve, Math.max(1, Number.isFinite(value) ? value : 3) * 1000 + 50));
+}
+
 export class HttpError extends Error {
   constructor(readonly result: CallResult, readonly where: string) {
     super(`${where} → ${result.status}${result.code ? ` ${result.code}` : ""}${result.message ? `：${result.message}` : ""}`);
@@ -170,21 +186,44 @@ export class Client {
     const byEmail = login.includes("@");
     const path = byEmail ? "/api/auth/sign-in/email" : "/api/auth/sign-in/username";
     const body = byEmail ? { email: login, password } : { username: login, password };
-    const deadline = Date.now() + (options.maxWaitMs ?? 120_000);
+    const started = Date.now();
+    const deadline = started + (options.maxWaitMs ?? 120_000);
     let rateLimited = 0;
     for (;;) {
       const result = await this.call<{ user?: { id: string } }>("POST", path, body, { route: "/api/auth/sign-in" });
       if (result.ok) {
         this.userId = result.json?.user?.id ?? null;
+        authLog.push({ at: started, actor: this.actor, kind: "sign-in", rateLimited, ms: Date.now() - started, ok: true });
+        return { rateLimited, ms: Date.now() - started };
+      }
+      if (result.status === 429 && Date.now() < deadline) {
+        rateLimited += 1;
+        await retryAfter(result);
+        continue;
+      }
+      authLog.push({ at: started, actor: this.actor, kind: "sign-in", rateLimited, ms: Date.now() - started, ok: false });
+      throw new HttpError(result, `${this.actor} 登录`);
+    }
+  }
+
+  /** 修改口令：与登录同一条限流规则（每来源 10 秒 3 次），遇 429 同样退避重试并记录。 */
+  async changePassword(currentPassword: string, newPassword: string, options: { maxWaitMs?: number } = {}) {
+    const started = Date.now();
+    const deadline = started + (options.maxWaitMs ?? 120_000);
+    let rateLimited = 0;
+    for (;;) {
+      const result = await this.call("POST", "/api/account/password", { currentPassword, newPassword }, { route: "/api/account/password" });
+      if (result.ok) {
+        authLog.push({ at: started, actor: this.actor, kind: "change-password", rateLimited, ms: Date.now() - started, ok: true });
         return { rateLimited };
       }
       if (result.status === 429 && Date.now() < deadline) {
         rateLimited += 1;
-        const retryAfter = Number(result.headers.get("retry-after") ?? result.headers.get("x-retry-after") ?? "3");
-        await new Promise((resolve) => setTimeout(resolve, Math.max(1, Number.isFinite(retryAfter) ? retryAfter : 3) * 1000 + 50));
+        await retryAfter(result);
         continue;
       }
-      throw new HttpError(result, `${this.actor} 登录`);
+      authLog.push({ at: started, actor: this.actor, kind: "change-password", rateLimited, ms: Date.now() - started, ok: false });
+      throw new HttpError(result, `${this.actor} 修改口令`);
     }
   }
 

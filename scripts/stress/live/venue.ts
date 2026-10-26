@@ -13,7 +13,8 @@ import type { Clock } from "../core/clock";
 import { sleep } from "../core/clock";
 import type { Client } from "../core/http";
 import type { Rng } from "../core/rng";
-import type { RunContext, TournamentRuntime } from "../scenario/context";
+import { prisma } from "../core/db";
+import type { RunContext, SpecialHookMatch, SpecialPlan, TournamentRuntime } from "../scenario/context";
 import { addFinding } from "../scenario/context";
 import { Narrative } from "./narrative";
 import { OfficiatingCache, type MatchSource, type VenueMatch } from "./officiating";
@@ -43,7 +44,7 @@ export async function courtLoop(options: {
   context: RunContext;
   tournament: TournamentRuntime;
   court: { id: string; name: string };
-  /** 场地平板（共用账号模式）；逐场指派模式下为 null。 */
+  /** 场地平板（场地固定设备）；个人设备模式下为 null。逐场指派模式下平板交接时退出上一个人、由到场裁判登录。 */
   device: Client | null;
   cache: MatchSource;
   registry: LiveRegistry;
@@ -78,7 +79,7 @@ export async function courtLoop(options: {
       continue;
     }
     const candidates = view.matches
-      .filter((match) => match.status === "NOT_STARTED" && !registry.active.has(match.code) && !registry.abandoned.has(match.code))
+      .filter((match) => match.status === "NOT_STARTED" && !registry.active.has(match.code) && !registry.abandoned.has(match.code) && !tournament.heldMatches.has(match.code))
       .filter((match) => match.court?.id === court.id || (!match.court && match.sideA !== "待定"))
       .filter((match) => match.sideA !== "待定")
       .filter((match) => (notReadyUntil.get(match.code) ?? 0) <= Date.now())
@@ -151,10 +152,19 @@ export async function courtLoop(options: {
     }
     registry.active.set(next.code, court.id);
     registry.activePlayers.set(next.code, players.get(next.code) ?? []);
-    const client = perMatch ? official.client! : device!;
     const startedAt = Date.now();
     let outcome = "not_started";
+    let client: Client;
     try {
+      client = device ?? official.client!;
+      if (device && perMatch && device.userId !== official.userId) {
+        // 场地平板交接：退出上一名裁判，由到场的这名裁判用自己的账号登录（§13.9 场地固定设备）。
+        const handoverStarted = Date.now();
+        if (device.signedIn) await device.signOut();
+        const password = official.login === context.refereeLogin.login ? context.refereeLogin.password : context.secrets[official.login];
+        const signedIn = await device.signIn(official.login, password, { maxWaitMs: 10 * 60_000 });
+        official.handovers.push({ matchCode: next.code, ms: Date.now() - handoverStarted, rateLimited: signedIn.rateLimited });
+      }
       if (perMatch) {
         // 本人的「我的执裁」里应当有这场（系统指派可见）。
         const mine = await new OfficiatingCache(official.userId, tournament.slug, 0).get(true);
@@ -189,7 +199,8 @@ export async function courtLoop(options: {
         continue;
       }
       registry.playing.set(next.code, Date.now());
-      const result = await driver.play().finally(() => registry.playing.delete(next.code));
+      const special = await specialFor(tournament, next.code);
+      const result = await driver.play({ special }).finally(() => registry.playing.delete(next.code));
       result.official = official.key;
       result.officialUserId = official.userId;
       registry.results.push(result);
@@ -211,12 +222,72 @@ export async function courtLoop(options: {
       cache.invalidate();
       if (outcome === "submitted" || outcome === "stopped" || outcome === "failed") {
         checkOut(official, { matchCode: next.code, courtId: court.id, start: startedAt, end: Date.now(), waitedMs, outcome }, clock, rng.fork(`rest:${official.key}:${next.code}`));
+        // 个人设备：休息时偶尔退出登录再登录、或清空 Cookie 再登录（登录会话 7 天不过期，用这两种方式代替自然过期）。
+        if (!device && official.client && official.restUntil > Date.now()) {
+          const roll = rng.next();
+          if (roll < 0.25) void relogin(context, official, roll < 0.12 ? "sign-out" : "clear-cookies");
+        }
       } else {
         // 没有真正执裁（名单未齐、控制被占）：人回到空闲，不计入轮换。
         official.busyWith = null;
       }
     }
   }
+}
+
+async function relogin(context: RunContext, official: Official, kind: "sign-out" | "clear-cookies") {
+  const client = official.client!;
+  const started = Date.now();
+  // 重新登录期间人不可派（还没登进来）。
+  official.busyWith = `relogin:${kind}`;
+  try {
+    if (kind === "sign-out") await client.signOut();
+    else client.clearCookies();
+    const password = official.login === context.refereeLogin.login ? context.refereeLogin.password : context.secrets[official.login];
+    const result = await client.signIn(official.login, password, { maxWaitMs: 10 * 60_000 });
+    official.relogins.push({ kind, ms: Date.now() - started, rateLimited: result.rateLimited });
+  } catch (error) {
+    addFinding(context, { kind: "unexpected", area: "登录会话", title: `${official.key} ${kind === "sign-out" ? "退出后" : "清空 Cookie 后"}重新登录失败`, detail: { message: error instanceof Error ? error.message : String(error) } });
+  } finally {
+    official.busyWith = null;
+  }
+}
+
+/**
+ * 本场按计划录入的特殊结果（M5，§6）：先看指定到场次的计划，再看双方是否已退出比赛——
+ * 一方退出记弃权（WO，对方胜），双方都退出记中止（ABANDONED，无胜方）。团体小场不在这里处理（退出的队不交名单）。
+ */
+export async function specialFor(tournament: TournamentRuntime, code: string): Promise<SpecialPlan | null> {
+  const planned = tournament.specials.get(code);
+  if (planned) return planned;
+  if (!tournament.withdrawn.size && !tournament.specialHooks.length) return null;
+  const row = await prisma.match.findUnique({
+    where: { code },
+    select: { sideAEntryId: true, sideBEntryId: true, rubberKind: true, groupId: true, stage: { select: { competition: { select: { code: true } } } }, fixture: { select: { round: true, kind: true } } },
+  });
+  if (!row) return null;
+  const facts: SpecialHookMatch = {
+    code,
+    competitionCode: row.stage.competition.code,
+    groupId: row.groupId,
+    round: row.fixture?.round ?? null,
+    fixtureKind: row.fixture?.kind ?? null,
+    sideAEntryId: row.sideAEntryId,
+    sideBEntryId: row.sideBEntryId,
+  };
+  // 指定规则只用于个人比赛；退出的队在团体小场上按弃权录（前提是名单已交，否则小场根本载入不了）。
+  for (const hook of row.rubberKind ? [] : tournament.specialHooks) {
+    const plan = hook(facts);
+    if (plan) return plan;
+  }
+  const outA = Boolean(row.sideAEntryId && tournament.withdrawn.has(row.sideAEntryId));
+  const outB = Boolean(row.sideBEntryId && tournament.withdrawn.has(row.sideBEntryId));
+  if (outA && outB) return { type: "ABANDONED", loser: null, at: null, reason: "仿真：双方均已退出比赛，未到场" };
+  if (outA || outB) {
+    const reason = tournament.withdrawn.get((outA ? row.sideAEntryId : row.sideBEntryId)!)!.reason;
+    return { type: "WO", loser: outA ? "A" : "B", at: null, reason: `仿真：${reason}，未到场弃权` };
+  }
+  return null;
 }
 
 function sortKey(match: VenueMatch) {

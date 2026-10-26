@@ -143,7 +143,7 @@ export async function groupRankingLoop(options: {
       const groups = await groupsOf(competition.id);
       for (const group of groups) {
         const key = `${competition.code}/${group.code}`;
-        if (group.rankingConfirmedAt || done.has(key)) continue;
+        if (group.rankingConfirmedAt || done.has(key) || tournament.rankingHolds.has(key)) continue;
         const isTeam = competition.entryType === "TEAM";
         const ready = isTeam
           ? group.fixtures.length > 0 && group.fixtures.every((fixture) => fixture.matches.every((match) => match.notPlayedAt || match.verificationStatus === "LOCKED"))

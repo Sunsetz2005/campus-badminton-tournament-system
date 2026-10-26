@@ -65,6 +65,46 @@ export interface TournamentRuntime {
   /** 具名裁判（逐场指派模式）或仿真裁判（共用账号模式）。 */
   officials: Official[];
   refereeDraft?: import("./schedule").RefereeDraftRecord;
+  /**
+   * 设备模式（§13.9）：`court` 每块场地一台平板（逐场指派模式下交接要退出上一个人、下一名裁判登录）；
+   * `personal` 每名裁判一台手机随人移动（共用账号模式下同一账号同时有多名裁判的登录会话）。
+   */
+  deviceMode: "court" | "personal";
+  /** 赛务异常（M5，§6）：退出比赛的报名单位。场地开出它的比赛时按计划录入弃权；团体队不再交名单。 */
+  withdrawn: Map<string, { reason: string; at: number }>;
+  /** 指定比赛按计划录入的特殊结果（弃权、退赛、取消资格、中止）。 */
+  specials: Map<string, SpecialPlan>;
+  /** 开赛时按双方决定特殊结果的规则（例如「某人每轮的对手都弃权」），依次询问，第一个非空的生效。 */
+  specialHooks: ((match: SpecialHookMatch) => SpecialPlan | null)[];
+  /** 有按双方决定特殊结果规则的报名单位（specialHooks 用到的）：注入借用比赛时避开，免得绕过规则。 */
+  hookedEntries: Set<string>;
+  /** 暂不开赛的比赛（例如延后抽签项目在撤销重抽之前）。场地调度跳过。 */
+  heldMatches: Set<string>;
+  /** 小组名次暂缓确认（「项目/小组」），由赛务异常处理完排除后再放开。 */
+  rankingHolds: Set<string>;
+  /** 预计卡住（§6 已知缺口）：项目编号 → 原因。运行结束判定时，这些项目里缺一方的比赛不算未完成，单独列出。 */
+  expectedStuck: Map<string, string>;
+}
+
+export interface SpecialHookMatch {
+  code: string;
+  competitionCode: string;
+  groupId: string | null;
+  round: number | null;
+  fixtureKind: string | null;
+  sideAEntryId: string | null;
+  sideBEntryId: string | null;
+}
+
+/**
+ * 按计划录入的特殊结果。`loser` 是弃权 / 退赛 / 被取消资格的一方（中止没有）；
+ * `at` 为空表示开赛即录（弃权），否则打到第 `game` 局、本局两方合计 `points` 分时录入（退赛、取消资格）。
+ */
+export interface SpecialPlan {
+  type: "WO" | "RET" | "DSQ" | "ABANDONED";
+  loser: "A" | "B" | null;
+  at: { game: number; points: number } | null;
+  reason: string;
 }
 
 /**
@@ -81,8 +121,11 @@ export interface Injections {
   reviewHoldSeconds: number;
 }
 
-/** 异常注入的一项期望 / 实际对照（M4）。「未触发」表示构造条件没有出现，不等于通过。 */
-export type ProbeVerdict = "符合" | "不符" | "设计未定义" | "未触发" | "脚本错误";
+/**
+ * 异常注入与赛务异常的一项期望 / 实际对照（M4、M5）。「未触发」表示构造条件没有出现，不等于通过；
+ * 「预计卡住·已证实 / 未证实」用于方案里事先判断会卡住的情形（§6），「不可测」是系统没有对应功能。
+ */
+export type ProbeVerdict = "符合" | "不符" | "设计未定义" | "预计卡住·已证实" | "预计卡住·未证实" | "不可测" | "未触发" | "脚本错误";
 
 export interface ProbeRecord {
   at: string;

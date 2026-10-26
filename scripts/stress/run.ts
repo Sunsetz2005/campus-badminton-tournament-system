@@ -10,6 +10,9 @@
  *       --referee-mode SHARED_ACCOUNT|PER_MATCH（只作用于主赛事 M；卫星赛事固定共用账号，§13.9）
  *       --scenarios ties,delays,inject（强制同分 / 延误七情形 / 异常注入；默认 C3 档开前两者，其余档只开 ties）
  *       --only commands,sessions,handover,pending,restart,lineup,confirm,reopen（异常注入只跑指定组）
+ *       --scenarios ops（§6 赛务异常，M5；--only 同样可选 ko,shrink,group-withdraw,dsq,team,registration,rename,onsite,chaos）
+ *       --device-mode court|personal（§13.9 主赛事的设备模式；缺省共用账号用场地平板、逐场指派用个人手机）
+ *       --spectators <人数>（覆盖规模档的观众人数，§13.2 同出口场景用 300）
  *
  * 所有写入只经 HTTP 接口；本进程的数据库会话是只读的（readonly-env.ts 必须最先导入）。
  * 产物写到 artifacts/stress/<seed>-<时间>/；运行时生成的口令写到未提交的 .local/stress/。
@@ -21,10 +24,10 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { LEVELS, type LevelConfig } from "./config/levels";
+import { LEVELS, withOpsEvents, type LevelConfig } from "./config/levels";
 import { Clock, CLOCKS, sleep } from "./core/clock";
 import { courtsOf, matchesOfTournament, prisma } from "./core/db";
-import { Client } from "./core/http";
+import { authLog, Client } from "./core/http";
 import { Metrics } from "./core/metrics";
 import { Rng } from "./core/rng";
 import { Server } from "./core/server";
@@ -34,6 +37,7 @@ import { injectionLoop } from "./live/injections";
 import { teamInjectionLoop, teamOutcomeProbes } from "./live/team-injections";
 import { planRefereeOverrun, refereeInjectionLoop } from "./live/referee-injections";
 import { createOfficialRecord, provisionNamedReferees, rotationStats, simulatedOfficials } from "./live/officials";
+import { opsExclusions, opsLoop, planOps, type OpsPlan } from "./live/ops";
 import { delayWatchLoop, narrowFirstDay, planDelayScenarios, rescheduleLoop, summarizeDelayScenarios, type DelayObservation } from "./scenario/delays";
 import { planForcedTies } from "./scenario/ties";
 import { courtLoop, type LiveRegistry } from "./live/venue";
@@ -62,6 +66,8 @@ const { values: args } = parseArgs({
     scenarios: { type: "string" },
     /** 故障注入，逗号分隔：lineup-500、lineup-500-saved、lineup-withhold、review-hold=<现实秒数>。 */
     inject: { type: "string" },
+    "device-mode": { type: "string" },
+    spectators: { type: "string" },
     /** 异常注入（--scenarios inject）只跑指定组，逗号分隔：commands、sessions、handover、pending、browser、restart、dbfaults、lineup、confirm、reopen；逐场指派：swap-before、swap-busy、swap-mid、swap-mid-other、overrun。 */
     only: { type: "string" },
   },
@@ -87,6 +93,10 @@ async function main() {
   const seed = Number(args.seed);
   if (!Number.isInteger(seed)) throw new Error("--seed 必须是整数");
   const scenarios = new Set((args.scenarios ?? (clockProfile.name === "C3" ? "ties,delays" : "ties")).split(",").map((item) => item.trim()).filter(Boolean));
+  const deviceMode = args["device-mode"];
+  if (deviceMode && deviceMode !== "court" && deviceMode !== "personal") throw new Error("--device-mode 只能是 court 或 personal");
+  if (scenarios.has("ops")) level.tournaments = level.tournaments.map((plan) => (plan.key === "M" ? withOpsEvents(plan) : plan));
+  if (args.spectators) level.spectators = Number(args.spectators);
 
   const origin = new URL(requireEnv("BETTER_AUTH_URL")).origin;
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
@@ -147,6 +157,8 @@ async function main() {
     seed,
     distinctClientIps: context.distinctClientIps,
     scenarios: [...scenarios],
+    deviceModes: Object.fromEntries(level.tournaments.map((plan) => [plan.key, plan.key === "M" && deviceMode ? deviceMode : plan.refereeMode === "PER_MATCH" ? "personal" : "court"])),
+    spectators: level.spectators,
     refereeModes: Object.fromEntries(level.tournaments.map((plan) => [plan.key, plan.refereeMode])),
   };
   writeFileSync(path.join(runDir, "params.json"), JSON.stringify({ args, environment, level, clock: clockProfile }, null, 2));
@@ -160,6 +172,8 @@ async function main() {
   const mark = (name: string) => (phases[name] = Date.now());
   let outcome = "completed";
   let refereeOverrun: Awaited<ReturnType<typeof planRefereeOverrun>> = null;
+  let opsPlan: OpsPlan | null = null;
+  const sessionPeaks = { authSessions: 0, scoringSessions: 0, sampledAt: [] as { at: number; auth: number; scoring: number }[] };
 
   try {
     mark("serverStart");
@@ -171,6 +185,7 @@ async function main() {
     for (const plan of level.tournaments) {
       const roster = generateRoster(context.rng.fork(`roster:${plan.key}`), level, plan, runId.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 6));
       const tournament = await createTournament(context, plan, roster);
+      if (plan.key === "M" && deviceMode) tournament.deviceMode = deviceMode as "court" | "personal";
       context.tournaments.push(tournament);
       await registerIndividuals(context, tournament);
       await registerTeams(context, tournament);
@@ -185,6 +200,7 @@ async function main() {
       await suggestAndPublish(context, tournament, startsAt, "仿真首次发布");
       await mapEntries(tournament);
       tournament.courts = (await courtsOf(tournament.id)).map((court) => court.id);
+      if (main && scenarios.has("ops")) opsPlan = await planOps(context, tournament);
       if (main && context.inject.reviewHoldSeconds > 0) {
         const first = (await matchesOfTournament(tournament.id))
           .filter((match) => !match.rubberKind && match.sideAEntryId && match.sideBEntryId)
@@ -221,19 +237,23 @@ async function main() {
       const perMatch = tournament.plan.refereeMode === "PER_MATCH";
       const cache = perMatch ? new GlobalScheduleView(tournament.id) : new OfficiatingCache(refereeUser.id, tournament.slug);
       const courts = await courtsOf(tournament.id);
-      if (!perMatch) simulatedOfficials(context, tournament, tournament.plan.key === "M" ? level.referees : Math.max(2, tournament.plan.courts * 2), refereeUser.id);
+      if (!perMatch) await simulatedOfficials(context, tournament, tournament.plan.key === "M" ? level.referees : Math.max(2, tournament.plan.courts * 2), refereeUser.id);
       else {
-        // 平台共用裁判账号也会被自动建议分配（见排班发现）：由一名持平板的仿真裁判用它执裁。
-        const tablet = new Client(origin, `tablet-${tournament.plan.key}-platform`, metrics, context.nextIp());
-        await tablet.signIn(context.refereeLogin.login, context.refereeLogin.password);
+        // 平台共用裁判账号也会被自动建议分配（见排班发现）：由一名仿真裁判用它执裁（个人设备时持一台平板）。
+        let tablet: Client | null = null;
+        if (tournament.deviceMode === "personal") {
+          tablet = new Client(origin, `tablet-${tournament.plan.key}-platform`, metrics, context.nextIp());
+          await tablet.signIn(context.refereeLogin.login, context.refereeLogin.password);
+        }
         tournament.officials.push(createOfficialRecord("PLATFORM", "平台共用裁判账号", context.refereeLogin.login, refereeUser.id, tablet, context.rng.fork("officials:platform")));
       }
       for (const court of courts) {
-        // 共用账号模式：场地固定设备，每块场地一台平板，共用裁判账号各自登录一次。逐场指派模式：裁判用自己的手机。
+        // 场地固定设备：每块场地一台平板。共用账号模式下用共用账号登录一次；逐场指派模式下由到场的裁判登录（venue.ts）。
+        // 个人设备：裁判用自己的手机，没有场地平板。
         let device: Client | null = null;
-        if (!perMatch) {
+        if (tournament.deviceMode === "court") {
           device = new Client(origin, `tablet-${tournament.plan.key}-${court.code}`, metrics, context.nextIp());
-          await device.signIn(context.refereeLogin.login, context.refereeLogin.password);
+          if (!perMatch) await device.signIn(context.refereeLogin.login, context.refereeLogin.password);
         }
         track(courtLoop({ context, tournament, court, device, cache, registry, rng: context.rng.fork(`court:${tournament.plan.key}:${court.code}`), clock: context.clock }));
       }
@@ -246,6 +266,10 @@ async function main() {
           track(teamInjectionLoop({ context, tournament, registry, rng: context.rng.fork("inject:team"), reviews, only }));
         }
       }
+      if (tournament.plan.key === "M" && opsPlan) {
+        const only = args.only ? new Set(args.only.split(",").map((item) => item.trim())) : undefined;
+        track(opsLoop({ context, tournament, registry, server, rng: context.rng.fork("ops"), reviews, plan: opsPlan, only }));
+      }
       if (tournament.delayScenarios.length) {
         track(delayWatchLoop({ context, tournament, registry, observations: delayObservations }));
         track(rescheduleLoop({ context, tournament, registry }));
@@ -255,6 +279,28 @@ async function main() {
       track(lineupLoop({ context, tournament, registry, rng: context.rng.fork(`lineup:${tournament.plan.key}`), records: lineups }));
     }
     for (let index = 0; index < level.spectators; index += 1) track(spectator(context, registry, index));
+    // 登录会话与活动控制会话的峰值（§13.9）：本次运行的裁判账号（共用账号 + 具名裁判）。
+    // 共用账号跨运行复用，只数本次运行创建的会话。
+    const sessionsSince = new Date(phases.serverStart);
+    const sampler = setInterval(() => {
+      const userIds = [...new Set(context.tournaments.flatMap((item) => item.officials.map((official) => official.userId)))];
+      void Promise.all([
+        prisma.session.count({ where: { userId: { in: userIds }, createdAt: { gte: sessionsSince }, expiresAt: { gt: new Date() } } }),
+        prisma.scoringSession.count({ where: { status: "ACTIVE", match: { stage: { competition: { tournamentId: { in: context.tournaments.map((item) => item.id) } } } } } }),
+      ]).then(([auth, scoring]) => {
+        sessionPeaks.authSessions = Math.max(sessionPeaks.authSessions, auth);
+        sessionPeaks.scoringSessions = Math.max(sessionPeaks.scoringSessions, scoring);
+        if (sessionPeaks.sampledAt.length < 2000) sessionPeaks.sampledAt.push({ at: Date.now(), auth, scoring });
+      }, () => undefined);
+    }, 10_000);
+    loops.push(new Promise<void>((resolve) => {
+      const stopper = setInterval(() => {
+        if (!registry.stop) return;
+        clearInterval(sampler);
+        clearInterval(stopper);
+        resolve();
+      }, 1000);
+    }));
 
     // 宿主暂停检测：本机睡眠（合盖、闲置）时仿真与被测服务一起停住，但服务端的租约按墙钟继续计时，
     // 醒来后所有控制会话同时过期——那是环境假象，不是系统问题。1 秒节拍的墙钟跳变超过 20 秒即判本次运行无效。
@@ -353,13 +399,16 @@ async function main() {
       rotation: rotationStats(item.officials),
       officials: item.officials.map((official) => ({ key: official.key, userId: official.userId, log: official.log })),
     })),
-    finalStatus: finalStatus && { ...finalStatus, unfinished: finalStatus.unfinished.slice(0, 100) },
+    finalStatus: finalStatus && { ...finalStatus, unfinished: finalStatus.unfinished.slice(0, 100), expectedStuck: finalStatus.expectedStuck.slice(0, 200) },
     matches: registry.results,
     reviews,
     lineups,
     rankings,
     findings: context.findings,
     probes: context.probes,
+    ops: opsPlan ? { plan: opsPlan, exclusions: opsExclusions() } : null,
+    auth: summarizeAuth(),
+    sessions: { authSessionsPeak: sessionPeaks.authSessions, scoringSessionsPeak: sessionPeaks.scoringSessions, samples: sessionPeaks.sampledAt },
     metrics: metrics.summary(),
     server: { starts: server.starts, log: Server.scanLog(path.join(runDir, "server.log")) },
   };
@@ -383,12 +432,24 @@ async function tournamentStatus(tournaments: TournamentRuntime[]) {
   let notStarted = 0;
   let groupsPending = 0;
   const unfinished: { tournament: string; code: string; lifecycle: string; verification: string; sides: string; competition: string; fixture: string | null; rubber: string | null; scheduledAt: string | null; startedAt: string | null; version: number }[] = [];
+  /** 预计卡住（§6 已知缺口）：所在项目已登记为预计卡住，且缺一方或有一方已退出比赛。 */
+  const expectedStuck: { tournament: string; code: string; competition: string; sides: string; reason: string }[] = [];
   for (const tournament of tournaments) {
+    // 团体小场要双方名单都交齐才能载入；退出的队不交名单，这类小场开不了。
+    const lineupSides = tournament.expectedStuck.size
+      ? new Map((await prisma.fixture.findMany({ where: { competition: { tournamentId: tournament.id } }, select: { id: true, lineups: { select: { side: true } } } })).map((row) => [row.id, new Set(row.lineups.map((item) => item.side)).size]))
+      : new Map<string, number>();
     for (const match of await matchesOfTournament(tournament.id)) {
       total += 1;
       const finished = Boolean(match.notPlayedAt) || match.verificationStatus === "LOCKED";
+      const sides = `${match.sideAEntryId ? "A" : "-"}${match.sideBEntryId ? "B" : "-"}`;
+      const stuckReason = tournament.expectedStuck.get(match.stage.competition.code);
+      const blocked = !match.sideAEntryId || !match.sideBEntryId || Boolean(match.rubberKind && match.fixtureId && (lineupSides.get(match.fixtureId) ?? 0) < 2);
       if (finished) done += 1;
-      else {
+      else if (stuckReason && blocked && (match.lifecycleStatus === "READY" || match.lifecycleStatus === "SCHEDULED")) {
+        done += 1;
+        expectedStuck.push({ tournament: tournament.plan.key, code: match.code, competition: match.stage.competition.code, sides, reason: stuckReason });
+      } else {
         if (match.verificationStatus === "PENDING_REVIEW") pendingReview += 1;
         if (match.lifecycleStatus === "READY" || match.lifecycleStatus === "SCHEDULED") notStarted += 1;
         unfinished.push({
@@ -396,7 +457,7 @@ async function tournamentStatus(tournaments: TournamentRuntime[]) {
           code: match.code,
           lifecycle: match.lifecycleStatus,
           verification: match.verificationStatus,
-          sides: `${match.sideAEntryId ? "A" : "-"}${match.sideBEntryId ? "B" : "-"}`,
+          sides,
           competition: match.stage.competition.code,
           fixture: match.fixture?.code ?? null,
           rubber: match.rubberKind ? `${match.rubberOrder}:${match.rubberKind}` : null,
@@ -406,9 +467,38 @@ async function tournamentStatus(tournaments: TournamentRuntime[]) {
         });
       }
     }
-    groupsPending += await prisma.group.count({ where: { stage: { competition: { tournamentId: tournament.id } }, rankingConfirmedAt: null } });
+    const open = await prisma.group.findMany({
+      where: { stage: { competition: { tournamentId: tournament.id } }, rankingConfirmedAt: null },
+      select: {
+        stage: { select: { competition: { select: { code: true } } } },
+        matches: { select: { notPlayedAt: true, verificationStatus: true } },
+        fixtures: { select: { matches: { select: { notPlayedAt: true, verificationStatus: true } } } },
+      },
+    });
+    for (const group of open) {
+      // 预计卡住的项目里，组内还有比赛结不了的小组确认不了名次，不计入待确认。
+      const settled = [...group.matches, ...group.fixtures.flatMap((fixture) => fixture.matches)].every((match) => match.notPlayedAt || match.verificationStatus === "LOCKED");
+      if (!settled && tournament.expectedStuck.has(group.stage.competition.code)) continue;
+      groupsPending += 1;
+    }
   }
-  return { total, done, pendingReview, notStarted, groupsPending, unfinished };
+  return { total, done, pendingReview, notStarted, groupsPending, unfinished, expectedStuck };
+}
+
+/** 登录与改口令：按调用方类别汇总次数、被限流次数与耗时（§13.2 集中登录）。 */
+function summarizeAuth() {
+  const kindOf = (actor: string) => actor.replace(/-[^-]*$/, "").replace(/-\d+$/, "");
+  const groups = new Map<string, typeof authLog>();
+  for (const item of authLog) groups.set(`${item.kind} ${kindOf(item.actor)}`, [...(groups.get(`${item.kind} ${kindOf(item.actor)}`) ?? []), item]);
+  return {
+    total: authLog.length,
+    rateLimited: authLog.reduce((sum, item) => sum + item.rateLimited, 0),
+    failed: authLog.filter((item) => !item.ok).length,
+    groups: [...groups].map(([key, items]) => {
+      const ms = items.map((item) => item.ms).sort((a, b) => a - b);
+      return { key, count: items.length, rateLimited: items.reduce((sum, item) => sum + item.rateLimited, 0), limitedRequests: items.filter((item) => item.rateLimited).length, medianMs: ms[Math.floor(ms.length / 2)], maxMs: ms[ms.length - 1], spanMs: Math.max(...items.map((item) => item.at + item.ms)) - Math.min(...items.map((item) => item.at)) };
+    }),
+  };
 }
 
 /** 公开观众：未登录，按间隔轮询公开赛程与一场比赛详情（§9：默认 10 秒）。 */
@@ -429,7 +519,10 @@ async function spectator(context: RunContext, registry: LiveRegistry, index: num
     const tournament = context.tournaments.length ? rng.pick(context.tournaments) : null;
     if (tournament) {
       inspect(await client.call("GET", `/api/public/tournaments/${tournament.slug}/schedule`, undefined, { route: "/api/public/tournaments/[slug]/schedule" }), "公开赛程");
-      const live = [...registry.active.keys()];
+      // 看板：赛事门户概览（§13.2 观众轮询赛程、比赛详情和看板）。
+      inspect(await client.call("GET", `/api/public/tournaments/${tournament.slug}`, undefined, { route: "/api/public/tournaments/[slug]" }), "公开看板");
+      // 只挑本赛事场地上正在打的比赛；跨赛事的编号必然 404。
+      const live = [...registry.active].filter(([, courtId]) => tournament.courts.includes(courtId)).map(([code]) => code);
       if (live.length) {
         inspect(await client.call("GET", `/api/public/tournaments/${tournament.slug}/matches/${rng.pick(live)}`, undefined, { route: "/api/public/tournaments/[slug]/matches/[code]" }), "公开比赛详情");
       }

@@ -81,6 +81,14 @@ export async function createTournament(context: RunContext, plan: TournamentPlan
     tieScenarios: [],
     delayScenarios: [],
     officials: [],
+    deviceMode: plan.refereeMode === "PER_MATCH" ? "personal" : "court",
+    withdrawn: new Map(),
+    specials: new Map(),
+    specialHooks: [],
+    hookedEntries: new Set(),
+    heldMatches: new Set(),
+    rankingHolds: new Set(),
+    expectedStuck: new Map(),
   };
 
   for (let index = 0; index < context.level.chiefs; index += 1) {
@@ -94,7 +102,7 @@ export async function createTournament(context: RunContext, plan: TournamentPlan
     const client = new Client(context.origin, `chief-${plan.key}-${index + 1}`, context.metrics, context.nextIp());
     await client.signIn(username, account.initialPassword);
     const password = strongPassword();
-    await client.must("POST", "/api/account/password", { currentPassword: account.initialPassword, newPassword: password }, { route: "/api/account/password" });
+    await client.changePassword(account.initialPassword, password);
     // 修改口令会注销该账号的「其他」会话，本会话保留。
     context.secrets[username] = password;
     runtime.chiefs.push({ client, userId: account.userId, login: username });

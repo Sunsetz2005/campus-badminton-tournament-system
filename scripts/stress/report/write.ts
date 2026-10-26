@@ -112,6 +112,36 @@ export function writeReport(runDir: string, run: Record<string, unknown>, verifi
     }
   }
 
+  const finalStatus = run.finalStatus as { expectedStuck?: { tournament: string; code: string; competition: string; sides: string; reason: string }[] } | null;
+  if (finalStatus?.expectedStuck?.length) {
+    push("## 预计卡住（§6 已知缺口，未计入未完成）", "");
+    const byReason = new Map<string, string[]>();
+    for (const item of finalStatus.expectedStuck) byReason.set(`${item.tournament}/${item.competition}：${item.reason}`, [...(byReason.get(`${item.tournament}/${item.competition}：${item.reason}`) ?? []), `${item.code}(${item.sides})`]);
+    for (const [reason, codes] of byReason) push(`- ${reason}——${codes.length} 场：${codes.slice(0, 20).join("、")}${codes.length > 20 ? " ……" : ""}`);
+    push("");
+  }
+  const ops = run.ops as { exclusions: { competition: string; group: string; reason: string; status: number; code: string | null }[] } | null | undefined;
+  if (ops?.exclusions.length) {
+    push("## 裁判长排除（§6.1）", "", "| 项目/小组 | 原因 | 回应 |", "|---|---|---|");
+    for (const item of ops.exclusions) push(`| ${item.competition}/${item.group} | ${item.reason} | ${item.status}${item.code ? ` ${item.code}` : ""} |`);
+    push("");
+  }
+  const auth = run.auth as { total: number; rateLimited: number; failed: number; groups: { key: string; count: number; rateLimited: number; limitedRequests: number; medianMs: number; maxMs: number; spanMs: number }[] } | undefined;
+  if (auth?.total) {
+    push("## 登录与改口令（§13.2 / §13.9）", "", `- 共 ${auth.total} 次，被限流（429）${auth.rateLimited} 次，最终失败 ${auth.failed} 次`, "", "| 类别 | 次数 | 遇到 429 的次数 | 429 合计 | 耗时中位 / 最长（秒） | 首末跨度（秒） |", "|---|---|---|---|---|---|");
+    for (const item of auth.groups) push(`| ${item.key} | ${item.count} | ${item.limitedRequests} | ${item.rateLimited} | ${(item.medianMs / 1000).toFixed(1)} / ${(item.maxMs / 1000).toFixed(1)} | ${(item.spanMs / 1000).toFixed(0)} |`);
+    push("");
+  }
+  const publicRoutes = metrics.routes.filter((item) => item.route.includes("/api/public/"));
+  if (publicRoutes.some((item) => Object.keys(item.statuses).some((key) => key.startsWith("429")))) {
+    push("## 公开接口限流（§13.2）", "", "| 接口 | 次数 | 状态分布 |", "|---|---|---|");
+    for (const item of publicRoutes) push(`| ${item.route} | ${item.count} | ${Object.entries(item.statuses).map(([key, count]) => `${key}×${count}`).join("、")} |`);
+    const writes429 = metrics.routes.filter((item) => item.route.includes("/api/matches/") && Object.keys(item.statuses).some((key) => key.startsWith("429")));
+    push("", `- 裁判写接口（/api/matches/*）出现 429：${writes429.length ? writes429.map((item) => item.route).join("、") : "没有"}`, "");
+  }
+  const sessions = run.sessions as { authSessionsPeak: number; scoringSessionsPeak: number } | undefined;
+  if (sessions) push(`- 登录会话峰值（本次运行的裁判账号）${sessions.authSessionsPeak}，活动控制会话峰值 ${sessions.scoringSessionsPeak}`, "");
+
   push("## 计划与实际偏差（分钟，只统计不判错）", "");
   for (const tournament of verification.tournaments) {
     if (!tournament.delays) continue;
@@ -123,7 +153,13 @@ export function writeReport(runDir: string, run: Record<string, unknown>, verifi
     key: string;
     refereeMode: string;
     delayScenarios?: { id: string; title: string; constructed: boolean; causes: string[]; watch: string[]; expected: string; note?: string; action?: Record<string, unknown>; observed?: Record<string, unknown> }[];
-    rotation?: { officials: { key: string; matches: number; officiatingMinutes: number; longestStreak: number; restSeconds: number[]; waitedSeconds: number }[]; matchesPerOfficial: { min: number; median: number; max: number } | null; unused: string[] };
+    rotation?: {
+      officials: { key: string; matches: number; officiatingMinutes: number; longestStreak: number; restSeconds: number[]; waitedSeconds: number }[];
+      matchesPerOfficial: { min: number; median: number; max: number } | null;
+      unused: string[];
+      handover?: { count: number; medianMs: number; maxMs: number; rateLimited: number } | null;
+      relogin?: { count: number; byKind: Record<string, number[]> } | null;
+    };
     refereeDraft?: { reassigned: unknown[]; overlaps: unknown[]; blockedPublish: { status: number; code: string | null; refereeOverlapIssues: number } | null; noReferee: number; suggested: Record<string, number> } | null;
   }[];
   for (const tournament of tournamentsRun.filter((item) => item.delayScenarios?.length)) {
@@ -155,6 +191,8 @@ export function writeReport(runDir: string, run: Record<string, unknown>, verifi
     push(`- 最长连续执裁 ${longest} 场；休息 ${rests.length} 次，时长中位 ${rests[Math.floor(rests.length / 2)] ?? "—"} 秒`);
     const waited = rotation.officials.reduce((sum, item) => sum + item.waitedSeconds, 0);
     if (tournament.refereeMode === "PER_MATCH") push(`- 场地等指派裁判到场累计 ${waited} 秒（系统的延误推算只沿裁判上一场的结束时间，不知道休息）`);
+    if (rotation.handover) push(`- 场地平板交接（退出上一人 + 本人登录）${rotation.handover.count} 次：中位 ${(rotation.handover.medianMs / 1000).toFixed(1)} 秒、最长 ${(rotation.handover.maxMs / 1000).toFixed(1)} 秒，交接时登录被限流 ${rotation.handover.rateLimited} 次`);
+    if (rotation.relogin) push(`- 个人设备重新登录 ${rotation.relogin.count} 次：${Object.entries(rotation.relogin.byKind).map(([kind, values]) => `${kind === "sign-out" ? "退出后登录" : "清空 Cookie 后登录"} ${values.length} 次${values.length ? `（最长 ${(Math.max(...values) / 1000).toFixed(1)} 秒）` : ""}`).join("，")}`);
     const draft = tournament.refereeDraft;
     if (draft) {
       push(`- 排班：自动建议给 ${Object.keys(draft.suggested).length} 人分配，未指派 ${draft.noReferee} 场；人工改派 ${draft.reassigned.length} 场；制造冲突 ${draft.overlaps.length} 处，含冲突草稿发布结果 ${draft.blockedPublish ? `${draft.blockedPublish.status} ${draft.blockedPublish.code ?? ""}（REFEREE_OVERLAP ${draft.blockedPublish.refereeOverlapIssues} 条）` : "—"}`);

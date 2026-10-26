@@ -39,13 +39,35 @@ export interface Official {
   log: OfficialAssignmentLog[];
   rests: number[];
   longestStreak: number;
+  /** 场地平板交接（逐场指派 + 场地固定设备）：退出上一个人、本人登录的耗时与被限流次数。 */
+  handovers: { matchCode: string; ms: number; rateLimited: number }[];
+  /** 个人设备的「退出后重新登录」「清空 Cookie 后重新登录」（§13.9 登录与会话）。 */
+  relogins: { kind: "sign-out" | "clear-cookies"; ms: number; rateLimited: number }[];
 }
 
 export function createOfficialRecord(key: string, name: string, login: string, userId: string, client: Client | null, rng: Rng): Official {
-  return { key, name, login, userId, client, busyWith: null, restUntil: 0, streak: 0, streakTarget: rng.int(1, 2), log: [], rests: [], longestStreak: 0 };
+  return { key, name, login, userId, client, busyWith: null, restUntil: 0, streak: 0, streakTarget: rng.int(1, 2), log: [], rests: [], longestStreak: 0, handovers: [], relogins: [] };
 }
 
-/** 逐场指派模式：开通具名裁判账号并各自登录（个人设备）。登录按 Better Auth 限流自动退避。 */
+/**
+ * 开赛前的集中登录（§13.9）：在现实 10 分钟（经压缩时钟）里随机错开、并发登录。登录按 Better Auth 限流自动退避，
+ * 被限流次数与全部登入耗时记进 authLog（§13.2 同出口时必然遇到 429）。
+ */
+async function loginBurst(context: RunContext, items: { client: Client; login: string; password: string }[]) {
+  const rng = context.rng.fork("officials:login");
+  const windowMs = context.clock.ms(10 * 60);
+  const startedAt = Date.now();
+  const results = await Promise.all(items.map(async (item) => {
+    await new Promise((resolve) => setTimeout(resolve, rng.int(0, windowMs)));
+    return item.client.signIn(item.login, item.password, { maxWaitMs: 10 * 60_000 });
+  }));
+  return { ms: Date.now() - startedAt, rateLimited: results.reduce((sum, item) => sum + item.rateLimited, 0) };
+}
+
+/**
+ * 逐场指派模式：开通具名裁判账号。个人设备模式下每人一台手机并集中登录；场地固定设备模式下不登录，
+ * 到场后在场地平板上登录（venue.ts 记交接耗时）。
+ */
 export async function provisionNamedReferees(context: RunContext, tournament: TournamentRuntime, count: number) {
   const rng = context.rng.fork(`officials:${tournament.plan.key}`);
   const officials: Official[] = [];
@@ -58,23 +80,34 @@ export async function provisionNamedReferees(context: RunContext, tournament: To
       route: "/api/admin/tournaments/[slug]/referees",
     });
     context.secrets[username] = created.password ?? "";
-    const client = new Client(context.origin, `phone-${tournament.plan.key}-${key}`, context.metrics, context.nextIp());
+    const client = tournament.deviceMode === "personal" ? new Client(context.origin, `phone-${tournament.plan.key}-${key}`, context.metrics, context.nextIp()) : null;
     officials.push(createOfficialRecord(key, name, username, created.userId, client, rng.fork(key)));
   }
-  let rateLimited = 0;
-  for (const official of officials) rateLimited += (await official.client!.signIn(official.login, context.secrets[official.login])).rateLimited;
-  context.log(`具名裁判 ${count} 人开通并登录（${Math.round((Date.now() - startedAt) / 1000)} 秒，登录被限流 ${rateLimited} 次）`);
+  if (tournament.deviceMode === "personal") {
+    const burst = await loginBurst(context, officials.map((official) => ({ client: official.client!, login: official.login, password: context.secrets[official.login] })));
+    context.log(`具名裁判 ${count} 人开通并集中登录（${Math.round((Date.now() - startedAt) / 1000)} 秒，登录被限流 ${burst.rateLimited} 次）`);
+  } else {
+    context.log(`具名裁判 ${count} 人开通（场地固定设备：到场后在场地平板上登录）`);
+  }
   tournament.officials = officials;
   return officials;
 }
 
-/** 共用账号模式：仿真裁判（只存在于仿真内部），都用共用账号的场地平板。 */
-export function simulatedOfficials(context: RunContext, tournament: TournamentRuntime, count: number, sharedUserId: string) {
+/**
+ * 共用账号模式：仿真裁判（只存在于仿真内部）。场地固定设备时都用场地平板；
+ * 个人设备时每人一台手机，同一共用账号集中登录，形成同一账号的多个登录会话。
+ */
+export async function simulatedOfficials(context: RunContext, tournament: TournamentRuntime, count: number, sharedUserId: string) {
   const rng = context.rng.fork(`officials:${tournament.plan.key}`);
   tournament.officials = Array.from({ length: count }, (_, index) => {
     const key = `R${String(index + 1).padStart(2, "0")}`;
-    return createOfficialRecord(key, `仿真裁判${key}`, context.refereeLogin.login, sharedUserId, null, rng.fork(key));
+    const client = tournament.deviceMode === "personal" ? new Client(context.origin, `phone-${tournament.plan.key}-${key}`, context.metrics, context.nextIp()) : null;
+    return createOfficialRecord(key, `仿真裁判${key}`, context.refereeLogin.login, sharedUserId, client, rng.fork(key));
   });
+  if (tournament.deviceMode === "personal") {
+    const burst = await loginBurst(context, tournament.officials.map((official) => ({ client: official.client!, login: context.refereeLogin.login, password: context.refereeLogin.password })));
+    context.log(`共用账号 ${count} 台个人设备集中登录（${Math.round(burst.ms / 1000)} 秒，登录被限流 ${burst.rateLimited} 次）`);
+  }
   return tournament.officials;
 }
 
@@ -122,11 +155,19 @@ export function rotationStats(officials: Official[]) {
       longestStreak: official.longestStreak,
       restSeconds: official.rests.map((value) => Math.round(value / 1000)),
       waitedSeconds: Math.round(official.log.reduce((sum, entry) => sum + entry.waitedMs, 0) / 1000),
+      handovers: official.handovers.length,
+      relogins: official.relogins.length,
     };
   });
   const counts = per.map((item) => item.matches).sort((a, b) => a - b);
+  const handovers = officials.flatMap((official) => official.handovers).map((item) => item.ms).sort((a, b) => a - b);
+  const relogins = officials.flatMap((official) => official.relogins);
   return {
     officials: per,
+    handover: handovers.length
+      ? { count: handovers.length, medianMs: handovers[Math.floor(handovers.length / 2)], maxMs: handovers[handovers.length - 1], rateLimited: officials.flatMap((official) => official.handovers).reduce((sum, item) => sum + item.rateLimited, 0) }
+      : null,
+    relogin: relogins.length ? { count: relogins.length, byKind: Object.fromEntries(["sign-out", "clear-cookies"].map((kind) => [kind, relogins.filter((item) => item.kind === kind).map((item) => item.ms)])) } : null,
     matchesPerOfficial: counts.length ? { min: counts[0], median: counts[Math.floor(counts.length / 2)], max: counts[counts.length - 1] } : null,
     unused: per.filter((item) => item.matches === 0).map((item) => item.key),
   };
