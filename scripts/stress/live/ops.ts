@@ -1171,21 +1171,43 @@ async function postponeProbe(env: OpsEnv) {
   const hardOf = (issues: typeof workspace.draftCheck.issues) => issues.filter((issue) => issue.severity === "HARD");
   const baselineHard = hardOf(workspace.draftCheck.issues);
   const patched: string[] = [];
-  for (const row of rows.sort((left, right) => new Date(right.published.start!).getTime() - new Date(left.published.start!).getTime())) {
-    const start = new Date(new Date(row.published.start!).getTime() + shift);
-    const result = await context.admin.call("PATCH", `/api/admin/tournaments/${tournament.slug}/schedule/slots/${row.code}`, {
-      courtCode: row.published.courtCode,
-      start: localDateTime(ceilMinute(start)).slice(0, 16),
-      durationMinutes: row.published.durationMinutes,
-      refereeUserId: row.published.refereeId ?? null,
-      estimated: row.published.estimated,
-    }, { route: "/api/admin/tournaments/[slug]/schedule/slots/[matchCode]" });
-    patched.push(`${row.code} ${brief(result)}`);
-  }
-  const after = await loadScheduleWorkspace(tournament.id, new Date());
+  const postpone = async (list: typeof rows) => {
+    for (const row of [...list].sort((left, right) => new Date(right.published.start!).getTime() - new Date(left.published.start!).getTime())) {
+      const start = new Date(new Date(row.published.start!).getTime() + shift);
+      const result = await context.admin.call("PATCH", `/api/admin/tournaments/${tournament.slug}/schedule/slots/${row.code}`, {
+        courtCode: row.published.courtCode,
+        start: localDateTime(ceilMinute(start)).slice(0, 16),
+        durationMinutes: row.published.durationMinutes,
+        refereeUserId: row.published.refereeId ?? null,
+        estimated: row.published.estimated,
+      }, { route: "/api/admin/tournaments/[slug]/schedule/slots/[matchCode]" });
+      patched.push(`${row.code} ${brief(result)}`);
+    }
+  };
+  await postpone(rows);
   const baselineKeys = new Set(baselineHard.map((issue) => issue.key));
-  const added = hardOf(after.draftCheck.issues).filter((issue) => !baselineKeys.has(issue.key));
   const codeOf = new Map(ready.map((row) => [row.id, row.code]));
+  // 管理员推迟一块场地时，排在别的场地的下一轮会落到上一轮结束之前（DEPENDENCY_ORDER）；
+  // 现实里会把这些下游比赛一并顺延，这里同样处理，最多三轮。
+  const movedCodes = new Set(rows.map((row) => row.code));
+  const cascaded: string[] = [];
+  let after = await loadScheduleWorkspace(tournament.id, new Date());
+  for (let round = 0; round < 3; round += 1) {
+    const dependents = new Set(
+      hardOf(after.draftCheck.issues)
+        .filter((issue) => issue.code === "DEPENDENCY_ORDER" && !baselineKeys.has(issue.key))
+        .flatMap((issue) => issue.matchIds.map((id) => codeOf.get(id)).filter((code): code is string => Boolean(code) && !movedCodes.has(code!))),
+    );
+    const next = after.publishedRows.filter((row) => dependents.has(row.code) && row.movable && row.published.start);
+    if (!next.length) break;
+    await postpone(next);
+    for (const row of next) {
+      movedCodes.add(row.code);
+      cascaded.push(row.code);
+    }
+    after = await loadScheduleWorkspace(tournament.id, new Date());
+  }
+  const added = hardOf(after.draftCheck.issues).filter((issue) => !baselineKeys.has(issue.key));
   const publish = await context.admin.call<{ version: number }>("POST", `/api/admin/tournaments/${tournament.slug}/schedule/publish`, { warningDigest: (after as unknown as { warningDigest: string }).warningDigest, note: "仿真：场地后半段整体推迟" }, {
     route: "/api/admin/tournaments/[slug]/schedule/publish",
   });
@@ -1200,10 +1222,11 @@ async function postponeProbe(env: OpsEnv) {
     id: "6.6-postpone",
     group: GROUP_66,
     title: "某场地后半段整体推迟并重新发布",
-    expected: "未开始的比赛可改草稿再发布新版本；已开始的比赛不动",
-    actual: `推迟 ${rows.length} 场（现实 20 分钟）：${patched.filter((item) => !item.endsWith(" 200")).slice(0, 3).join("、") || "草稿全部成功"}；发布 ${brief(publish)}${publish.ok ? ` 第 ${publish.json?.version} 版` : publish.message ? `（${publish.message.slice(0, 120)}）` : ""}；改动前已有硬冲突 ${baselineHard.length} 个（${[...new Set(baselineHard.map((issue) => issue.code))].join("、") || "无"}），推迟新增 ${added.length} 个（${[...new Set(added.map((issue) => issue.code))].join("、") || "无"}）；实际后移 ${moved} 场；已开始比赛计划时间被改 ${startedMoved.length} 场`,
-    ok: publish.ok ? moved === rows.length && startedMoved.length === 0 : baselineHard.length > 0 && added.length === 0 ? "设计未定义" : false,
-    detail: { patched, baselineHard: baselineHard.slice(0, 20).map((issue) => ({ code: issue.code, matches: issue.matchIds.map((id) => codeOf.get(id) ?? id) })), addedHard: added.slice(0, 20).map((issue) => ({ code: issue.code, matches: issue.matchIds.map((id) => codeOf.get(id) ?? id) })) },
+    expected: "未开始的比赛可改草稿再发布新版本（下游比赛一并顺延）；已开始的比赛不动",
+    actual: `推迟 ${rows.length} 场（现实 20 分钟）${cascaded.length ? `，另顺延下游 ${cascaded.length} 场（${cascaded.slice(0, 4).join("、")}${cascaded.length > 4 ? " 等" : ""}）` : ""}：${patched.filter((item) => !item.endsWith(" 200")).slice(0, 3).join("、") || "草稿全部成功"}；发布 ${brief(publish)}${publish.ok ? ` 第 ${publish.json?.version} 版` : publish.message ? `（${publish.message.slice(0, 120)}）` : ""}；改动前已有硬冲突 ${baselineHard.length} 个（${[...new Set(baselineHard.map((issue) => issue.code))].join("、") || "无"}），推迟新增 ${added.length} 个（${[...new Set(added.map((issue) => issue.code))].join("、") || "无"}）；实际后移 ${moved} 场；已开始比赛计划时间被改 ${startedMoved.length} 场`,
+    // 顺延下游后仍有推迟造成的新冲突（例如同一选手在别的场地）：系统拒绝是对的，但没有自动顺延的工具＝设计未定义。
+    ok: publish.ok ? moved === rows.length && startedMoved.length === 0 : added.length > 0 || baselineHard.length > 0 ? "设计未定义" : false,
+    detail: { patched, cascaded, baselineHard: baselineHard.slice(0, 20).map((issue) => ({ code: issue.code, matches: issue.matchIds.map((id) => codeOf.get(id) ?? id) })), addedHard: added.slice(0, 20).map((issue) => ({ code: issue.code, matches: issue.matchIds.map((id) => codeOf.get(id) ?? id) })) },
   });
 }
 

@@ -134,6 +134,20 @@ export class MatchDriver {
     return result;
   }
 
+  /**
+   * 等待（现实秒数）期间照常心跳：真实工作台的心跳是独立的 30 秒定时器，不依赖记分操作。
+   * 压缩档下等待很短，与原来一样；真实节奏下局间 120 秒的等待不会让租约（2 分钟）过期。
+   */
+  private async waitAlive(realSeconds: number) {
+    let remaining = this.clock.ms(realSeconds);
+    while (remaining > 0) {
+      const slice = Math.min(remaining, 10_000);
+      await sleep(slice);
+      remaining -= slice;
+      await this.heartbeatIfDue();
+    }
+  }
+
   async release() {
     if (!this.control) return null;
     const result = await this.client.call("DELETE", `/api/matches/${this.matchCode}/control`, {
@@ -321,7 +335,7 @@ export class MatchDriver {
           result = await this.send("CONFIRM_OPENING_SETUP", this.setupPayload(state.servingSide!));
           break;
         case "AWAITING_NEXT_GAME_SETUP":
-          await this.clock.wait(rule.betweenGamesSeconds);
+          await this.waitAlive(rule.betweenGamesSeconds);
           await this.heartbeatIfDue();
           result = await this.send("CONFIRM_NEXT_GAME_SETUP", this.setupPayload(state.nextGameServingSide ?? state.servingSide!));
           break;
@@ -330,10 +344,10 @@ export class MatchDriver {
           const obligation = state.pendingObligations[0];
           if (!obligation) return finish("failed", `${state.phase} 没有待办`);
           if (obligation.type === "INTERVAL") {
-            await this.clock.wait(rule.intervalSeconds);
+            await this.waitAlive(rule.intervalSeconds);
             result = await this.send("ACKNOWLEDGE_INTERVAL", { obligationId: obligation.id });
           } else if (obligation.type === "CHANGE_ENDS") {
-            await this.clock.wait(8);
+            await this.waitAlive(8);
             result = await this.send("CONFIRM_CHANGE_ENDS", { obligationId: obligation.id });
           } else {
             return finish("failed", `未处理的待办 ${obligation.type}`);
@@ -341,7 +355,7 @@ export class MatchDriver {
           break;
         }
         case "IN_PROGRESS": {
-          await this.clock.wait(this.rng.logNormal(this.clock.profile.rallyMedianSeconds, this.clock.profile.rallySigma));
+          await this.waitAlive(this.rng.logNormal(this.clock.profile.rallyMedianSeconds, this.clock.profile.rallySigma));
           if (options.onRally) await options.onRally();
           result = await this.send("RALLY_WON", { side: this.narrative.next(state, rule) });
           break;
