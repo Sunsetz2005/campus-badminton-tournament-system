@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { Prisma, type DrawFormat, type EntryType } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import {
   applyAdjustments,
   DRAW_ALGORITHM_VERSION,
@@ -155,7 +156,7 @@ export async function generateDrawDraft(actorUserId: string, slug: string, compe
   if (!parsed.success) throw new AppError(400, "invalid_input", parsed.error.issues[0]?.message ?? "抽签设置无效。");
   const settings = toSettings(parsed.data);
 
-  return prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     const competition = await loadCompetition(transaction, tournament.id, competitionCode);
     await lockCompetitionRow(transaction, competition.id);
     await assertNoForeignMatches(transaction, competition.id);
@@ -269,7 +270,7 @@ export async function adjustDrawDraft(actorUserId: string, slug: string, competi
   if (!reason) throw new AppError(400, "reason_required", "调签必须填写原因（200 字以内）。");
   const adjustment: DrawAdjustment = { ...parsed.data, reason };
 
-  return prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     const competition = await loadCompetition(transaction, tournament.id, competitionCode);
     await lockCompetitionRow(transaction, competition.id);
     const draft = await loadCurrentDraft(transaction, competition.id, drawId);
@@ -373,7 +374,7 @@ export async function publishDraw(actorUserId: string, slug: string, competition
     throw new AppError(400, "confirm_required", "发布前请确认：发布后将生成比赛并冻结报名单位。");
   }
 
-  return prisma.$transaction(
+  return runTransaction(
     async (transaction) => {
       // 与报名审核共用赛事行锁：发布期间不会有报名被通过或撤回。
       await lockTournamentRow(transaction, tournament.id);
@@ -632,7 +633,7 @@ export async function revokePublishedDraw(actorUserId: string, slug: string, com
   const reason = parsed.success ? normalizeReason(parsed.data.reason) : null;
   if (!reason) throw new AppError(400, "reason_required", "撤销发布必须写明原因（漏报、错报或明确的算法错误）。");
 
-  return prisma.$transaction(
+  return runTransaction(
     async (transaction) => {
       await lockTournamentRow(transaction, tournament.id);
       const competition = await loadCompetition(transaction, tournament.id, competitionCode);

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
@@ -16,6 +16,15 @@ import { assertTestDatabaseUrl } from "../../src/db/database-safety";
 const shotDir = path.join(process.cwd(), "artifacts", "phase4c-schedule", process.env.PHASE4C_SHOT_DIR ?? "local-run");
 const RUN = randomBytes(3).toString("hex");
 const slug = `e2e-4c-${RUN}`;
+// 排程只排「现在之后」的时间：比赛日取运行当天往后 10 天，不再写死日期（原先写死 2026-10-17，日期一过用例就失效）。
+const DAY = new Date(Date.now() + 10 * 86_400_000);
+const DAY_ISO = `${DAY.getFullYear()}-${String(DAY.getMonth() + 1).padStart(2, "0")}-${String(DAY.getDate()).padStart(2, "0")}`;
+const NEXT_ISO = (() => {
+  const next = new Date(DAY.getTime() + 86_400_000);
+  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(next.getDate()).padStart(2, "0")}`;
+})();
+const DAY_LABEL = `${DAY.getMonth() + 1} 月 ${DAY.getDate()} 日`;
+const DAY_SHORT = DAY_ISO.slice(5);
 const api = `/api/admin/tournaments/${slug}`;
 let studentSeq = 0;
 
@@ -48,6 +57,42 @@ async function noHorizontalOverflow(page: Page) {
 async function ok<T = unknown>(response: Awaited<ReturnType<APIRequestContext["post"]>>): Promise<T> {
   if (!response.ok()) throw new Error(`${response.url()} → ${response.status()} ${await response.text()}`);
   return (await response.json()) as T;
+}
+
+interface ControlGrant {
+  sessionId: string;
+  takeoverGeneration: number;
+  controlToken: string;
+}
+
+type PlayState = { format: string; players: { A: string[]; B: string[] } };
+
+/** 通过真实计分接口开局并暂停一场比赛（主裁判本人操作）。 */
+async function startAndPause(referee: APIRequestContext, matchCode: string) {
+  const control = await ok<ControlGrant>(await referee.post(`/api/matches/${matchCode}/control`, { data: { deviceSessionId: randomUUID() } }));
+  let seq = 0;
+  const send = (version: number, type: string, payload: unknown) =>
+    referee.post(`/api/matches/${matchCode}/commands`, {
+      data: {
+        commandId: randomUUID(),
+        occurredAt: new Date(Date.now() + ++seq * 1000).toISOString(),
+        expectedVersion: version,
+        scoringSessionId: control.sessionId,
+        takeoverGeneration: control.takeoverGeneration,
+        type,
+        payload,
+      },
+      headers: { authorization: `Bearer ${control.controlToken}` },
+    }).then((response) => ok<{ version: number; state: PlayState }>(response));
+  let result = await send(0, "RECORD_COIN_TOSS", { valid: true, winnerSide: "A", winnerChoice: { kind: "SERVICE", decision: "SERVE" }, loserChoice: { kind: "END", end: "END_2" } });
+  const { players, format } = result.state;
+  result = await send(result.version, "CONFIRM_OPENING_SETUP", {
+    serverPlayerId: players.A[0],
+    receiverPlayerId: players.B[0],
+    logicalCourts: format === "DOUBLES" ? { A: { R: players.A[0], L: players.A[1] }, B: { R: players.B[0], L: players.B[1] } } : null,
+  });
+  result = await send(result.version, "RALLY_WON", { side: "A" });
+  await send(result.version, "PAUSE_MATCH", { reason: "场地漏水" });
 }
 
 function rosterRows(short: string) {
@@ -105,8 +150,8 @@ test.describe.serial("阶段 4-C 赛程与裁判排班：从对阵表到赛程�
         data: {
           slug,
           name: "阳光体育羽毛球联赛 赛程端到端",
-          startDate: "2026-10-17",
-          endDate: "2026-10-18",
+          startDate: DAY_ISO,
+          endDate: NEXT_ISO,
           timezone: "Asia/Shanghai",
           namePolicy: "DISPLAY_NAMES",
           rulePreset: "traditional-21",
@@ -148,7 +193,7 @@ test.describe.serial("阶段 4-C 赛程与裁判排班：从对阵表到赛程�
     await page.getByRole("button", { name: "追加场地" }).click();
     await expect(page.getByTestId("court-list").getByRole("listitem")).toHaveCount(2);
     const days = page.getByTestId("schedule-days-form");
-    await days.getByLabel("比赛日").first().fill("2026-10-17");
+    await days.getByLabel("比赛日").first().fill(DAY_ISO);
     await days.getByLabel("开始").first().fill("09:00");
     // 故意先只给一小时：自动排程应说明需要排到几点，并能一键延长。
     await days.getByLabel("结束").first().fill("10:00");
@@ -159,7 +204,7 @@ test.describe.serial("阶段 4-C 赛程与裁判排班：从对阵表到赛程�
     await page.goto(`/management/${slug}/schedule`);
     await page.getByTestId("suggest-form").getByRole("button", { name: "一键排出赛程" }).click();
     const shortfall = page.getByTestId("schedule-shortfall");
-    await expect(shortfall).toContainText("10 月 17 日 当前到 10:00 结束");
+    await expect(shortfall).toContainText(`${DAY_LABEL} 当前到 10:00 结束`);
     const extend = shortfall.getByRole("button", { name: /^延长到 \d{2}:\d{2} 并重新排程$/ });
     const requiredEnd = (await extend.textContent())!.match(/\d{2}:\d{2}/)![0];
     expect(requiredEnd > "10:00").toBe(true);
@@ -227,7 +272,9 @@ test.describe.serial("阶段 4-C 赛程与裁判排班：从对阵表到赛程�
     // 按时间查看时卡片写出场地名（按场地查看时场地名在分组标题里）。
     await page.goto(`/officiating/tournament/${slug}?view=time`);
     const card = page.getByTestId("assignment-card").filter({ hasText: assignment.match.code });
-    await expect(card).toContainText("10-17");
+    // 按时间查看时日期写在分组标题里，卡片只写时刻。
+    await expect(page.locator("main")).toContainText(DAY_SHORT);
+    await expect(card).toContainText("09:00");
     await expect(card).toContainText("场地");
     await noHorizontalOverflow(page);
     await shot(page, "04-my-assignments-mobile");
@@ -247,10 +294,42 @@ test.describe.serial("阶段 4-C 赛程与裁判排班：从对阵表到赛程�
     await shot(page, "06-chief-board");
 
     await ok(await page.request.post(`${api}/publish`));
-    await page.goto(`/public/${slug}/schedule?date=2026-10-17`);
+    await page.goto(`/public/${slug}/schedule?date=${DAY_ISO}`);
     await expect(page.getByText("数学科学学院").first()).toBeVisible();
     await expect(page.getByText("预计").first()).toBeVisible();
     await shot(page, "07-public-schedule");
+    await context.close();
+  });
+
+  test("赛务口径 S-5：比赛暂停后，裁判长在现场看板把它转到另一块空场地，比分不变", async ({ browser }) => {
+    const referee = await loggedIn(browser, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
+    const refereeUser = await prisma.user.findUniqueOrThrow({ where: { email: process.env.DEMO_REFEREE_EMAIL! } });
+    const assignment = await prisma.officialAssignment.findFirstOrThrow({
+      where: { userId: refereeUser.id, active: true, match: { fixture: { competition: { tournament: { slug } } } } },
+      include: { match: { include: { court: true } } },
+      orderBy: { match: { scheduledAt: "asc" } },
+    });
+    const code = assignment.match.code;
+    await startAndPause(referee.page.request, code);
+    await referee.context.close();
+    const before = await prisma.match.findUniqueOrThrow({ where: { code }, select: { version: true } });
+
+    const { context, page } = await loggedIn(browser, process.env.DEMO_ADMIN_EMAIL!, process.env.DEMO_ADMIN_PASSWORD!);
+    await page.goto(`/officiating/board/${slug}`);
+    const row = page.getByTestId("schedule-row").filter({ has: page.locator(`[data-testid="transfer-court-${code}"]`) });
+    await row.getByText("转到其他场地").click();
+    const form = page.getByTestId(`transfer-court-${code}`);
+    const target = (await form.getByLabel("新场地").locator("option").nth(1).textContent())!.trim();
+    await form.getByLabel("新场地").selectOption({ label: target });
+    await form.getByLabel("转场原因").fill("场地漏水");
+    await form.getByRole("button", { name: "确认转场" }).click();
+    await expect(form.getByRole("status")).toContainText("已转场");
+    await shot(page, "08-court-transfer");
+
+    const after = await prisma.match.findUniqueOrThrow({ where: { code }, include: { court: true } });
+    expect(after.court?.name).toBe(target);
+    expect(after.court?.id).not.toBe(assignment.match.courtId);
+    expect(after).toMatchObject({ lifecycleStatus: "SUSPENDED", version: before.version });
     await context.close();
   });
 });

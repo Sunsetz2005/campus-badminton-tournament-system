@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { auth } from "@/server/auth/auth";
 import { requireActiveUser } from "@/server/auth/authorization";
 import { getSessionFromHeaders } from "@/server/auth/session";
@@ -33,7 +33,7 @@ export async function changeOwnPassword(requestHeaders: Headers, rawInput: unkno
     }
     throw new AppError(502, "password_change_failed", "暂时无法修改口令，请稍后重试。");
   }
-  await prisma.$transaction(async (transaction) => {
+  await runTransaction(async (transaction) => {
     await transaction.user.update({ where: { id: user.id }, data: { mustChangePassword: false } });
     await transaction.auditLog.create({
       data: { actorUserId: user.id, action: "PASSWORD_CHANGED", targetType: "User", targetId: user.id, outcome: "SUCCESS" },

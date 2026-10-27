@@ -169,6 +169,7 @@ export type MatchCommand =
       { type: SpecialOutcome["type"]; winnerSide?: Side; reason: string }
     >
   | CommandBase<"INVALIDATE_SPECIAL_OUTCOME", { reason: string }>
+  | CommandBase<"VOID_MATCH_SCORING", { reason: string }>
   | CommandBase<"SUBMIT_RESULT", { reason: string }>
   | CommandBase<"CONFIRM_RESULT", { reason: string }>
   | CommandBase<"REOPEN_RESULT", { reason: string }>;
@@ -184,7 +185,7 @@ export interface MatchEvent {
   reversible: boolean;
   stateBefore: MatchState;
   stateAfter: MatchState;
-  metadata?: { undoneCommandId?: string; invalidatedCommandId?: string };
+  metadata?: { undoneCommandId?: string; invalidatedCommandId?: string; voidedFromVersion?: number };
 }
 
 export interface MatchAggregate {
@@ -980,6 +981,7 @@ function nextStateForCommand(state: MatchState, command: MatchCommand) {
       return next;
     case "INVALIDATE_SPECIAL_OUTCOME":
     case "UNDO_LAST_REVERSIBLE":
+    case "VOID_MATCH_SCORING":
       throw new RuleViolation("internal_history_path", "该命令必须通过聚合历史处理。");
     default:
       throw new RuleViolation("unknown_command", "未知比赛命令。");
@@ -1085,6 +1087,25 @@ function applySpecialOutcomeInvalidation(
   });
 }
 
+/** 第一局打完之前、结果提交之前可以作废的相位。 */
+const VOIDABLE_PHASES = new Set<MatchPhase>(["AWAITING_OPENING_SETUP", "IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"]);
+
+/**
+ * 赛务口径 S-7（2026-10-27）：开错比赛（错场）时，裁判长在第一局打完之前作废本场计分，比赛回到抛币前。
+ * 这是一条新命令：之前的事件全部保留（重放时照常逐条比对），作废本身也是一条带原因的事件；
+ * 状态恢复为聚合的初始状态，只有版本号继续递增。第一局打完后只能走结果更正。
+ */
+function applyScoringVoid(aggregate: MatchAggregate, command: Extract<MatchCommand, { type: "VOID_MATCH_SCORING" }>) {
+  requireReason(command.payload.reason);
+  if (aggregate.state.completedGames.length > 0) {
+    throw new RuleViolation("void_after_first_game", "第一局已经打完，不能作废本场计分；请走结果更正。");
+  }
+  if (!VOIDABLE_PHASES.has(aggregate.state.phase)) {
+    throw new RuleViolation("void_not_allowed", "当前比赛状态不能作废计分。");
+  }
+  return createEvent(aggregate, command, clone(aggregate.initialState), { voidedFromVersion: aggregate.state.version });
+}
+
 export function createMatchAggregate(input: CreateMatchInput): MatchAggregate {
   if (!input.matchId.trim()) throw new RuleViolation("match_id_required", "比赛 ID 不能为空。");
   if (input.format !== "SINGLES" && input.format !== "DOUBLES") {
@@ -1149,7 +1170,9 @@ export function applyCommand(aggregate: MatchAggregate, command: MatchCommand): 
         ? applyUndo(aggregate, command)
         : command.type === "INVALIDATE_SPECIAL_OUTCOME"
           ? applySpecialOutcomeInvalidation(aggregate, command)
-          : createEvent(aggregate, command, nextStateForCommand(aggregate.state, command));
+          : command.type === "VOID_MATCH_SCORING"
+            ? applyScoringVoid(aggregate, command)
+            : createEvent(aggregate, command, nextStateForCommand(aggregate.state, command));
     return { status: "accepted", aggregate: applied.aggregate, events: [applied.event] };
   } catch (error) {
     const violation = error instanceof RuleViolation ? error : new RuleViolation("invalid_command", "命令无法应用。");

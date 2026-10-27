@@ -239,6 +239,34 @@ describe("赛事基本信息", () => {
 });
 
 describe("报名与审核", () => {
+  it("赛务口径 E-1：同一学号在一个赛事里只能代表一个单位，换单位报名在审核时被拒绝；同单位兼项照常通过", async () => {
+    const { slug, ms, md } = await newTournament("unit");
+    const first = await createManualRegistration(adminId, slug, {
+      competitionId: ms,
+      members: [{ displayName: "王五", studentId: "2026101", teamName: "数学学院" }],
+    });
+    await approve(slug, first.referenceCode);
+    const other = await createManualRegistration(adminId, slug, {
+      competitionId: md,
+      members: [
+        { displayName: "王五", studentId: "2026101", teamName: "物理学院" },
+        { displayName: "赵六", studentId: "2026102", teamName: "物理学院" },
+      ],
+    });
+    await expect(approve(slug, other.referenceCode)).rejects.toMatchObject({ status: 409, code: "unit_mismatch", message: expect.stringContaining("数学学院") });
+    const pending = await registration(other.referenceCode);
+    expect(pending).toMatchObject({ status: "PENDING", entryId: null });
+    await reviewRegistration(adminId, slug, pending.id, { action: "REJECT", expectedVersion: pending.version, reason: "单位与已报项目不一致" });
+    const same = await createManualRegistration(adminId, slug, {
+      competitionId: md,
+      members: [
+        { displayName: "王五", studentId: "2026101", teamName: " 数学学院 " },
+        { displayName: "孙七", studentId: "2026103", teamName: "数学学院" },
+      ],
+    });
+    await expect(approve(slug, same.referenceCode)).resolves.toMatchObject({ status: "APPROVED" });
+  });
+
   it("手工录入只生成待审核报名；审核通过才生成 Entry，且单打恰好 1 人", async () => {
     const { slug, ms } = await newTournament("manual");
     const created = await createManualRegistration(adminId, slug, {

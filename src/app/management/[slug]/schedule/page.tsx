@@ -183,7 +183,8 @@ export default async function SchedulePage({
               <PublishPanel
                 digest={workspace.warningDigest}
                 draftChangeCount={workspace.draftChangeCount}
-                hardCount={draftCheck.hardCount}
+                hardCount={workspace.blockingHardCount}
+                unrelatedHardCount={workspace.unrelatedHardCount}
                 slug={tournament.slug}
                 warningCount={draftCheck.warningCount}
               />

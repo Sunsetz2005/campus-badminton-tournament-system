@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { Prisma, type RefereeMode } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { requireManagedTournament } from "@/server/auth/authorization";
 import { generateInitialPassword } from "@/server/auth/initial-password";
 import { AppError } from "@/server/services/errors";
@@ -83,7 +84,7 @@ export async function updateRefereeMode(actorUserId: string, slug: string, rawIn
   const parsed = modeSchema.safeParse(rawInput);
   if (!parsed.success) throw new AppError(400, "invalid_input", "执裁方式无效。");
   const { refereeMode } = parsed.data;
-  await prisma.$transaction(async (transaction) => {
+  await runTransaction(async (transaction) => {
     const current = await transaction.tournament.findUniqueOrThrow({ where: { id: tournament.id }, select: { refereeMode: true } });
     if (current.refereeMode === refereeMode) return;
     await transaction.tournament.update({ where: { id: tournament.id }, data: { refereeMode } });
@@ -134,7 +135,7 @@ export async function createRefereeAccount(actorUserId: string, slug: string, ra
   // 邮箱是账号表的必填唯一键；裁判账号只用用户名登录，这里放一个不可投递的内部地址。
   const email = `referee-${randomUUID()}@accounts.invalid`;
   try {
-    const user = await prisma.$transaction(async (transaction) => {
+    const user = await runTransaction(async (transaction) => {
       const created = await transaction.user.create({
         data: {
           email,
@@ -199,7 +200,7 @@ export async function resetRefereePassword(actorUserId: string, slug: string, us
   if (!parsed.success) throw new AppError(400, "invalid_input", parsed.error.issues[0]?.message ?? "口令无效。");
   const password = parsed.data.password ?? generateInitialPassword();
   const passwordHash = await hashPassword(password);
-  await prisma.$transaction(async (transaction) => {
+  await runTransaction(async (transaction) => {
     const updated = await transaction.account.updateMany({ where: { userId: user.id, providerId: "credential" }, data: { password: passwordHash } });
     if (updated.count !== 1) throw new AppError(409, "credential_missing", "该账号没有口令登录方式。");
     await transaction.session.deleteMany({ where: { userId: user.id } });
@@ -213,7 +214,7 @@ export async function disableRefereeAccount(actorUserId: string, slug: string, u
   const { tournament } = await requireManagedTournament(actorUserId, slug, ["ADMIN"]);
   const user = await loadManagedReferee(tournament.id, userId);
   const now = new Date();
-  await prisma.$transaction(async (transaction) => {
+  await runTransaction(async (transaction) => {
     await transaction.roleAssignment.deleteMany({ where: { userId: user.id, tournamentId: tournament.id, role: "REFEREE" } });
     await transaction.user.update({ where: { id: user.id }, data: { status: "DISABLED" } });
     await transaction.session.deleteMany({ where: { userId: user.id } });

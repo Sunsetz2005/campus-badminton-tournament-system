@@ -31,6 +31,7 @@ export function LineupEditor({
   rubbers,
   roster,
   initial,
+  initialConceded = [],
   expectedVersion,
   submitLabel,
   limits = NO_APPEARANCE_LIMITS,
@@ -42,6 +43,8 @@ export function LineupEditor({
   rubbers: LineupEditorRubber[];
   roster: LineupRosterMember[];
   initial: Record<number, string[]>;
+  /** 上次提交时声明认输的小场（赛务口径 W-6）。 */
+  initialConceded?: number[];
   expectedVersion: number | null;
   submitLabel: string;
   /** 本项目按性别的兼项上限（null 表示不设上限）。 */
@@ -55,6 +58,7 @@ export function LineupEditor({
       rubbers.map((rubber) => [rubber.order, Array.from({ length: rubberSize(rubber.kind) }, (_, index) => initial[rubber.order]?.[index] ?? "")]),
     ),
   );
+  const [conceded, setConceded] = useState<Set<number>>(() => new Set(initialConceded));
   const [pending, setPending] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [saved, setSaved] = useState<string | null>(null);
@@ -63,7 +67,13 @@ export function LineupEditor({
     setPicks({ ...picks, [order]: picks[order].map((current, index) => (index === slot ? value : current)) });
 
   const nameOf = new Map(roster.map((member) => [member.participantId, member.label]));
-  const current = rubbers.map((rubber) => ({ order: rubber.order, kind: rubber.kind, participantIds: picks[rubber.order].filter(Boolean) }));
+  const current = rubbers.map((rubber) => ({ order: rubber.order, kind: rubber.kind, participantIds: conceded.has(rubber.order) ? [] : picks[rubber.order].filter(Boolean) }));
+  const toggleConceded = (order: number, value: boolean) => {
+    const next = new Set(conceded);
+    if (value) next.add(order);
+    else next.delete(order);
+    setConceded(next);
+  };
   const counts = appearanceCounts(current);
   const multi = [...counts.entries()].filter(([, count]) => count > 1);
   // 与服务端同一份纯规则：提交前先提示兼项超限与同时进行的小场重复出场，最终以服务端为准。
@@ -90,10 +100,14 @@ export function LineupEditor({
     setPending(true);
     setErrors([]);
     setSaved(null);
-    const result = await sendJson<{ side: "A" | "B"; version: number; revealed: boolean }>(endpoint, "POST", {
+    const result = await sendJson<{ side: "A" | "B"; version: number; revealed: boolean; scheduleWarnings?: string[] }>(endpoint, "POST", {
       side,
       expectedVersion,
-      rubbers: rubbers.map((rubber) => ({ order: rubber.order, participantIds: picks[rubber.order].filter(Boolean) })),
+      rubbers: rubbers.map((rubber) =>
+        conceded.has(rubber.order)
+          ? { order: rubber.order, participantIds: [], conceded: true }
+          : { order: rubber.order, participantIds: picks[rubber.order].filter(Boolean) },
+      ),
     });
     setPending(false);
     if (!result.ok) {
@@ -101,10 +115,12 @@ export function LineupEditor({
       setErrors(detail?.length ? detail : [result.error.message]);
       return;
     }
+    const warnings = result.data.scheduleWarnings ?? [];
     setSaved(
-      result.data.revealed
+      (result.data.revealed
         ? "双方出场名单已交齐，已同时公开并锁定。"
-        : `出场名单已提交（第 ${result.data.version} 版）。对方提交前，双方互相看不到名单；交齐前仍可修改。`,
+        : `出场名单已提交（第 ${result.data.version} 版）。对方提交前，双方互相看不到名单；交齐前仍可修改。`) +
+        (warnings.length ? ` 注意：${warnings.join(" ")}` : ""),
     );
     router.refresh();
   }
@@ -123,6 +139,7 @@ export function LineupEditor({
                     <span>{slotLabel(rubber.kind, slot)}</span>
                     <select
                       aria-label={`第 ${rubber.order} 场${RUBBER_LABEL[rubber.kind]}${slotLabel(rubber.kind, slot)}`}
+                      disabled={conceded.has(rubber.order)}
                       onChange={(event) => setPick(rubber.order, slot, event.target.value)}
                       value={value}
                     >
@@ -142,6 +159,14 @@ export function LineupEditor({
                 );
               })}
             </div>
+            <label className={styles.checkRow}>
+              <input
+                checked={conceded.has(rubber.order)}
+                onChange={(event) => toggleConceded(rubber.order, event.target.checked)}
+                type="checkbox"
+              />
+              <span>本方人数不足，认输这个小场（按认输方不再得分计入，对抗照常结算）</span>
+            </label>
           </li>
         ))}
       </ol>

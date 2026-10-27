@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { prisma } from "@/db/client";
 import { assertTestDatabaseUrl } from "@/db/database-safety";
@@ -20,6 +20,7 @@ import {
   loadGroupStandings,
   loadManagerTies,
   loadRosterForLineup,
+  loadTieByCode,
   projectTie,
   submitLineup,
 } from "@/server/services/team-tie-service";
@@ -34,6 +35,9 @@ let adminId = "";
 let refereeId = "";
 let studentSeq = 0;
 let commandSeq = 0;
+
+// 小场按实际记分打完（每场约 50 条命令），整组对抗的用例较慢。
+vi.setConfig({ testTimeout: 180_000 });
 
 function nextStudentId() {
   studentSeq += 1;
@@ -161,8 +165,60 @@ async function accepted(promise: Promise<unknown>) {
   return result;
 }
 
-/** 以弃权结果走完一个小场：主裁判记录并提交，裁判长接管后复核锁定。 */
+type Accepted = { status: string; version: number; state: { phase: string; format: string; players: { A: string[]; B: string[] }; pendingObligations: { id: string; type: string }[] } };
+
+/** 0:0 开局：发球方的发球员与接发球员都站右区。 */
+function setupPayload(state: Accepted["state"], servingSide: "A" | "B") {
+  const receiving = servingSide === "A" ? "B" : "A";
+  return {
+    serverPlayerId: state.players[servingSide][0],
+    receiverPlayerId: state.players[receiving][0],
+    logicalCourts: state.format === "DOUBLES"
+      ? { A: { R: state.players.A[0], L: state.players.A[1] }, B: { R: state.players.B[0], L: state.players.B[1] } }
+      : null,
+  } as MatchCommand["payload"];
+}
+
+/**
+ * 正常打完一个小场（胜方连得每一分）：主裁判记分并提交，裁判长接管后复核锁定。
+ * 不用弃权快速收尾：小场弃权会让负方队员本场对抗的后续小场按认输计（赛务口径 W-3，GCR 13.6.2）。
+ */
 async function finishRubber(matchId: string, winnerSide: "A" | "B") {
+  const match = await prisma.match.findUniqueOrThrow({ where: { id: matchId }, select: { code: true } });
+  await prisma.officialAssignment.upsert({
+    where: { matchId_userId_role: { matchId, userId: refereeId, role: "MAIN_REFEREE" } },
+    create: { matchId, userId: refereeId },
+    update: {},
+  });
+  const control = await acquireScoringSession(refereeId, match.code, randomUUID());
+  const send = async (version: number, type: MatchCommand["type"], payload: MatchCommand["payload"]) =>
+    (await accepted(submitScoringCommand(refereeId, match.code, command(control, version, type, payload), control.controlToken))) as Accepted;
+  let result = await send(0, "RECORD_COIN_TOSS", {
+    valid: true,
+    winnerSide: "A",
+    winnerChoice: { kind: "SERVICE", decision: "SERVE" },
+    loserChoice: { kind: "END", end: "END_2" },
+  } as MatchCommand["payload"]);
+  result = await send(result.version, "CONFIRM_OPENING_SETUP", setupPayload(result.state, "A"));
+  while (result.state.phase !== "MATCH_COMPLETE_PENDING_SUBMISSION") {
+    const obligation = result.state.pendingObligations[0];
+    if (obligation) {
+      result = await send(result.version, obligation.type === "INTERVAL" ? "ACKNOWLEDGE_INTERVAL" : "CONFIRM_CHANGE_ENDS", { obligationId: obligation.id } as MatchCommand["payload"]);
+    } else if (result.state.phase === "AWAITING_NEXT_GAME_SETUP") {
+      // 上一局的胜方在下一局先发球。
+      result = await send(result.version, "CONFIRM_NEXT_GAME_SETUP", setupPayload(result.state, winnerSide));
+    } else {
+      result = await send(result.version, "RALLY_WON", { side: winnerSide } as MatchCommand["payload"]);
+    }
+  }
+  result = await send(result.version, "SUBMIT_RESULT", { reason: "提交本场结果" } as MatchCommand["payload"]);
+  const chief = await takeoverScoringSession(adminId, match.code, randomUUID(), "复核结果");
+  const confirmed = await accepted(submitScoringCommand(adminId, match.code, command(chief, result.version, "CONFIRM_RESULT", { reason: "复核通过" }), chief.controlToken));
+  return { code: match.code, chief, version: confirmed.version };
+}
+
+/** 小场弃权（WO）：负方队员本场对抗的后续小场随之按认输计（W-3）。 */
+async function walkoverRubber(matchId: string, winnerSide: "A" | "B") {
   const match = await prisma.match.findUniqueOrThrow({ where: { id: matchId }, select: { code: true } });
   await prisma.officialAssignment.upsert({
     where: { matchId_userId_role: { matchId, userId: refereeId, role: "MAIN_REFEREE" } },
@@ -175,8 +231,7 @@ async function finishRubber(matchId: string, winnerSide: "A" | "B") {
   );
   result = await accepted(submitScoringCommand(refereeId, match.code, command(control, result.version, "SUBMIT_RESULT", { reason: "提交弃权结果" }), control.controlToken));
   const chief = await takeoverScoringSession(adminId, match.code, randomUUID(), "复核结果");
-  result = await accepted(submitScoringCommand(adminId, match.code, command(chief, result.version, "CONFIRM_RESULT", { reason: "复核通过" }), chief.controlToken));
-  return { code: match.code, chief, version: result.version };
+  await accepted(submitScoringCommand(adminId, match.code, command(chief, result.version, "CONFIRM_RESULT", { reason: "复核通过" }), chief.controlToken));
 }
 
 async function reopenRubber(code: string, chief: { sessionId: string; takeoverGeneration: number; controlToken: string }, version: number) {
@@ -268,13 +323,13 @@ describe("出场名单盲交", () => {
     });
     // 负责人不能冒充对方：即使传了 side 也按绑定判定本方。
     const first = await submitLineup({ userId: managerA, mode: "TEAM_MANAGER" }, slug, fixture.id, { side: "B", rubbers: lineupA });
-    expect(first).toEqual({ side: "A", version: 1, revealed: false, late: false });
+    expect(first).toEqual({ side: "A", version: 1, revealed: false, late: false, scheduleWarnings: [] });
     await expect(submitLineup({ userId: managerA, mode: "TEAM_MANAGER" }, slug, fixture.id, { rubbers: lineupA })).rejects.toMatchObject({
       code: "version_conflict",
     });
     await expect(
       submitLineup({ userId: managerA, mode: "TEAM_MANAGER" }, slug, fixture.id, { expectedVersion: 1, rubbers: lineupA }),
-    ).resolves.toEqual({ side: "A", version: 2, revealed: false, late: false });
+    ).resolves.toEqual({ side: "A", version: 2, revealed: false, late: false, scheduleWarnings: [] });
 
     const [row] = (await loadCompetitionTies(prisma, competitionId)).filter((item) => item.id === fixture.id);
     const forB = projectTie(row, { kind: "TEAM_MANAGER", side: "B" });
@@ -297,6 +352,7 @@ describe("出场名单盲交", () => {
       version: 1,
       revealed: true,
       late: false,
+      scheduleWarnings: [],
     });
     await expect(
       submitLineup({ userId: managerA, mode: "TEAM_MANAGER" }, slug, fixture.id, { expectedVersion: 2, rubbers: lineupA }),
@@ -357,6 +413,67 @@ describe("出场名单盲交", () => {
 });
 
 describe("对抗胜负与晋级回填", () => {
+  it("赛务口径 W-7：团体报名单位整体退出，未开始的对抗全部按认输计、对手晋级；已退出的队伍不能再交名单", async () => {
+    const { withdrawTeamEntry } = await import("@/server/services/withdrawal-service");
+    const { slug, competitionId } = await publishedTournament("team-withdraw", 4, { format: "KNOCKOUT", thirdPlaceMatch: true });
+    const semi = await fixtureByCode(competitionId, "SF1");
+    const leaving = semi.sideAEntryId as string;
+    await expect(withdrawTeamEntry(adminId, slug, leaving, { reason: "" })).rejects.toMatchObject({ code: "reason_required" });
+    const outcome = await withdrawTeamEntry(adminId, slug, leaving, { reason: "全队因故不能参赛" });
+    expect(outcome.concededFixtures).toEqual(["SF1"]);
+    const decided = await fixtureByCode(competitionId, "SF1");
+    expect(decided.winnerEntryId).toBe(semi.sideBEntryId);
+    expect(decided.matches.every((match) => match.notPlayedAt !== null)).toBe(true);
+    expect((await fixtureByCode(competitionId, "F")).sideAEntryId).toBe(semi.sideBEntryId);
+    // 三四名赛：退出的队伍不再作为 SF1 负者进入，该侧记为空位；SF2 打完后其负者以 WO 获得第三名。
+    expect(await fixtureByCode(competitionId, "3P")).toMatchObject({ sideAEntryId: null, sideAVacant: true, vacancyDecided: false });
+    const other = await fixtureByCode(competitionId, "SF2");
+    await adminLineups(slug, other.id);
+    // 小场弃权会让负方队员的后续小场按认输计（W-3），所以逐场检查，打到对抗决出为止。
+    for (const match of other.matches) {
+      const current = await prisma.fixture.findUniqueOrThrow({ where: { id: other.id }, select: { winnerEntryId: true } });
+      if (current.winnerEntryId) break;
+      const row = await prisma.match.findUniqueOrThrow({ where: { id: match.id }, select: { notPlayedAt: true } });
+      if (!row.notPlayedAt) await finishRubber(match.id, "A");
+    }
+    expect(await fixtureByCode(competitionId, "3P")).toMatchObject({ sideBEntryId: other.sideBEntryId, vacancyDecided: true, winnerEntryId: other.sideBEntryId });
+    // 已退出的队伍不能再交名单。
+    await expect(
+      submitLineup({ userId: adminId, mode: "ADMIN" }, slug, semi.id, { side: "A", rubbers: [] }),
+    ).rejects.toMatchObject({ code: expect.stringMatching(/entry_withdrawn|lineup_locked/) });
+  });
+
+  it("赛务口径 W-6 / W-3：名单认输的小场揭晓后按认输计入并记为未进行；小场弃权一方的队员本场对抗后续小场不再上场，按认输计", async () => {
+    const { slug, competitionId } = await publishedTournament("concede", 4, { format: "KNOCKOUT", thirdPlaceMatch: true });
+    const semi = await fixtureByCode(competitionId, "SF1");
+    const lineupA = await autoLineup(semi.sideAEntryId as string, semi.id);
+    const lineupB = await autoLineup(semi.sideBEntryId as string, semi.id);
+    // A 方人数不足，认输第 2 场。
+    const conceding = lineupA.map((item) => (item.order === 2 ? { order: 2, participantIds: [], conceded: true } : item));
+    await submitLineup({ userId: adminId, mode: "ADMIN" }, slug, semi.id, { side: "A", rubbers: conceding });
+    // 揭晓前对方看不到，也不生效。
+    expect((await fixtureByCode(competitionId, "SF1")).matches[1].notPlayedAt).toBeNull();
+    await submitLineup({ userId: adminId, mode: "ADMIN" }, slug, semi.id, { side: "B", rubbers: lineupB });
+
+    let tie = await loadTieByCode(prisma, competitionId, "SF1");
+    let view = projectTie(tie!, { kind: "OFFICIAL" });
+    expect(view.rubbers[1]).toMatchObject({ conceded: "A", final: true, winner: "B", notPlayed: true, games: [] });
+    expect(await prisma.matchPlayer.count({ where: { matchId: semi.matches[1].id, side: "A" } })).toBe(0);
+
+    // 第 1 场 A 方弃权（WO 判 B 胜）：A 方第 1 场的队员在本场对抗后面的小场不再上场。
+    await walkoverRubber(semi.matches[0].id, "B");
+    const withdrawn = new Set(lineupA[0].participantIds);
+    tie = await loadTieByCode(prisma, competitionId, "SF1");
+    view = projectTie(tie!, { kind: "OFFICIAL" });
+    for (const rubber of view.rubbers.slice(2)) {
+      const usesWithdrawn = lineupA.find((item) => item.order === rubber.order)!.participantIds.some((id) => withdrawn.has(id));
+      if (usesWithdrawn) expect(rubber).toMatchObject({ conceded: "A", notPlayed: true });
+    }
+    // 认输的小场计入：B 已赢第 1、2 场，加上因退出而认输的小场，满 3 场即胜。
+    const lost = 2 + view.rubbers.slice(2).filter((rubber) => rubber.conceded === "A").length;
+    if (lost >= 3) expect((await fixtureByCode(competitionId, "SF1")).winnerEntryId).toBe(semi.sideBEntryId);
+  });
+
   it("小组赛：3:0 后胜负已定但仍打满，五场锁定后对抗结束", async () => {
     const { slug, competitionId } = await publishedTournament("group-play-all", 3, { format: "ROUND_ROBIN" });
     const fixture = await prisma.fixture.findFirstOrThrow({ where: { competitionId }, include: { matches: { orderBy: { rubberOrder: "asc" } } } });
@@ -415,7 +532,13 @@ describe("对抗胜负与晋级回填", () => {
     expect(final.sideAEntryId).toBe(semi.sideBEntryId);
 
     // 另一场半决赛也决出后，决赛双方确定，可以交名单并开赛。
-    for (const match of other.matches.slice(0, 3)) await finishRubber(match.id, "A");
+    // 小场弃权会让负方队员的后续小场按认输计（W-3），所以逐场检查，打到对抗决出为止。
+    for (const match of other.matches) {
+      const current = await prisma.fixture.findUniqueOrThrow({ where: { id: other.id }, select: { winnerEntryId: true } });
+      if (current.winnerEntryId) break;
+      const row = await prisma.match.findUniqueOrThrow({ where: { id: match.id }, select: { notPlayedAt: true } });
+      if (!row.notPlayedAt) await finishRubber(match.id, "A");
+    }
     final = await fixtureByCode(competitionId, "F");
     bronze = await fixtureByCode(competitionId, "3P");
     expect(final.sideBEntryId).toBe(other.sideAEntryId);

@@ -19,6 +19,7 @@ import { RUBBER_GENDER } from "../scenario/roster";
 import { confirmResult, type ReviewRecord } from "./chief";
 import type { Control, MatchStateView } from "./referee";
 import type { LiveRegistry } from "./venue";
+import { SIM_OFFICIATING_NAME } from "../officiating-name";
 
 const GROUP = "§7 团体与结果联动";
 
@@ -493,7 +494,7 @@ async function runReopen(env: Env, item: { id: string; title: string; expected: 
 
 async function resubmitResult(env: Env, code: string) {
   const deviceSessionId = env.rng.uuid();
-  const acquired = await env.tablet.call<Control>("POST", `/api/matches/${code}/control`, { deviceSessionId }, { route: "/api/matches/[code]/control" });
+  const acquired = await env.tablet.call<Control>("POST", `/api/matches/${code}/control`, { deviceSessionId, officiatingName: SIM_OFFICIATING_NAME }, { route: "/api/matches/[code]/control" });
   if (!acquired.ok) return `取得控制 ${brief(acquired)}`;
   const control = acquired.json!;
   const auth = { Authorization: `Bearer ${control.controlToken}` };

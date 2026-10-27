@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   checkWriteOrigin,
   DEFAULT_PUBLIC_RATE_LIMIT_PER_MINUTE,
-  FixedWindowRateLimiter,
   publicRateLimitFromEnv,
+  TokenBucketRateLimiter,
 } from "@/server/security/request-guard";
 import { sanitizeLogFields } from "@/server/logging";
 import { describeWakeLock, wakeLockAvailability } from "@/ui/screen-wake-lock";
@@ -57,18 +57,35 @@ describe("阶段 8：写请求来源校验", () => {
 });
 
 describe("阶段 8：公开查询限流", () => {
-  it("窗口内超过额度返回 429 所需的重试秒数，窗口过后恢复", () => {
-    const limiter = new FixedWindowRateLimiter(3, 60_000);
+  it("突发额度用完后按每分钟额度匀速放行，并给出重试秒数（SF-06）", () => {
+    // 每分钟 60 次 = 每秒补 1 个，突发上限 3。
+    const limiter = new TokenBucketRateLimiter(60, 3);
     expect(limiter.hit("a", 0)).toEqual({ allowed: true, remaining: 2 });
-    limiter.hit("a", 1);
-    expect(limiter.hit("a", 2)).toEqual({ allowed: true, remaining: 0 });
-    expect(limiter.hit("a", 30_000)).toEqual({ allowed: false, retryAfterSeconds: 30 });
-    expect(limiter.hit("b", 30_000).allowed).toBe(true);
-    expect(limiter.hit("a", 60_000).allowed).toBe(true);
+    limiter.hit("a", 0);
+    expect(limiter.hit("a", 0)).toEqual({ allowed: true, remaining: 0 });
+    expect(limiter.hit("a", 0)).toEqual({ allowed: false, retryAfterSeconds: 1 });
+    expect(limiter.hit("b", 0).allowed).toBe(true);
+    expect(limiter.hit("a", 1_000).allowed).toBe(true);
+    expect(limiter.hit("a", 1_000).allowed).toBe(false);
   });
 
-  it("键数达到上限时不跟踪新来源（放行而不是误伤），过期键会被清理", () => {
-    const limiter = new FixedWindowRateLimiter(1, 1_000, 2);
+  it("同一来源持续超量时，一分钟内放行总数不超过额度，且不会在某一时刻集中放行（SF-06）", () => {
+    const limiter = new TokenBucketRateLimiter(600);
+    const admittedAt: number[] = [];
+    // 300 名观众各每 10 秒请求一次，共 1800 次/分钟，全部同一来源；连续两分钟。
+    for (let t = 0; t < 120_000; t += 10_000 / 300) {
+      if (limiter.hit("nat", Math.floor(t)).allowed) admittedAt.push(t);
+    }
+    // 第一分钟多出的只是初始突发额度（600 / 6 = 100），之后稳定在每分钟 600 次。
+    expect(admittedAt.filter((t) => t < 60_000).length).toBeLessThanOrEqual(700 + 1);
+    expect(admittedAt.filter((t) => t >= 60_000).length).toBeLessThanOrEqual(600 + 1);
+    // 固定窗口下每分钟开头 20 秒放行全部 600 次；令牌桶下约为 20 秒补充的 200 次。
+    const secondMinuteHead = admittedAt.filter((t) => t >= 60_000 && t < 80_000).length;
+    expect(secondMinuteHead).toBeLessThan(220);
+  });
+
+  it("键数达到上限时不跟踪新来源（放行而不是误伤），补满的桶会被清理", () => {
+    const limiter = new TokenBucketRateLimiter(60, 1, 2);
     limiter.hit("a", 0);
     limiter.hit("b", 0);
     expect(limiter.hit("c", 10).allowed).toBe(true);

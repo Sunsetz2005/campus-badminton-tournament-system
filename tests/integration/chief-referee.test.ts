@@ -97,7 +97,8 @@ async function accepted(promise: Promise<unknown>) {
 
 /** 平台共用裁判账号在共用账号模式下记录弃权并提交，返回待复核的版本。 */
 async function submitWalkover(matchCode: string) {
-  const control = await acquireScoringSession(refereeId, matchCode, randomUUID());
+  // 共用裁判账号模式须填写执裁人姓名（赛务口径 O-2）；逐场指派模式忽略该参数。
+  const control = await acquireScoringSession(refereeId, matchCode, randomUUID(), "演示裁判");
   const current = await prisma.match.findUniqueOrThrow({ where: { code: matchCode }, select: { version: true } });
   let version = (await accepted(
     submitScoringCommand(refereeId, matchCode, command(control, current.version, "RECORD_SPECIAL_OUTCOME", { type: "WO", winnerSide: "A", reason: "对方未到" }), control.controlToken),

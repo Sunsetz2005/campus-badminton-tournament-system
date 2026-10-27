@@ -29,6 +29,7 @@ import type { ReviewRecord } from "./chief";
 import { brief, driver, injectionLoop, toRally, withBorrowed, type Env } from "./injections";
 import type { Control, MatchStateView } from "./referee";
 import type { LiveRegistry } from "./venue";
+import { SIM_OFFICIATING_NAME } from "../officiating-name";
 
 type Side = "A" | "B";
 const other = (side: Side): Side => (side === "A" ? "B" : "A");
@@ -625,7 +626,7 @@ async function dsqProbe(env: OpsEnv) {
 /** 裁判取得控制、按当前结果提交、释放；受理的 commandId 记进 reviews。 */
 async function refereeResubmit(env: OpsEnv, code: string) {
   const tablet = env.tablets[1];
-  const acquired = await tablet.call<Control>("POST", `/api/matches/${code}/control`, { deviceSessionId: env.rng.uuid() }, { route: "/api/matches/[code]/control" });
+  const acquired = await tablet.call<Control>("POST", `/api/matches/${code}/control`, { deviceSessionId: env.rng.uuid(), officiatingName: SIM_OFFICIATING_NAME }, { route: "/api/matches/[code]/control" });
   if (!acquired.ok) return `取得控制 ${brief(acquired)}`;
   const control = acquired.json!;
   const auth = { Authorization: `Bearer ${control.controlToken}` };
@@ -676,7 +677,7 @@ async function teamWithdrawProbe(env: OpsEnv) {
   steps.push(`本队只交 ${partial.length}/${teamPlan.rubbers.length} 个小场 ${brief(short)}${short.message ? `（${short.message}）` : ""}`);
   const rubber = last.matches[0]?.code;
   if (rubber) {
-    const acquired = await env.tablets[1].call<Control>("POST", `/api/matches/${rubber}/control`, { deviceSessionId: env.rng.uuid() }, { route: "/api/matches/[code]/control" });
+    const acquired = await env.tablets[1].call<Control>("POST", `/api/matches/${rubber}/control`, { deviceSessionId: env.rng.uuid(), officiatingName: SIM_OFFICIATING_NAME }, { route: "/api/matches/[code]/control" });
     const state = await env.tablets[1].call("GET", `/api/matches/${rubber}/state`, undefined, { route: "/api/matches/[code]/state" });
     steps.push(`第 1 小场取得控制 ${brief(acquired)}，读状态 ${brief(state)}`);
     if (acquired.ok) {

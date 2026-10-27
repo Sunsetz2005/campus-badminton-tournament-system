@@ -2,6 +2,8 @@
  * 赛程冲突检查（纯函数）。
  *
  * 硬冲突（HARD）阻止发布，不能被确认放宽；警告（WARNING）需要发布者逐项看过并确认。
+ * 赛务口径 S-1（2026-10-27，SF-02）：一侧已经开始或结束的重叠是延误造成的，记为警告并交给延误推算，
+ * 只有两场都未开始时才是硬冲突。比赛按「接着打」执行（ITTO 3.5.17），延误不应让整份草稿不能发布。
  * 对尚未确定的晋级来源只做保守的「暂定」检查，绝不承诺未知对阵没有冲突。
  */
 
@@ -200,12 +202,16 @@ export function checkSchedule(input: ScheduleCheckInput): ScheduleCheckResult {
     }
     if (tooEarly.length) {
       const last = [...tooEarly].sort((left, right) => right.end - left.end)[0];
+      // 前序比赛都已开始或结束：它们的结束时间是实际 / 延误推算值，属于延误，不是排程错误（S-1）。
+      const delayed = tooEarly.every((item) => !isMovable(item.match));
       add({
         key: pairKey("DEPENDENCY_ORDER", [match.id]),
         code: "DEPENDENCY_ORDER",
-        severity: "HARD",
+        severity: delayed ? "WARNING" : "HARD",
         matchIds: [match.id, ...tooEarly.map((item) => item.match.id)],
-        message: `${match.label} 排在前序比赛 ${last.match.label}${more(tooEarly.length)} 预计结束之前；晋级者尚未产生就不能开赛。`,
+        message: delayed
+          ? `延误：${match.label} 排在前序比赛 ${last.match.label}${more(tooEarly.length)} 预计结束之前；前序比赛已经开始，本场须等其结束后再开。`
+          : `${match.label} 排在前序比赛 ${last.match.label}${more(tooEarly.length)} 预计结束之前；晋级者尚未产生就不能开赛。`,
       });
     }
   }
@@ -245,7 +251,10 @@ export function checkSchedule(input: ScheduleCheckInput): ScheduleCheckResult {
     right: { match: ScheduleMatchFacts; placement: Placement | undefined },
   ) {
     const ids = [left.match.id, right.match.id];
-    const labels = `${left.match.label} 与 ${right.match.label}`;
+    // S-1：一侧已开始或结束，重叠来自延误，降为警告。
+    const delayed = !isMovable(left.match) || !isMovable(right.match);
+    const severity: ScheduleIssueSeverity = delayed ? "WARNING" : "HARD";
+    const labels = `${delayed ? "延误：" : ""}${left.match.label} 与 ${right.match.label}`;
     const leftCourt = left.placement?.courtId ?? null;
     const rightCourt = right.placement?.courtId ?? null;
     if (leftCourt && leftCourt === rightCourt) {
@@ -253,7 +262,7 @@ export function checkSchedule(input: ScheduleCheckInput): ScheduleCheckResult {
       add({
         key: pairKey("COURT_OVERLAP", ids),
         code: "COURT_OVERLAP",
-        severity: "HARD",
+        severity,
         matchIds: ids,
         message: `${labels} 在 ${court?.name ?? "同一场地"} 的时间重叠。`,
       });
@@ -263,7 +272,7 @@ export function checkSchedule(input: ScheduleCheckInput): ScheduleCheckResult {
       add({
         key: pairKey("REFEREE_OVERLAP", ids, leftReferee),
         code: "REFEREE_OVERLAP",
-        severity: "HARD",
+        severity,
         matchIds: ids,
         message: `${labels} 时间重叠，但都指派给了 ${refereeName.get(leftReferee) ?? "同一名裁判"}。`,
       });
@@ -275,7 +284,7 @@ export function checkSchedule(input: ScheduleCheckInput): ScheduleCheckResult {
       add({
         key: pairKey("PERSON_OVERLAP", ids),
         code: "PERSON_OVERLAP",
-        severity: "HARD",
+        severity,
         matchIds: ids,
         message: hidden
           ? `${labels} 时间重叠，某队已提交的出场名单中有队员同时出场（名单尚未公开，不显示姓名）。`
@@ -289,7 +298,7 @@ export function checkSchedule(input: ScheduleCheckInput): ScheduleCheckResult {
         add({
           key: pairKey("TEAM_OVERLAP", ids),
           code: "TEAM_OVERLAP",
-          severity: "HARD",
+          severity,
           matchIds: ids,
           message: `${labels} 时间重叠，${nameList(sameTeams, names)} 不能同时进行两场对抗。`,
         });

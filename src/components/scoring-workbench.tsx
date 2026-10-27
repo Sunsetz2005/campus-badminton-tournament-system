@@ -56,8 +56,8 @@ type SnapshotResponse = {
   status: "snapshot" | "unchanged";
   serverTime: string;
   version: number;
-  access: { assignedReferee: boolean; chiefReferee: boolean };
-  control: { active: boolean; sessionId?: string; ownedByCurrentUser?: boolean; actingRole?: string; expiresAt?: string };
+  access: { assignedReferee: boolean; chiefReferee: boolean; officiatingNameRequired?: boolean };
+  control: { active: boolean; sessionId?: string; ownedByCurrentUser?: boolean; actingRole?: string; expiresAt?: string; officiatingName?: string | null };
   match?: MatchView;
   state?: MatchState;
   events?: Array<{ commandId: string; version: number; type: string; occurredAt: string }>;
@@ -262,6 +262,8 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
   const [flipped, setFlipped] = useState(() =>
     readStoredValue(safeStorage("session"), `badminton-view-flipped:${matchCode}`) === "true",
   );
+  // 共用裁判账号模式的执裁人姓名（赛务口径 O-2）：本机记住上次填写的姓名，换人时改掉即可。
+  const [officiatingName, setOfficiatingName] = useState(() => readStoredValue(safeStorage("local"), "badminton-officiating-name") ?? "");
   const sheetCloseRef = useRef<HTMLButtonElement>(null);
   const sheetRef = useRef<HTMLElement>(null);
   const sheetCloseTimerRef = useRef<number | null>(null);
@@ -562,9 +564,11 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     setMessage("");
     try {
       const path = takeover ? "control/takeover" : "control";
+      const nameRequired = Boolean(snapshot?.access.officiatingNameRequired);
       const body = takeover
         ? { deviceSessionId: deviceId(matchCode), reason: takeoverReason.trim() }
-        : { deviceSessionId: deviceId(matchCode) };
+        : { deviceSessionId: deviceId(matchCode), ...(nameRequired ? { officiatingName: officiatingName.trim() } : {}) };
+      if (!takeover && nameRequired) writeStoredValue(safeStorage("local"), "badminton-officiating-name", officiatingName.trim());
       if (takeover && !body.reason) return;
       const result = await responseJson(await fetch(`/api/matches/${encodeURIComponent(matchCode)}/${path}`, {
         method: "POST",
@@ -921,7 +925,9 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         : syncState === "CONFLICT"
           ? "版本冲突，只读；已拉取服务器权威状态"
           : online
-            ? "当前设备没有有效写入控制"
+            ? snapshot?.control.active && snapshot.control.officiatingName && !snapshot.control.ownedByCurrentUser
+              ? `当前设备没有有效写入控制（${snapshot.control.officiatingName} 正在执裁）`
+              : "当前设备没有有效写入控制"
             : "离线，只读；恢复后先对账";
   const syncLabel = !online
     ? "离线"
@@ -1141,8 +1147,26 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
       {/* 本机可写且无异常时不再重复说明；只读或异常原因必须保留，不能为了简洁隐藏。 */}
       {canAcquireControl || readOnlyReason ? (
         <div className="control-strip">
+          {canAcquireControl && snapshot?.access.officiatingNameRequired ? (
+            <label className="officiating-name">
+              <span>执裁人姓名</span>
+              <input
+                aria-label="执裁人姓名"
+                autoComplete="name"
+                maxLength={40}
+                onChange={(event) => setOfficiatingName(event.target.value)}
+                placeholder="共用裁判账号请填写本人姓名"
+                value={officiatingName}
+              />
+            </label>
+          ) : null}
           {canAcquireControl ? (
-            <ActionButton loading={actionRequestState === "ACQUIRING"} loadingLabel="正在取得控制…" onClick={() => void acquire()}>
+            <ActionButton
+              disabled={Boolean(snapshot?.access.officiatingNameRequired) && !officiatingName.trim()}
+              loading={actionRequestState === "ACQUIRING"}
+              loadingLabel="正在取得控制…"
+              onClick={() => void acquire()}
+            >
               取得本机控制权
             </ActionButton>
           ) : null}
@@ -1560,6 +1584,10 @@ function PhaseActions({ canWrite, chief, coinTossWinner, flipped, intervalOverla
         <CoinTossForm canWrite={canWrite} drawnWinner={coinTossWinner} flipped={flipped} onDraw={onCoinTossDraw} onSend={onSend} sideName={sideName} />
       ) : null}
       {secondary && state.phase === "AWAITING_OPENING_SETUP" && chief ? <button className="button danger" disabled={!canWrite} onClick={() => onReasonCommand("裁判长作废抛币", "INVALIDATE_COIN_TOSS", { reason: "" })}>裁判长作废抛币</button> : null}
+      {/* 赛务口径 S-7：开错比赛时，第一局打完之前裁判长可以作废本场计分，比赛回到抛币前。 */}
+      {secondary && chief && state.completedGames.length === 0 && ["IN_PROGRESS", "OBLIGATIONS_PENDING", "PAUSED"].includes(state.phase) ? (
+        <button className="button danger" data-testid="void-scoring-entry" disabled={!canWrite} onClick={() => onReasonCommand("作废本场计分（开错比赛）", "VOID_MATCH_SCORING", { reason: "" })}>作废本场计分</button>
+      ) : null}
       {urgent ? state.pendingObligations.map((item) => item.type === "INTERVAL" ? intervalOverlayOpen ? null :
         <button className="button" disabled={!canWrite} key={item.id} onClick={() => void onSend("ACKNOWLEDGE_INTERVAL", { obligationId: item.id })}>确认间歇完成</button> :
         item.type === "CHANGE_ENDS" ? <button className="button secondary" disabled={!canWrite} key={item.id} onClick={() => onReasonCommand("记录漏换边后补做", "RECORD_MISSED_CHANGE_ENDS", { obligationId: item.id, reason: "" })}>记录漏换后补做</button> : null) : null}

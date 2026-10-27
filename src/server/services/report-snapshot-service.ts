@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 
 import { Prisma, type NamePublicationPolicy } from "@/generated/prisma/client";
-import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { DRAW_FORMAT_LABEL } from "@/domain/draw/format";
 import { COMPETITION_KIND_LABEL } from "@/domain/registration/registration-rules";
 import { RUBBER_LABEL, type RubberKind } from "@/domain/registration/team-roster";
 import { OUTCOME_LABEL, RESULT_STAGE_LABEL } from "@/domain/results/match-result";
 import { computePlacements, type PlacementFixtureFact } from "@/domain/results/placements";
-import { CAMPUS_DEMO_RANKING, RANKING_BASIS_LABEL } from "@/domain/results/ranking";
+import { GROUP_RANKING, RANKING_BASIS_LABEL } from "@/domain/results/ranking";
 import { stableStringify } from "@/domain/rules/match-engine";
 import { STANDING_BASIS_LABEL } from "@/domain/team/standings";
 import { formatZonedClock, utcToZonedLocal } from "@/domain/time/zoned-time";
@@ -547,11 +547,11 @@ export async function buildReportSnapshot(
     },
     rules,
     rankingProfile: {
-      name: CAMPUS_DEMO_RANKING.name,
-      version: CAMPUS_DEMO_RANKING.version,
-      demo: CAMPUS_DEMO_RANKING.demo,
-      notice: CAMPUS_DEMO_RANKING.notice,
-      rules: [...CAMPUS_DEMO_RANKING.rules],
+      name: GROUP_RANKING.name,
+      version: GROUP_RANKING.version,
+      demo: GROUP_RANKING.demo,
+      notice: GROUP_RANKING.notice,
+      rules: [...GROUP_RANKING.rules],
     },
     competitions,
     matches,
@@ -575,7 +575,7 @@ export async function captureReportSnapshot<T = undefined>(
   extra?: (tx: Tx) => Promise<T>,
   options: SnapshotOptions = {},
 ): Promise<CapturedSnapshot & { extra: T }> {
-  return prisma.$transaction(
+  return runTransaction(
     async (tx) => {
       await tx.$executeRaw`SET TRANSACTION READ ONLY`;
       // 取纪元毫秒而不是 timestamptz：驱动把后者按会话时区解析时会偏移。

@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { requireManagedTournament } from "@/server/auth/authorization";
 import { generateInitialPassword } from "@/server/auth/initial-password";
 import { AppError } from "@/server/services/errors";
@@ -86,7 +87,7 @@ export async function grantChiefReferee(actorUserId: string, slug: string, rawIn
     throw new AppError(409, "platform_referee_not_allowed", "平台共用裁判账号所有裁判都能登录，不能担任裁判长；请为裁判长使用个人账号。");
   }
   const label = user.displayUsername ?? user.username ?? user.email;
-  const granted = await prisma.$transaction(async (transaction) => {
+  const granted = await runTransaction(async (transaction) => {
     const created = await transaction.roleAssignment.createMany({
       data: [{ userId: user.id, tournamentId: tournament.id, role: "CHIEF_REFEREE" }],
       skipDuplicates: true,
@@ -123,7 +124,7 @@ export async function createChiefRefereeAccount(actorUserId: string, slug: strin
   // 邮箱是账号表的必填唯一键；裁判长账号只用用户名登录，这里放一个不可投递的内部地址。
   const email = `chief-referee-${randomUUID()}@accounts.invalid`;
   try {
-    const user = await prisma.$transaction(async (transaction) => {
+    const user = await runTransaction(async (transaction) => {
       const created = await transaction.user.create({
         data: {
           email,
@@ -162,7 +163,7 @@ export async function revokeChiefReferee(actorUserId: string, slug: string, user
   const { tournament } = await requireManagedTournament(actorUserId, slug, ["ADMIN"]);
   if (!z.string().uuid().safeParse(userId).success) throw new AppError(404, "user_not_found", "找不到该账号。");
   const now = new Date();
-  return prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     const removed = await transaction.roleAssignment.deleteMany({ where: { userId, tournamentId: tournament.id, role: "CHIEF_REFEREE" } });
     if (removed.count === 0) return { userId, revoked: false, revokedSessionIds: [] as string[] };
     const sessions = await transaction.scoringSession.findMany({

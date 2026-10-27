@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { Prisma, type CompetitionKind, type Gender, type RegistrationSource, type TournamentPhase } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import {
   entryDisplayName,
   formatEntryCode,
@@ -213,7 +214,7 @@ export async function createManualRegistration(actorUserId: string, slug: string
   const note = parseNote(parsed.data.note);
 
   try {
-    return await prisma.$transaction(async (transaction) => {
+    return await runTransaction(async (transaction) => {
       await lockTournamentRow(transaction, tournament.id);
       await assertCompetitionEditable(transaction, tournament.phase, competition.id);
       const registration = await insertRegistration(transaction, {
@@ -426,6 +427,20 @@ async function resolveMember(
   return resolved;
 }
 
+/**
+ * 赛务口径 E-1（2026-10-27）：一名参赛者在一个赛事里只代表一个单位。
+ * 关联到已有人员时，双方都登记了单位且不一致就拒绝，提示已有单位（M5 §6.2 实测：原先静默保留首次报名的单位）。
+ */
+function assertSameUnit(participant: { publicCode: string; teamName: string | null }, member: { teamName: string | null }, slotLabel: string) {
+  if (!participant.teamName || !member.teamName) return;
+  if (nameKey(participant.teamName) === nameKey(member.teamName)) return;
+  throw new AppError(
+    409,
+    "unit_mismatch",
+    `${slotLabel}已以「${participant.teamName}」的身份参赛（${participant.publicCode}），同一赛事只能代表一个单位；报名填写的是「${member.teamName}」，请核对后修改报名单位。`,
+  );
+}
+
 async function resolveMemberIdentity(
   transaction: Tx,
   tournamentId: string,
@@ -439,6 +454,7 @@ async function resolveMemberIdentity(
       select: { id: true, studentId: true, publicCode: true, teamName: true, contact: true },
     });
     if (!participant) throw new AppError(404, "participant_not_found", `${slotLabel}指定的人员不属于本赛事。`);
+    assertSameUnit(participant, member, slotLabel);
     if (member.studentId && participant.studentId && member.studentId !== participant.studentId) {
       throw new AppError(
         409,
@@ -469,7 +485,11 @@ async function resolveMemberIdentity(
 
   if (resolution === "AUTO") {
     const preview = await previewIdentity(transaction, tournamentId, member);
-    if (preview.kind === "MATCH") return { participantId: preview.participant.id, created: false };
+    if (preview.kind === "MATCH") {
+      const matched = await transaction.participant.findUniqueOrThrow({ where: { id: preview.participant.id }, select: { publicCode: true, teamName: true } });
+      assertSameUnit(matched, member, slotLabel);
+      return { participantId: preview.participant.id, created: false };
+    }
     if (preview.kind === "AMBIGUOUS") {
       throw new AppError(409, "identity_ambiguous", `${slotLabel}：${preview.reason}。请选择关联到已有人员或确认新建。`, {
         slot: member.slot,
@@ -569,7 +589,7 @@ export async function reviewRegistration(actorUserId: string, slug: string, regi
   const input = parsed.data;
 
   try {
-    return await prisma.$transaction(async (transaction) => {
+    return await runTransaction(async (transaction) => {
       await lockTournamentRow(transaction, tournament.id);
       const current = await transaction.tournament.findUniqueOrThrow({ where: { id: tournament.id }, select: { phase: true } });
       const registration = await loadRegistrationForReview(transaction, tournament.id, registrationId, input.expectedVersion);
@@ -763,7 +783,7 @@ export async function renameParticipant(actorUserId: string, slug: string, publi
   const reason = normalizeReason(parsed.data.reason);
   if (!reason) throw new AppError(400, "reason_required", "更正姓名必须填写原因（200 字以内）。");
 
-  return prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     await lockTournamentRow(transaction, tournament.id);
     const participant = await transaction.participant.findUnique({
       where: { tournamentId_publicCode: { tournamentId: tournament.id, publicCode } },

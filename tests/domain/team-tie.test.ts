@@ -8,7 +8,7 @@ import {
 } from "@/domain/registration/team-roster";
 import { appearanceCounts, eligibleForRubber, validateLineup, type LineupRosterMember } from "@/domain/team/lineup";
 import { applyConfirmedOrder, computeStandings, type StandingTie } from "@/domain/team/standings";
-import { computeTie, tiePolicyFor, tieWinsNeeded, type RubberFact } from "@/domain/team/tie";
+import { computeTie, concededGames, tiePolicyFor, tieWinsNeeded, type RubberFact } from "@/domain/team/tie";
 
 const RUBBERS = DEFAULT_TEAM_FORMAT.rubbers.map((kind, index) => ({ order: index + 1, kind }));
 
@@ -114,6 +114,50 @@ describe("出场名单", () => {
     const outsider = validateLineup(RUBBERS, ROSTER, [{ order: 1, participantIds: ["x9"] }, ...GOOD_LINEUP.slice(1)]);
     expect(outsider.errors).toEqual(["第 1 场男单选择的队员不在本队名单中"]);
   });
+
+  it("赛务口径 W-6：人数不足可以声明认输某个小场（不排人）；认输时不能同时排人，也不能全部认输", () => {
+    const partial = validateLineup(RUBBERS, ROSTER, [...GOOD_LINEUP.slice(0, 4), { order: 5, participantIds: [], conceded: true }]);
+    expect(partial.errors).toEqual([]);
+    expect(partial.lineup?.[4]).toEqual({ order: 5, kind: RUBBERS[4].kind, participantIds: [], conceded: true });
+    const both = validateLineup(RUBBERS, ROSTER, [...GOOD_LINEUP.slice(0, 4), { ...GOOD_LINEUP[4], conceded: true }]);
+    expect(both.errors).toEqual(["第 5 场混双已声明认输，不能同时排队员"]);
+    const all = validateLineup(RUBBERS, ROSTER, RUBBERS.map((item) => ({ order: item.order, participantIds: [], conceded: true })));
+    expect(all.errors[0]).toContain("不能所有小场都认输");
+  });
+});
+
+describe("认输与中途退赛的计分（GCR 16.3.8）", () => {
+  const rules = { bestOf: 3, targetPoints: 21, winBy: 2, capPoints: 30 };
+
+  it("赛前认输：胜方按 21:0 补满需要的局数", () => {
+    expect(concededGames([], null, "B", rules)).toEqual([{ a: 0, b: 21 }, { a: 0, b: 21 }]);
+  });
+
+  it("中途退赛：中断局补到胜方赢下（不少于目标分、领先 2 分），再补齐剩余局；认输方的已得分保留", () => {
+    // A 先赢一局，第二局 15:10 时 A 退赛：第二局补成 15:21，再补第三局 0:21。
+    expect(concededGames([{ a: 21, b: 18 }], { a: 15, b: 10 }, "B", rules)).toEqual([{ a: 21, b: 18 }, { a: 15, b: 21 }, { a: 0, b: 21 }]);
+    // 20 平退赛：胜方要领先 2 分，记 22:20。
+    expect(concededGames([], { a: 20, b: 20 }, "A", rules)).toEqual([{ a: 22, b: 20 }, { a: 21, b: 0 }]);
+    // 29 平封顶 30。
+    expect(concededGames([], { a: 29, b: 29 }, "A", rules)[0]).toEqual({ a: 30, b: 29 });
+    // 局间退赛（中断局 0:0）：直接按 21:0 补局。
+    expect(concededGames([{ a: 21, b: 10 }], { a: 0, b: 0 }, "A", rules)).toEqual([{ a: 21, b: 10 }, { a: 21, b: 0 }]);
+  });
+
+  it("积分榜统计用补完的比分，展示仍是实际比分", () => {
+    const summary = computeTie(
+      [
+        { ...rubber(1), started: true, final: true, winner: "B", games: [{ a: 21, b: 18 }], countedGames: [{ a: 21, b: 18 }, { a: 15, b: 21 }, { a: 0, b: 21 }] },
+        rubber(2, won("A")),
+        rubber(3, won("B")),
+        rubber(4, won("B")),
+        rubber(5, won("A")),
+      ],
+      "PLAY_ALL",
+    );
+    expect(summary.winner).toBe("B");
+    expect(summary.games).toEqual({ A: 5, B: 6 });
+  });
 });
 
 function rubber(order: number, patch: Partial<RubberFact> = {}): RubberFact {
@@ -210,7 +254,7 @@ describe("小组积分榜", () => {
     expect(clear.rows.map((row) => row.basis)).toEqual(["WINS", "WINS", "WINS"]);
   });
 
-  it("三队胜场相同：依次比较小场差、局差、分差；剩两队看相互胜负", () => {
+  it("三队胜场相同：逐层比较；某一层比完剩两队时立即回到相互胜负，不再比下一层（BWF GCR 16.3.4.1）", () => {
     // A 胜 B、B 胜 C、C 胜 A（循环相克），各胜 D。
     const standings = computeStandings(
       ["A", "B", "C", "D"],
@@ -225,10 +269,26 @@ describe("小组积分榜", () => {
     );
     expect(standings.rows.map((row) => [row.entryId, row.position, row.basis])).toEqual([
       ["A", 1, "DIFFERENTIALS"],
-      ["C", 2, "DIFFERENTIALS"],
-      ["B", 3, "DIFFERENTIALS"],
+      // 小场净胜 B、C 同为 +3：只剩两队，按 B 胜 C 定序；旧口径会继续比局差把 C 排在前面。
+      ["B", 2, "HEAD_TO_HEAD"],
+      ["C", 3, "HEAD_TO_HEAD"],
       ["D", 4, "WINS"],
     ]);
+  });
+
+  it("胜场相同但场次不同（成绩被删除等）：先比对抗净胜（BWF GCR 16.3.3）", () => {
+    // A、B、C 各胜 1 场；C 少打一场（对 D 的结果被删除后只剩 2 场），对抗净胜 C 为 0，A、B 为 -1。
+    const standings = computeStandings(
+      ["A", "B", "C"],
+      [tie("A", "B", 3, 2), tie("B", "C", 3, 2), tie("C", "A", 3, 2)],
+    );
+    expect(standings.unresolved).toEqual([["A", "B", "C"]]);
+    const uneven = computeStandings(
+      ["A", "B", "C", "D"],
+      [tie("A", "B", 3, 2), tie("B", "C", 3, 2), tie("C", "A", 3, 2), tie("D", "A", 3, 2), tie("D", "B", 3, 2)],
+    );
+    expect(uneven.rows.map((row) => row.entryId)).toEqual(["D", "C", "A", "B"]);
+    expect(uneven.rows[1].basis).toBe("DIFFERENTIALS");
   });
 
   it("三队各项都相同：须抽签，裁判长只能调整这几队的先后", () => {

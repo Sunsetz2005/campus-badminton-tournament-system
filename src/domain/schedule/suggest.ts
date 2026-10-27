@@ -15,6 +15,12 @@
  * 每个「某场胜者/负者」只流向签表上唯一一个位置，同一人可能出现的后续比赛都排在其前序之后，
  * 所以同项目两场未定对阵（如两场半决赛、决赛与三四名赛）不会共用运动员，可以同时进行。
  * 不检查休息间隔（由线下裁判控场）；相邻两场之间只留换场时间。
+ *
+ * 裁判（赛务口径 O-1，2026-10-27，依据 ITTO 3.5.11.4「技术官员轮次之间应有合理休息」）：
+ * 负荷均衡优先——先排执裁场数少的（含本次范围外已排定的场次）；同一名裁判最多连续执裁 2 场，
+ * 之后至少空出一个场次（实在没有别人可派时才例外）；场数相同时才优先「本场地」的裁判，减少走动。
+ * 原先「本场地」优先于负荷，M6 L3 实测 44 名裁判里最多一人 39 场、12 人一场没排。
+ * 中立（不派本单位裁判）需要裁判的单位信息，当前裁判账号没有这一字段，未实现。
  */
 
 import { MINUTE, overlaps, type Interval, type Placement, type ScheduleMatchFacts, occupiedInterval, effectiveEnd, isMovable } from "./model";
@@ -343,29 +349,54 @@ export function suggestSchedule(input: SuggestInput): SuggestResult {
     }
   }
 
-  // 裁判：按时间顺序给每场挑一名空闲裁判，优先「本场地」的固定裁判，其次当前执裁最少的。
+  // 裁判：按时间顺序给每场挑一名空闲裁判：执裁场数少者优先，避免连续执裁超过 2 场，场数相同再看「本场地」。
   const homeCourt = new Map<string, string>();
   input.refereeIds.forEach((refereeId, index) => {
     if (index < input.courtIds.length) homeCourt.set(refereeId, input.courtIds[index]);
   });
   const load = new Map<string, number>(input.refereeIds.map((id) => [id, 0]));
+  /** 每名裁判已排的执裁区间（含范围外已排定的），用于判断连续执裁。 */
+  const duties = new Map<string, Interval[]>(input.refereeIds.map((id) => [id, []]));
+  for (const match of input.matches) {
+    if (movable(match)) continue;
+    const placement = input.current.get(match.id);
+    const interval = placement ? occupiedInterval(match, placement) : null;
+    if (!placement?.refereeId || !interval || !load.has(placement.refereeId)) continue;
+    load.set(placement.refereeId, (load.get(placement.refereeId) ?? 0) + 1);
+    duties.get(placement.refereeId)?.push(interval);
+  }
+  /** 紧挨着本场之前（中间没有空出一个场次）已经连续执裁了几场。 */
+  const streakBefore = (refereeId: string, start: number, slot: number) => {
+    const list = [...(duties.get(refereeId) ?? [])].filter((item) => item.start < start).sort((left, right) => right.start - left.start);
+    let streak = 0;
+    let cursor = start;
+    for (const item of list) {
+      if (cursor - item.end >= slot) break;
+      streak += 1;
+      cursor = item.start;
+    }
+    return streak;
+  };
+  const MAX_CONSECUTIVE = 2;
   const chronological = [...placements.values()].sort(
     (left, right) => (left.start as number) - (right.start as number) || left.matchId.localeCompare(right.matchId),
   );
   for (const placement of chronological) {
     const interval = { start: placement.start as number, end: (placement.start as number) + placement.durationMinutes * MINUTE };
-    const candidates = input.refereeIds
-      .filter((id) => refereeBusy.conflictEnd(id, interval) === null)
-      .sort(
-        (left, right) =>
-          Number(homeCourt.get(right) === placement.courtId) - Number(homeCourt.get(left) === placement.courtId) ||
-          (load.get(left) ?? 0) - (load.get(right) ?? 0) ||
-          input.refereeIds.indexOf(left) - input.refereeIds.indexOf(right),
-      );
+    const slot = placement.durationMinutes * MINUTE;
+    const free = input.refereeIds.filter((id) => refereeBusy.conflictEnd(id, interval) === null);
+    const rested = free.filter((id) => streakBefore(id, interval.start, slot) < MAX_CONSECUTIVE);
+    const candidates = (rested.length ? rested : free).sort(
+      (left, right) =>
+        (load.get(left) ?? 0) - (load.get(right) ?? 0) ||
+        Number(homeCourt.get(right) === placement.courtId) - Number(homeCourt.get(left) === placement.courtId) ||
+        input.refereeIds.indexOf(left) - input.refereeIds.indexOf(right),
+    );
     const chosen = candidates[0];
     if (!chosen) continue;
     placement.refereeId = chosen;
     load.set(chosen, (load.get(chosen) ?? 0) + 1);
+    duties.get(chosen)?.push(interval);
     refereeBusy.add(chosen, { start: interval.start, end: interval.end + changeover });
   }
 

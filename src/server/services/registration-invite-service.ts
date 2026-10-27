@@ -3,6 +3,7 @@ import { createHash, createHmac, randomBytes } from "node:crypto";
 import { z } from "zod";
 
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { normalizeText } from "@/domain/registration/registration-rules";
 import { zonedLocalToUtc } from "@/domain/time/zoned-time";
 import { requireManagedTournament } from "@/server/auth/authorization";
@@ -70,7 +71,7 @@ export async function createRegistrationInvite(actorUserId: string, slug: string
   }
 
   const token = randomBytes(32).toString("base64url");
-  const invite = await prisma.$transaction(async (transaction) => {
+  const invite = await runTransaction(async (transaction) => {
     const created = await transaction.registrationInvite.create({
       data: {
         tournamentId: tournament.id,
@@ -101,7 +102,7 @@ export async function createRegistrationInvite(actorUserId: string, slug: string
 
 export async function revokeRegistrationInvite(actorUserId: string, slug: string, inviteId: string) {
   const { tournament } = await requireManagedTournament(actorUserId, slug);
-  await prisma.$transaction(async (transaction) => {
+  await runTransaction(async (transaction) => {
     const updated = await transaction.registrationInvite.updateMany({
       where: { id: inviteId, tournamentId: tournament.id, revokedAt: null },
       data: { revokedAt: new Date() },
@@ -238,7 +239,7 @@ export async function submitInviteRegistration(token: string, rawInput: unknown,
   const { invite, tournament } = availability;
 
   try {
-    return await prisma.$transaction(async (transaction) => {
+    return await runTransaction(async (transaction) => {
       await lockTournamentRow(transaction, tournament.id);
       const phase = await transaction.tournament.findUniqueOrThrow({ where: { id: tournament.id }, select: { phase: true } });
       if (phase.phase !== "REGISTRATION_OPEN") throw new AppError(409, "registration_closed", "当前不在报名时间内。");

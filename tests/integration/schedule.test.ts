@@ -16,6 +16,7 @@ import {
   addCourts,
   autoScheduleAfterDraw,
   checkDraft,
+  checkPublished,
   discardDraftSlot,
   hashWarnings,
   loadScheduleWorkspace,
@@ -272,7 +273,7 @@ describe("从对阵表到赛程：建议、检查、发布、执裁衔接", () =
     await discardDraftSlot(adminId, ctx.slug, right.code);
   });
 
-  it("关闭场地：已发布赛程出现硬冲突，需要调整后重新发布；重新开放后消失", async () => {
+  it("关闭场地：已发布赛程出现硬冲突；与本次改动无关时照常可发布并记为未处理，改到关闭场地的改动被拦截（S-2）；重新开放后消失", async () => {
     const facts = await loadScheduleFacts(prisma, ctx.tournamentId);
     const used = facts.courts.find((court) => [...facts.published.values()].some((placement) => placement.courtId === court.id))!;
     const closed = await updateCourt(adminId, ctx.slug, used.code, { active: false });
@@ -280,7 +281,24 @@ describe("从对阵表到赛程：建议、检查、发布、执裁衔接", () =
     const workspace = await loadScheduleWorkspace(ctx.tournamentId, new Date());
     expect(workspace.publishedCheck.issues.some((issue) => issue.code === "COURT_CLOSED")).toBe(true);
     expect(workspace.draftCheck.hardCount).toBeGreaterThan(0);
+    expect(workspace.blockingHardCount).toBe(0);
+    expect(workspace.unrelatedHardCount).toBe(workspace.draftCheck.hardCount);
+    // 把一场原本不在该场地的未开始比赛挪到关闭的场地：这条冲突涉及本次改动，挡住发布。
+    const onOther = facts.rows.find((row) => {
+      const placement = facts.published.get(row.id)!;
+      return placement.start !== null && placement.courtId !== used.id && row.lifecycleStatus === "SCHEDULED";
+    })!;
+    const otherPlacement = facts.published.get(onOther.id)!;
+    await saveDraftSlot(adminId, ctx.slug, onOther.code, {
+      courtCode: used.code,
+      start: local(new Date(otherPlacement.start!)),
+      durationMinutes: otherPlacement.durationMinutes,
+      refereeUserId: otherPlacement.refereeId,
+    });
     await expect(publishWithDigest(ctx.slug, ctx.tournamentId)).rejects.toMatchObject({ code: "schedule_has_conflicts" });
+    await discardDraftSlot(adminId, ctx.slug, onOther.code);
+    const published = await publishWithDigest(ctx.slug, ctx.tournamentId);
+    expect(published.unresolvedHard).toBeGreaterThan(0);
     await updateCourt(adminId, ctx.slug, used.code, { active: true });
     expect((await loadScheduleWorkspace(ctx.tournamentId, new Date())).publishedCheck.hardCount).toBe(0);
   });
@@ -315,8 +333,9 @@ describe("从对阵表到赛程：建议、检查、发布、执裁衔接", () =
     expect(replaced.revokedSessions).toBe(1);
     // 两个小组同时 09:00 开打，新裁判原本在另一块场地执裁：如实返回时间重叠，由裁判长决定是否再改派。
     expect(replaced.overlapping.length).toBeGreaterThan(0);
-    const workspace = await loadScheduleWorkspace(ctx.tournamentId, new Date());
-    expect(workspace.publishedCheck.issues.some((issue) => issue.code === "REFEREE_OVERLAP")).toBe(true);
+    // 一侧已经开始：按赛务口径 S-1 记为延误警告（不再是硬冲突），仍如实列出。
+    const overlap = checkPublished(await loadScheduleFacts(prisma, ctx.tournamentId)).issues.find((issue) => issue.code === "REFEREE_OVERLAP");
+    expect(overlap?.severity).toBe("WARNING");
     const stale = { ...coinToss(control), expectedVersion: 1 };
     // 指派已失效：旧设备连读取权限都没有了，写入在进入会话校验前就被拒绝。
     await expect(submitScoringCommand(originalReferee, rubber.code, stale, control.controlToken)).rejects.toMatchObject({ status: 403 });
@@ -738,9 +757,17 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
     // 同一账号、两台设备分别执裁两场；第二台设备不能抢同一场。
     const deviceA = randomUUID();
     const deviceB = randomUUID();
-    const controlA = await acquireScoringSession(created.userId, first, deviceA);
-    await expect(acquireScoringSession(created.userId, first, deviceB)).rejects.toMatchObject({ status: 409, code: "controller_exists" });
-    const controlB = await acquireScoringSession(created.userId, second, deviceB);
+    // 赛务口径 O-2：共用账号取得控制前必须填写本人姓名，姓名记在控制会话上。
+    await expect(acquireScoringSession(created.userId, first, deviceA)).rejects.toMatchObject({ status: 400, code: "officiating_name_required" });
+    await expect(acquireScoringSession(created.userId, first, deviceA, "  ")).rejects.toMatchObject({ code: "officiating_name_required" });
+    let controlA = await acquireScoringSession(created.userId, first, deviceA, "张裁判");
+    await expect(prisma.scoringSession.findUniqueOrThrow({ where: { id: controlA.sessionId } })).resolves.toMatchObject({ officiatingName: "张裁判" });
+    await expect(acquireScoringSession(created.userId, first, deviceB, "李裁判")).rejects.toMatchObject({ status: 409, code: "controller_exists" });
+    // 同一设备续用时换了姓名：视为交接，更新会话上的姓名并记审计。
+    controlA = await acquireScoringSession(created.userId, first, deviceA, "王裁判");
+    await expect(prisma.scoringSession.findUniqueOrThrow({ where: { id: controlA.sessionId } })).resolves.toMatchObject({ officiatingName: "王裁判" });
+    await expect(prisma.auditLog.count({ where: { action: "OFFICIATING_HANDOVER", targetId: (await prisma.match.findUniqueOrThrow({ where: { code: first } })).id } })).resolves.toBe(1);
+    const controlB = await acquireScoringSession(created.userId, second, deviceB, "李裁判");
     await expect(submitScoringCommand(created.userId, first, coinToss(controlA), controlA.controlToken)).resolves.toMatchObject({ status: "accepted" });
     await expect(submitScoringCommand(created.userId, second, coinToss(controlB), controlB.controlToken)).resolves.toMatchObject({ status: "accepted" });
 
@@ -798,7 +825,7 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
     expect(detail.matches.map((match) => match.code).sort()).toEqual(matches.map((match) => match.code).sort());
     await expect(loadOfficiatingTournament(referee2Id, slug)).rejects.toMatchObject({ status: 403 });
 
-    const control = await acquireScoringSession(refereeId, first, randomUUID());
+    const control = await acquireScoringSession(refereeId, first, randomUUID(), "演示裁判");
     expect(control.status).toBe("acquired");
     await expect(submitScoringCommand(refereeId, first, coinToss(control), control.controlToken)).resolves.toMatchObject({ status: "accepted" });
     const live = await loadOfficiatingTournament(refereeId, slug);

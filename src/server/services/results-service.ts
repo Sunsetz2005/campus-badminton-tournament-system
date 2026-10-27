@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { Prisma, type MatchSide, type TournamentRole } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { normalizeReason } from "@/domain/registration/registration-rules";
 import {
   factFromRecord,
@@ -14,7 +15,7 @@ import {
   type ResultOnlyRecord,
 } from "@/domain/results/match-result";
 import { computePlacements, type Placement, type PlacementFixtureFact } from "@/domain/results/placements";
-import { applyRankingDecision, CAMPUS_DEMO_RANKING, computeGroupRanking, type GroupRanking, type RankingMatch } from "@/domain/results/ranking";
+import { applyRankingDecision, GROUP_RANKING, computeGroupRanking, type GroupRanking, type RankingMatch } from "@/domain/results/ranking";
 import { stableStringify, type MatchState } from "@/domain/rules/match-engine";
 import { validateRuleConfig } from "@/domain/rules/rule-profile";
 import { requireManagedTournament } from "@/server/auth/authorization";
@@ -120,22 +121,27 @@ export async function settleIndividualFixture(transaction: Tx, fixtureId: string
       sideAEntryId: true,
       sideBEntryId: true,
       winnerEntryId: true,
+      decidedAt: true,
+      kind: true,
+      vacancyDecided: true,
       competition: { select: { code: true, entryType: true, tournamentId: true } },
       matches: { select: matchFactSelect },
     },
   });
-  if (!fixture || fixture.competition.entryType === "TEAM" || fixture.matches.length !== 1) return null;
+  if (!fixture || fixture.competition.entryType === "TEAM" || fixture.matches.length !== 1 || fixture.vacancyDecided) return null;
   const tournamentId = fixture.competition.tournamentId;
   const fact = matchFactOf(fixture.matches[0]);
   const winnerSide = fact.stage === "CONFIRMED" ? fact.winner : null;
   const winnerEntryId = winnerSide ? (winnerSide === "A" ? fixture.sideAEntryId : fixture.sideBEntryId) : null;
+  // K-2：淘汰赛经复核锁定为「终止、无胜方」（双方都不能比）也算决出，下一轮该侧记为空位。
+  const decided = winnerEntryId !== null || (fixture.kind !== "GROUP" && fact.stage === "CONFIRMED");
 
-  if (winnerEntryId !== fixture.winnerEntryId) {
+  if (winnerEntryId !== fixture.winnerEntryId || decided !== (fixture.decidedAt !== null)) {
     await transaction.fixture.update({
       where: { id: fixture.id },
-      data: { winnerEntryId, decidedAt: winnerEntryId ? new Date() : null },
+      data: { winnerEntryId, decidedAt: decided ? new Date() : null },
     });
-    await propagateFixtureResult(transaction, tournamentId, actorUserId, fixture, winnerEntryId);
+    await propagateFixtureResult(transaction, tournamentId, actorUserId, fixture, winnerEntryId, decided);
     await audit(transaction, tournamentId, actorUserId, winnerEntryId ? "RESULT_ADVANCED" : "RESULT_ADVANCE_WITHDRAWN", "Fixture", fixture.id, {
       competitionCode: fixture.competition.code,
       fixtureCode: fixture.code,
@@ -255,7 +261,7 @@ export async function confirmIndividualGroupRanking(
   const parsed = confirmSchema.safeParse(rawInput);
   if (!parsed.success) throw new AppError(400, "invalid_input", "确认请求格式无效。");
 
-  return prisma.$transaction(
+  return runTransaction(
     async (transaction) => {
       await lockTournamentRow(transaction, tournament.id);
       const group = await findIndividualGroup(transaction, tournament.id, competitionCode, groupCode);
@@ -288,7 +294,8 @@ export async function confirmIndividualGroupRanking(
           const sourceGroup = side === "A" ? fixture.sideAGroupId : fixture.sideBGroupId;
           const rank = side === "A" ? fixture.sideARank : fixture.sideBRank;
           if (sourceGroup !== group.id || !rank) continue;
-          await setFixtureSide(transaction, tournament.id, actorUserId, fixture.id, side, order[rank - 1] ?? null, `${group.code} 组名次`);
+          // 出线名额多于本组有效名次（有单位成绩被删除）：该签位记为空位，对手以 WO 晋级（K-1）。
+          await setFixtureSide(transaction, tournament.id, actorUserId, fixture.id, side, order[rank - 1] ?? null, `${group.code} 组名次`, order[rank - 1] === undefined);
         }
       }
       await audit(transaction, tournament.id, actorUserId, "GROUP_RANKING_CONFIRMED", "Group", group.id, {
@@ -328,7 +335,7 @@ export async function setRankingExclusion(
   if (!parsed.success) throw new AppError(400, "invalid_input", "请求格式无效。");
   const { entryId, action } = parsed.data;
 
-  return prisma.$transaction(
+  return runTransaction(
     async (transaction) => {
       await lockTournamentRow(transaction, tournament.id);
       const group = await findIndividualGroup(transaction, tournament.id, competitionCode, groupCode);
@@ -423,7 +430,7 @@ export async function recordResultOnly(actorUserId: string, slug: string, matchC
   const reason = normalizeReason(parsed.data.reason);
   if (!reason) throw new AppError(400, "reason_required", "请写明补录依据（例如纸质记分表编号、线下比赛时间）。");
 
-  return prisma.$transaction(
+  return runTransaction(
     async (transaction) => {
       const match = await loadResultMatch(transaction, tournament.id, matchCode);
       if (match.rubberKind) throw new AppError(400, "team_rubber", "团体小场须在裁判台逐分记分，不接受仅结果补录。");
@@ -488,6 +495,48 @@ export async function recordResultOnly(actorUserId: string, slug: string, matchC
   );
 }
 
+/**
+ * 裁判长判定的弃权（GCR 13.7；赛务口径 W-2、W-4、W-7）：选手退出或被取消资格后，其未开始的比赛直接以 WO 判给对手。
+ * 这是裁判长的裁定（GCR 17.4.5 不设申诉），不是纸质成绩补录，所以由同一人记录并锁定；修订与审计照常保留，
+ * 之后仍可走仅结果记录的「重开」更正。调用方须已锁定赛事行并确认比赛未开始、双方都已确定。
+ */
+export async function recordRefereeWalkover(
+  transaction: Tx,
+  tournamentId: string,
+  matchId: string,
+  winnerSide: "A" | "B",
+  reason: string,
+  actorUserId: string,
+) {
+  await lockMatchRow(transaction, matchId);
+  const record: ResultOnlyRecord = { kind: "RESULT_ONLY", outcome: "WO", winnerSide, games: [], partial: null };
+  const revision = (await transaction.resultRevision.count({ where: { matchId } })) + 1;
+  const now = new Date();
+  await transaction.resultRevision.create({
+    data: {
+      matchId,
+      revision,
+      status: "LOCKED",
+      source: "RESULT_ONLY",
+      result: asJson(record),
+      reason,
+      actorUserId,
+      submittedRole: "CHIEF_REFEREE",
+      reviewedByUserId: actorUserId,
+      reviewedRole: "CHIEF_REFEREE",
+      reviewedAt: now,
+    },
+  });
+  await transaction.match.update({
+    where: { id: matchId },
+    data: { resultSource: "RESULT_ONLY", lifecycleStatus: "SUBMITTED", verificationStatus: "LOCKED", outcomeType: "WO" },
+  });
+  await writeGames(transaction, matchId, record);
+  await settleAfterResultChange(transaction, matchId, actorUserId);
+  await audit(transaction, tournamentId, actorUserId, "REFEREE_WALKOVER_RECORDED", "Match", matchId, { revision, winnerSide, reason });
+  return revision;
+}
+
 const reviewSchema = z.object({
   action: z.enum(["CONFIRM", "RETURN", "REOPEN"]),
   expectedRevision: z.number().int().positive(),
@@ -508,7 +557,7 @@ export async function reviewResultOnly(actorUserId: string, slug: string, matchC
   if (!reason) throw new AppError(400, "reason_required", "请写明复核意见或更正原因。");
   const { action, expectedRevision } = parsed.data;
 
-  return prisma.$transaction(
+  return runTransaction(
     async (transaction) => {
       const match = await loadResultMatch(transaction, tournament.id, matchCode);
       const latest = match.resultRevisions[0];
@@ -730,7 +779,7 @@ export async function recordResultDisposition(actorUserId: string, slug: string,
   const reason = normalizeReason(parsed.data.reason);
   if (!reason) throw new AppError(400, "reason_required", "请写明处置依据与决定内容。");
 
-  return prisma.$transaction(
+  return runTransaction(
     async (transaction) => {
       const match = await loadResultMatch(transaction, tournament.id, matchCode);
       if (match.verificationStatus !== "LOCKED") throw new AppError(409, "not_locked", "只有已锁定的结果才需要登记更正处置。");
@@ -914,10 +963,10 @@ export async function loadCompetitionResults(client: Client, tournamentId: strin
   const snapshot: StandingsSnapshot = {
     competition: { code: competition.code, name: competition.name },
     profile: groups[0]?.ranking.profile ?? {
-      key: CAMPUS_DEMO_RANKING.key,
-      version: CAMPUS_DEMO_RANKING.version,
-      name: CAMPUS_DEMO_RANKING.name,
-      demo: CAMPUS_DEMO_RANKING.demo,
+      key: GROUP_RANKING.key,
+      version: GROUP_RANKING.version,
+      name: GROUP_RANKING.name,
+      demo: GROUP_RANKING.demo,
     },
     groups: groups
       .filter((item) => item.confirmed)
@@ -980,7 +1029,7 @@ export async function publishStandings(actorUserId: string, slug: string, compet
   if (!parsed.success) throw new AppError(400, "invalid_input", "请求格式无效。");
   const note = parsed.data.note ? normalizeReason(parsed.data.note) : null;
 
-  return prisma.$transaction(
+  return runTransaction(
     async (transaction) => {
       await lockTournamentRow(transaction, tournament.id);
       const loaded = await loadCompetitionResults(transaction, tournament.id, competitionCode);

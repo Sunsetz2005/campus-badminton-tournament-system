@@ -18,6 +18,8 @@
 .control-strip, .phase-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .control-strip { min-height: 48px; padding: 4px 0; }
 .control-strip span { color: var(--muted); font-size: .86rem; }
+.control-strip .officiating-name { display: flex; align-items: center; gap: 8px; }
+.control-strip .officiating-name input { min-height: 44px; width: min(220px, 60vw); padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font: inherit; }
 .games-ribbon { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; color: var(--muted); }
 .games-ribbon span { padding: 7px 10px; background: #e7ece9; border-radius: 999px; }
 .special-outcome-summary { display: grid; grid-template-columns: minmax(190px, .7fr) minmax(260px, 1fr) minmax(280px, 1.25fr); gap: 18px; align-items: center; padding: 18px; color: #5f2e28; background: #fff3f0; border: 1px solid #edc4be; border-left: 5px solid var(--danger); border-radius: 14px; }

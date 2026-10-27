@@ -5,7 +5,7 @@
  *    所以非 GET 的 `/api/*` 必须来自本站页面。判定只看浏览器无法被网页脚本伪造的
  *    `Origin` 与 `Sec-Fetch-Site`；两者都没有的请求不是浏览器发起的，也就带不上
  *    别人的 Cookie，放行交给后面的会话与权限校验。
- * 2. 公开查询按来源限流：进程内固定窗口计数，只是「尽力而为」。来源取自
+ * 2. 公开查询按来源限流：进程内令牌桶，只是「尽力而为」。来源取自
  *    `x-forwarded-for`，没有可信反向代理时可被伪造；校园网出口 NAT 会让很多人共用
  *    一个地址，所以默认额度按「一个出口后面有上百名观众轮询」来放宽。真正的限流应在
  *    反向代理上做。
@@ -64,38 +64,49 @@ export type RateLimitDecision =
   | { allowed: true; remaining: number }
   | { allowed: false; retryAfterSeconds: number };
 
-/** 固定窗口计数器。键数有上限，满了先清过期键，仍满则不再跟踪新键（放行而不是误伤）。 */
-export class FixedWindowRateLimiter {
-  private readonly buckets = new Map<string, { windowStart: number; count: number }>();
+/**
+ * 令牌桶（SF-06）：每个来源一个桶，按「每分钟额度 / 60」的速度匀速补充，桶容量是突发上限。
+ *
+ * 阶段 8 原用固定窗口：所有观众共用一个出口时，窗口一开就同时放行整整一分钟的额度，
+ * M6 经 nginx 实测每个窗口的 600 次放行挤在开头约 18 秒，正好压在裁判记分上（P99 10 秒、16 次 500）。
+ * 令牌桶把放行摊平到整分钟，每分钟总额度不变。
+ * 键数有上限，满了先清已补满（等同空闲）的桶，仍满则不再跟踪新键（放行而不是误伤）。
+ */
+export class TokenBucketRateLimiter {
+  private readonly buckets = new Map<string, { tokens: number; updatedAt: number }>();
+  private readonly refillPerMs: number;
+  private readonly capacity: number;
 
   constructor(
-    private readonly limit: number,
-    private readonly windowMs: number,
+    limitPerMinute: number,
+    burst = Math.max(1, Math.ceil(limitPerMinute / 6)),
     private readonly maxKeys = 10_000,
-  ) {}
+  ) {
+    this.refillPerMs = limitPerMinute / 60_000;
+    this.capacity = Math.max(1, Math.min(burst, limitPerMinute));
+  }
 
   hit(key: string, now: number): RateLimitDecision {
     let bucket = this.buckets.get(key);
-    if (bucket && now - bucket.windowStart >= this.windowMs) {
-      bucket = undefined;
-      this.buckets.delete(key);
-    }
     if (!bucket) {
       if (this.buckets.size >= this.maxKeys) this.sweep(now);
-      if (this.buckets.size >= this.maxKeys) return { allowed: true, remaining: this.limit - 1 };
-      bucket = { windowStart: now, count: 0 };
+      if (this.buckets.size >= this.maxKeys) return { allowed: true, remaining: this.capacity - 1 };
+      bucket = { tokens: this.capacity, updatedAt: now };
       this.buckets.set(key, bucket);
+    } else {
+      bucket.tokens = Math.min(this.capacity, bucket.tokens + Math.max(0, now - bucket.updatedAt) * this.refillPerMs);
+      bucket.updatedAt = now;
     }
-    if (bucket.count >= this.limit) {
-      return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((bucket.windowStart + this.windowMs - now) / 1000)) };
+    if (bucket.tokens < 1) {
+      return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((1 - bucket.tokens) / this.refillPerMs / 1000)) };
     }
-    bucket.count += 1;
-    return { allowed: true, remaining: this.limit - bucket.count };
+    bucket.tokens -= 1;
+    return { allowed: true, remaining: Math.floor(bucket.tokens) };
   }
 
   private sweep(now: number) {
     for (const [key, bucket] of this.buckets) {
-      if (now - bucket.windowStart >= this.windowMs) this.buckets.delete(key);
+      if (bucket.tokens + (now - bucket.updatedAt) * this.refillPerMs >= this.capacity) this.buckets.delete(key);
     }
   }
 }

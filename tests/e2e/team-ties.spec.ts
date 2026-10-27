@@ -99,25 +99,58 @@ function envelope(control: { sessionId: string; takeoverGeneration: number }, ex
   };
 }
 
-/** 通过真实计分接口以弃权结果走完一个小场：主裁判记录并提交，裁判长接管复核锁定。 */
+type PlayState = { phase: string; format: string; players: { A: string[]; B: string[] }; pendingObligations: { id: string; type: string }[] };
+
+/** 0:0 开局：发球方的发球员与接发球员都站右区。 */
+function setup(state: PlayState, servingSide: "A" | "B") {
+  const receiving = servingSide === "A" ? "B" : "A";
+  return {
+    serverPlayerId: state.players[servingSide][0],
+    receiverPlayerId: state.players[receiving][0],
+    logicalCourts: state.format === "DOUBLES"
+      ? { A: { R: state.players.A[0], L: state.players.A[1] }, B: { R: state.players.B[0], L: state.players.B[1] } }
+      : null,
+  };
+}
+
+/**
+ * 通过真实计分接口正常打完一个小场（胜方连得每一分）：主裁判记分并提交，裁判长接管复核锁定。
+ * 不用弃权收尾：小场弃权会让负方队员本场对抗的后续小场按认输计（赛务口径 W-3，GCR 13.6.2）。
+ */
 async function finishRubber(referee: APIRequestContext, chief: APIRequestContext, matchCode: string, winnerSide: "A" | "B") {
   const control = await ok<ControlGrant>(await referee.post(`/api/matches/${matchCode}/control`, { data: { deviceSessionId: randomUUID() } }));
   const send = async (request: APIRequestContext, session: ControlGrant, version: number, type: string, payload: unknown) =>
-    ok<{ version: number }>(
+    ok<{ version: number; state: PlayState }>(
       await request.post(`/api/matches/${matchCode}/commands`, {
         data: envelope(session, version, type, payload),
         headers: { authorization: `Bearer ${session.controlToken}` },
       }),
     );
-  let result = await send(referee, control, 0, "RECORD_SPECIAL_OUTCOME", { type: "WO", winnerSide, reason: "对方未到" });
-  result = await send(referee, control, result.version, "SUBMIT_RESULT", { reason: "提交弃权结果" });
+  let result = await send(referee, control, 0, "RECORD_COIN_TOSS", {
+    valid: true,
+    winnerSide: "A",
+    winnerChoice: { kind: "SERVICE", decision: "SERVE" },
+    loserChoice: { kind: "END", end: "END_2" },
+  });
+  result = await send(referee, control, result.version, "CONFIRM_OPENING_SETUP", setup(result.state, "A"));
+  while (result.state.phase !== "MATCH_COMPLETE_PENDING_SUBMISSION") {
+    const obligation = result.state.pendingObligations[0];
+    if (obligation) {
+      result = await send(referee, control, result.version, obligation.type === "INTERVAL" ? "ACKNOWLEDGE_INTERVAL" : "CONFIRM_CHANGE_ENDS", { obligationId: obligation.id });
+    } else if (result.state.phase === "AWAITING_NEXT_GAME_SETUP") {
+      result = await send(referee, control, result.version, "CONFIRM_NEXT_GAME_SETUP", setup(result.state, winnerSide));
+    } else {
+      result = await send(referee, control, result.version, "RALLY_WON", { side: winnerSide });
+    }
+  }
+  result = await send(referee, control, result.version, "SUBMIT_RESULT", { reason: "提交本场结果" });
   const takeover = await ok<ControlGrant>(await chief.post(`/api/matches/${matchCode}/control/takeover`, { data: { deviceSessionId: randomUUID(), reason: "复核结果" } }));
   await send(chief, takeover, result.version, "CONFIRM_RESULT", { reason: "复核通过" });
 }
 
 test.describe.serial("阶段 4-D 团体对抗：出场名单与对抗胜负", () => {
   // 整条链路含开发服务器首次编译新页面，以及 30 个小场经真实计分接口锁定，默认 30 秒不够。
-  test.describe.configure({ timeout: 180_000 });
+  test.describe.configure({ timeout: 600_000 });
   test.beforeAll(() => {
     assertTestDatabaseUrl(process.env.DATABASE_URL);
   });
@@ -259,6 +292,22 @@ test.describe.serial("阶段 4-D 团体对抗：出场名单与对抗胜负", ()
     await expect(table).toContainText("未提交");
     await noHorizontalOverflow(page);
     await shot(page, "03-lineup-submitted-mobile");
+
+    // 赛务口径 W-6：对方提交前可以改交；人数不足时可声明认输某个小场，该小场的队员选择随之停用。
+    const mixed = page.getByTestId("lineup-editor").getByRole("listitem").nth(4);
+    await mixed.getByRole("checkbox").check();
+    await expect(page.getByLabel("第 5 场混双男")).toBeDisabled();
+    await page.getByRole("button", { name: "保存名单修改" }).click();
+    await expect(page.getByTestId("lineup-progress")).toContainText("已提交（第 2 版）");
+    await expect(table.getByRole("row").filter({ hasText: "混双" })).toContainText("认输（名单揭晓后生效）");
+    await expect(prisma.fixtureLineup.findFirstOrThrow({ where: { fixture: { competition: { tournament: { slug } } } }, orderBy: { version: "desc" }, select: { concededOrders: true } })).resolves.toEqual({ concededOrders: [5] });
+    await shot(page, "03b-lineup-conceded-mobile");
+    // 撤回认输：原先选的队员恢复，再交第 3 版。
+    await mixed.getByRole("checkbox").uncheck();
+    await expect(page.getByLabel("第 5 场混双男")).toHaveValue(/.+/);
+    await page.getByRole("button", { name: "保存名单修改" }).click();
+    await expect(page.getByTestId("lineup-progress")).toContainText("已提交（第 3 版）");
+    await expect(table.getByRole("row").filter({ hasText: "混双" })).not.toContainText("认输");
     await context.close();
   });
 
@@ -274,7 +323,7 @@ test.describe.serial("阶段 4-D 团体对抗：出场名单与对抗胜负", ()
     await expect(page.getByTestId("tie-competition-row")).toContainText("6");
     await page.getByRole("link", { name: "进入" }).click();
     await page.getByTestId("ties-GROUP").getByRole("listitem").filter({ hasText: fixture.code }).getByRole("link", { name: "详情" }).click();
-    await expect(page.getByTestId("lineup-progress")).toContainText("已提交（第 1 版）");
+    await expect(page.getByTestId("lineup-progress")).toContainText("已提交（第 3 版）");
     const table = page.getByTestId("rubber-table");
     await expect(table).toContainText("已提交，未公开");
     await expect(table).not.toContainText("数学男1");
@@ -370,7 +419,7 @@ test.describe.serial("阶段 4-D 团体对抗：出场名单与对抗胜负", ()
     await manager.page.goto(`/team/${slug}`);
     await manager.page.getByTestId("manager-ties").getByRole("link", { name: "查看" }).first().click();
     await expect(manager.page.getByTestId("tie-header")).toContainText("已结束");
-    await expect(manager.page.getByTestId("rubber-table")).toContainText("弃权");
+    await expect(manager.page.getByTestId("rubber-table")).toContainText("21:0 21:0");
     await noHorizontalOverflow(manager.page);
     await shot(manager.page, "09-manager-tie-result-mobile");
     await manager.context.close();

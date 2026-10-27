@@ -3,9 +3,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import {
   checkWriteOrigin,
   DEFAULT_PUBLIC_PAGE_RATE_LIMIT_PER_MINUTE,
-  FixedWindowRateLimiter,
   publicRateLimitFromEnv,
   requestSourceKey,
+  TokenBucketRateLimiter,
 } from "@/server/security/request-guard";
 import { configuredTrustedOrigins } from "@/server/security/trusted-origins";
 
@@ -16,7 +16,7 @@ import { configuredTrustedOrigins } from "@/server/security/trusted-origins";
 
 // 进程内计数：多实例部署时各算各的，重启后清零。
 function limiterFor(limit: number) {
-  return limit > 0 ? new FixedWindowRateLimiter(limit, 60_000) : null;
+  return limit > 0 ? new TokenBucketRateLimiter(limit) : null;
 }
 const publicApiLimiter = limiterFor(publicRateLimitFromEnv(process.env.PUBLIC_RATE_LIMIT_PER_MINUTE));
 const publicPageLimiter = limiterFor(

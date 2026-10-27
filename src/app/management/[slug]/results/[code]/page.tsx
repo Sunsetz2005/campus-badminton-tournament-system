@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 
 import { prisma } from "@/db/client";
 import { formatScoreline, OUTCOME_LABEL, RESULT_STAGE_LABEL, type ResultStage } from "@/domain/results/match-result";
-import { CAMPUS_DEMO_RANKING, describeStep, RANKING_BASIS_LABEL, RANKING_STATUS_LABEL, type RankingStatus } from "@/domain/results/ranking";
+import { GROUP_RANKING, describeStep, RANKING_BASIS_LABEL, RANKING_STATUS_LABEL, type RankingStatus } from "@/domain/results/ranking";
 import styles from "@/features/management/management.module.css";
 import { ConfirmRankingPanel } from "@/features/management/tie-panels";
 import { CorrectionPanel, ExclusionPanel, PublishStandingsPanel, RecordResultForm, ReviewResultPanel } from "@/features/results/result-panels";
@@ -85,10 +85,10 @@ export default async function CompetitionResultsPage({ params }: { params: Promi
     <>
       {heading}
       <div className={styles.info} data-testid="ranking-profile">
-        <strong>名次规则：{CAMPUS_DEMO_RANKING.name}（v{CAMPUS_DEMO_RANKING.version}）</strong>——{CAMPUS_DEMO_RANKING.notice}
+        <strong>名次规则：{GROUP_RANKING.name}（v{GROUP_RANKING.version}）</strong>——{GROUP_RANKING.notice}
         <details>
           <summary>查看比较顺序</summary>
-          <ol>{CAMPUS_DEMO_RANKING.rules.map((rule) => <li key={rule}>{rule}</li>)}</ol>
+          <ol>{GROUP_RANKING.rules.map((rule) => <li key={rule}>{rule}</li>)}</ol>
         </details>
       </div>
 

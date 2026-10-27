@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { requireTournamentRole } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
 
@@ -95,7 +96,7 @@ export async function uploadTournamentPoster(
   await mkdir(directory, { recursive: true });
   await writeFile(path.join(directory, posterPath), file.bytes, { flag: "wx" });
 
-  await prisma.$transaction(async (transaction) => {
+  await runTransaction(async (transaction) => {
     await transaction.tournament.update({
       where: { id: tournament.id },
       data: { posterPath, posterAlt: file.alt?.trim() || null },

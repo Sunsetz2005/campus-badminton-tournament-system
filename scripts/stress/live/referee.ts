@@ -10,6 +10,7 @@ import { sleep } from "../core/clock";
 import type { Client, CallResult } from "../core/http";
 import type { Rng } from "../core/rng";
 import { Narrative, type RuleShape } from "./narrative";
+import { SIM_OFFICIATING_NAME } from "../officiating-name";
 
 type Side = "A" | "B";
 
@@ -103,7 +104,7 @@ export class MatchDriver {
   }
 
   async acquire() {
-    const result = await this.client.call<Control & { status: string }>("POST", `/api/matches/${this.matchCode}/control`, { deviceSessionId: this.deviceSessionId }, {
+    const result = await this.client.call<Control & { status: string }>("POST", `/api/matches/${this.matchCode}/control`, { deviceSessionId: this.deviceSessionId, officiatingName: SIM_OFFICIATING_NAME }, {
       route: "/api/matches/[code]/control",
     });
     this.bump(result);

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { parseCsv, toCsv } from "@/domain/registration/csv";
 import { IMPORT_HEADERS, IMPORT_LIMITS, planImport, type ImportCompetition, type ImportPlan } from "@/domain/registration/import-plan";
 import { nameSetKey } from "@/domain/registration/registration-rules";
@@ -182,7 +183,7 @@ export async function commitRegistrationImport(
   }
 
   try {
-    return await prisma.$transaction(
+    return await runTransaction(
       async (transaction) => {
         await lockTournamentRow(transaction, tournament.id);
         const phase = (await transaction.tournament.findUniqueOrThrow({ where: { id: tournament.id }, select: { phase: true } })).phase;

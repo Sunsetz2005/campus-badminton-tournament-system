@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { Prisma, type CompetitionKind, type EntryType } from "@/generated/prisma/client";
-import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import {
   createMatchAggregate,
   downgradeMatchStateToEngineV1,
@@ -104,7 +104,7 @@ async function loadMatchFacts(transaction: Transaction, matchId: string) {
   // 个人项目：上场队员就是报名单位成员。团体小场：上场队员来自双方已公开并锁定的出场名单。
   let lineup: { A: { participantId: string; displayName: string }[]; B: { participantId: string; displayName: string }[] };
   if (match.rubberKind) {
-    if (match.notPlayedAt) throw new AppError(409, "rubber_not_played", "团体对抗胜负已定，该小场不再进行。");
+    if (match.notPlayedAt) throw new AppError(409, "rubber_not_played", "这场比赛不再进行：团体对抗胜负已定，或对手空缺已直接晋级。");
     if (!match.fixture?.lineupsRevealedAt) {
       throw new AppError(409, "match_not_ready", "双方出场名单尚未交齐，小场不能开始计分。");
     }
@@ -208,7 +208,7 @@ export async function loadVerifiedAggregate(transaction: Transaction, matchId: s
 
 export async function getAuthoritativeMatchState(userId: string, matchCode: string, afterVersion?: number) {
   const access = await getMatchAccess(userId, matchCode);
-  return prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${access.id}::uuid FOR UPDATE`;
     const match = await loadMatchFacts(transaction, access.id);
     /*
@@ -221,8 +221,9 @@ export async function getAuthoritativeMatchState(userId: string, matchCode: stri
     const aggregate = unchanged ? null : await loadVerifiedAggregate(transaction, access.id);
     const active = await transaction.scoringSession.findFirst({
       where: { matchId: access.id, status: "ACTIVE", expiresAt: { gt: new Date() } },
-      select: { id: true, userId: true, deviceSessionId: true, actingRole: true, expiresAt: true, takeoverGeneration: true },
+      select: { id: true, userId: true, deviceSessionId: true, actingRole: true, expiresAt: true, takeoverGeneration: true, officiatingName: true },
     });
+    const tournament = await transaction.tournament.findUniqueOrThrow({ where: { id: access.tournamentId }, select: { refereeMode: true } });
     const common = {
       serverTime: new Date().toISOString(),
       version: aggregate ? aggregate.state.version : match.version,
@@ -235,9 +236,15 @@ export async function getAuthoritativeMatchState(userId: string, matchCode: stri
             actingRole: active.actingRole,
             expiresAt: active.expiresAt.toISOString(),
             takeoverGeneration: active.takeoverGeneration,
+            officiatingName: active.officiatingName,
           }
         : { active: false },
-      access: { assignedReferee: access.assignedReferee, chiefReferee: access.chiefReferee },
+      access: {
+        assignedReferee: access.assignedReferee,
+        chiefReferee: access.chiefReferee,
+        // 共用裁判账号模式下，主裁判取得控制前须填写本人姓名（赛务口径 O-2）。
+        officiatingNameRequired: tournament.refereeMode === "SHARED_ACCOUNT",
+      },
     };
     if (!aggregate) return { status: "unchanged" as const, ...common };
     if (afterVersion === aggregate.state.version) return { status: "unchanged" as const, ...common };

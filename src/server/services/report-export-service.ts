@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { Prisma, type ReportEdition, type ReportKind, type TournamentRole } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { COMPETITION_KIND_LABEL } from "@/domain/registration/registration-rules";
 import { GENDER_LABEL, RUBBER_LABEL, type RubberKind } from "@/domain/registration/team-roster";
 import { utcToZonedLocal } from "@/domain/time/zoned-time";
@@ -262,7 +263,7 @@ export async function storeReportExport(
   render: (version: number) => GeneratedFile | Promise<GeneratedFile>,
   sources: Record<string, unknown>,
 ) {
-  return prisma.$transaction(
+  return runTransaction(
     async (tx) => {
       // 同一赛事的导出串行化（版本号分配与「当前正式版」替代）；不占用赛事行锁，渲染 PDF 期间不阻塞报名等其他写入。
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`report-export:${tournament.id}`}, 0))`;

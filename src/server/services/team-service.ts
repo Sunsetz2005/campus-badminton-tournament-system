@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { Prisma, type TournamentPhase } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { normalizeReason } from "@/domain/registration/registration-rules";
 import {
   formatTeamCode,
@@ -59,7 +60,7 @@ export async function createTeam(actorUserId: string, slug: string, rawInput: un
   if (!name) throw new AppError(400, "invalid_input", `${error}。`);
 
   try {
-    return await prisma.$transaction(async (transaction) => {
+    return await runTransaction(async (transaction) => {
       await lockTournamentRow(transaction, tournament.id);
       const existing = await transaction.team.findMany({ where: { tournamentId: tournament.id }, select: { code: true, name: true } });
       const key = teamNameKey(name);
@@ -127,7 +128,7 @@ export async function provisionTeamManager(actorUserId: string, slug: string, te
   const passwordHash = initialPassword ? await hashPassword(initialPassword) : null;
 
   try {
-    const result = await prisma.$transaction(async (transaction) => {
+    const result = await runTransaction(async (transaction) => {
       let userId = existing?.id ?? null;
       if (!userId) {
         const user = await transaction.user.create({
@@ -199,7 +200,7 @@ export async function resetTeamManagerPassword(actorUserId: string, slug: string
   if (user.status !== "ACTIVE") throw new AppError(409, "account_disabled", "账号已停用。");
   const initialPassword = generateInitialPassword();
   const passwordHash = await hashPassword(initialPassword);
-  await prisma.$transaction(async (transaction) => {
+  await runTransaction(async (transaction) => {
     const updated = await transaction.account.updateMany({
       where: { userId: user.id, providerId: "credential" },
       data: { password: passwordHash },
@@ -222,7 +223,7 @@ export async function resetTeamManagerPassword(actorUserId: string, slug: string
 export async function removeTeamManager(actorUserId: string, slug: string, teamId: string, userId: string) {
   const { tournament } = await requireManagedTournament(actorUserId, slug, ["ADMIN"]);
   const team = await loadTeam(tournament.id, teamId);
-  return prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     const binding = await transaction.teamManager.findUnique({
       where: { teamId_userId: { teamId: team.id, userId } },
       select: { id: true, user: { select: { email: true, systemRole: true, provisionedForTournamentId: true } } },
@@ -359,7 +360,7 @@ export async function submitTeamRoster(actor: RosterActor, slug: string, teamId:
   const note = parseNote(parsed.data.note);
 
   try {
-    return await prisma.$transaction(async (transaction) => {
+    return await runTransaction(async (transaction) => {
       await lockTournamentRow(transaction, tournament.id);
       const current = await transaction.tournament.findUniqueOrThrow({
         where: { id: tournament.id },
@@ -456,7 +457,7 @@ export async function withdrawTeamRoster(userId: string, slug: string, registrat
   if (!parsed.success) throw new AppError(400, "invalid_input", "撤回请求格式无效。");
   const reason = parsed.data.reason ? normalizeReason(parsed.data.reason) : null;
   const teamIds = access.teams.map((team) => team.id);
-  return prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     await lockTournamentRow(transaction, access.tournament.id);
     const registration = await transaction.registration.findFirst({
       where: { id: registrationId, tournamentId: access.tournament.id, teamId: { in: teamIds } },

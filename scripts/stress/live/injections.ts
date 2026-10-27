@@ -22,6 +22,7 @@ import { browserProbes } from "./browser";
 import { dbFaultProbes } from "./db-injections";
 import { MatchDriver, type Control, type MatchRunResult, type MatchStateView } from "./referee";
 import type { LiveRegistry } from "./venue";
+import { SIM_OFFICIATING_NAME } from "../officiating-name";
 
 type Side = "A" | "B";
 
@@ -243,7 +244,7 @@ function matchPointSide(state: MatchStateView): Side | null {
 }
 
 export async function acquireWith(client: Client, code: string, deviceSessionId: string) {
-  return client.call<Control & { status: string }>("POST", `/api/matches/${code}/control`, { deviceSessionId }, { route: "/api/matches/[code]/control" });
+  return client.call<Control & { status: string }>("POST", `/api/matches/${code}/control`, { deviceSessionId, officiatingName: SIM_OFFICIATING_NAME }, { route: "/api/matches/[code]/control" });
 }
 
 export async function heartbeatWith(client: Client, code: string, control: Control) {

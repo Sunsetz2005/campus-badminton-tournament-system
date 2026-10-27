@@ -2,8 +2,8 @@
  * 个人项目小组名次的纯规则。无 IO、无框架。
  *
  * 组内排名规则与每球计分规则分开：这里只读取「结果事实」，不关心比赛是怎么记分的。
- * 本文件实现的是一个明确命名的**演示方案**，不是 BWF 或学校已发布的正式规程；
- * 组织者确认正式规则后应另建版本与黄金测试，旧方案保留以便复现历史结果。
+ * 方案依据 BWF General Competition Regulations 16.2（2024-11 V6.0），由用户 2026-10-27 授权采用（赛务口径 R-1、R-3）。
+ * 已确认的历史名次保存了确认时的方案键与版本（旧键 `campus-demo` v1），可据此复现。
  */
 
 import type { MatchResultFact } from "@/domain/results/match-result";
@@ -19,28 +19,28 @@ export interface RankingProfile {
 }
 
 /**
- * 校园演示排名方案 v1：与知识库《赛事执行规则 v1.0》「小组排名」一节的项目默认一致。
- * 1. 只统计正常完成且正式确认的组内比赛，按获胜场数降序；
- * 2. 同胜场恰好两方：看两方直接对赛结果；缺少有效直接对赛则待处理；
- * 3. 同胜场三方或以上：比较整个小组有效比赛的净胜局；
- * 4. 分层后剩两方看直接对赛；仍有三方或以上再比整个小组有效比赛的净胜分；
- * 5. 净胜分后剩两方看直接对赛；三方或以上完全相同则并列待裁定，由裁判长记录抽签/裁定依据。
+ * BWF 小组排名方案（GCR 16.2）：
+ * 1. 只统计经裁判长复核锁定的组内比赛，按获胜场数降序（16.2.1）；
+ * 2. 同胜场恰好两方：看两方直接对赛结果（16.2.2）；缺少有效直接对赛则待处理；
+ * 3. 同胜场三方或以上：比较整个小组的净胜局（16.2.3），剩两方看直接对赛（16.2.3.1）；
+ * 4. 仍有三方或以上再比整个小组的净胜分（16.2.4），剩两方看直接对赛（16.2.4.1）；三方或以上完全相同抽签（16.2.4.2），
+ *    由裁判长记录抽签依据。
  * 不在缩小的同分子集上递归重算，不用得失分比例、报名时间、姓名、数据库 ID 或种子顺位决胜。
- * 出现未处理的特殊结果（WO/RET/DSQ/终止）时不自动定正式名次，须裁判长先选择经确认的处理（排除该单位）。
+ * 没有打完全部小组比赛的单位（弃权、退赛、取消资格的负方）全部小组成绩自动删除（16.2.5）；
+ * 终止待裁决（无胜方）的比赛仍须裁判长先处理。
  */
-export const CAMPUS_DEMO_RANKING: RankingProfile = Object.freeze({
-  key: "campus-demo",
+export const GROUP_RANKING: RankingProfile = Object.freeze({
+  key: "bwf-gcr-16-2",
   version: 1,
-  name: "校园演示排名方案",
-  demo: true,
-  notice: "演示配置：须组织者确认赛事规程后才能作为正式排名依据。",
+  name: "BWF 小组排名方案",
+  demo: false,
+  notice: "依据 BWF《竞赛通则》（GCR 2024-11 V6.0）第 16.2 条。",
   rules: Object.freeze([
-    "只统计正常完成且经裁判长复核锁定的组内比赛，先比获胜场数。",
-    "同胜场恰好两方：比两方之间的直接对赛；缺少有效直接对赛时待裁判长处理。",
-    "同胜场三方或以上：比整个小组有效比赛的净胜局。",
-    "净胜局分层后剩两方：比直接对赛；仍有三方或以上：比整个小组有效比赛的净胜分。",
-    "净胜分后剩两方：比直接对赛；三方或以上完全相同：并列待裁定，由裁判长记录抽签或裁定依据。",
-    "有未处理的特殊结果（弃权、退赛、取消资格、终止）时不产生正式名次；裁判长可决定排除不能完成比赛的单位及其全部对阵贡献。",
+    "只统计经裁判长复核锁定的组内比赛，先比获胜场数（16.2.1）。",
+    "同胜场恰好两方：比两方之间的直接对赛（16.2.2）；缺少有效直接对赛时待裁判长处理。",
+    "同胜场三方或以上：比整个小组的净胜局；比完剩两方时看直接对赛（16.2.3）。",
+    "仍有三方或以上：比整个小组的净胜分；剩两方看直接对赛，三方或以上完全相同由裁判长抽签并记录依据（16.2.4）。",
+    "因弃权、退赛、取消资格没有打完全部小组比赛的单位，全部小组成绩自动删除（16.2.5）；终止待裁决的比赛须裁判长先处理。",
   ]),
 }) as RankingProfile;
 
@@ -55,6 +55,8 @@ export interface RankingMatch {
 export interface RankingExclusionInput {
   entryId: string;
   reason: string;
+  /** 由 16.2.5 自动删除（未打完全部小组比赛），不是裁判长手工排除。 */
+  automatic?: boolean;
 }
 
 export interface RankingInput {
@@ -131,6 +133,8 @@ export interface GroupRanking {
   excludedMatchCodes: string[];
 }
 
+const OUTCOME_REASON: Record<string, string> = { WO: "弃权", RET: "退赛", DSQ: "取消资格" };
+
 function emptyRow(entryId: string): RankingRow {
   return {
     entryId,
@@ -149,9 +153,20 @@ function emptyRow(entryId: string): RankingRow {
   };
 }
 
-export function computeGroupRanking(input: RankingInput, profile: RankingProfile = CAMPUS_DEMO_RANKING): GroupRanking {
+export function computeGroupRanking(input: RankingInput, profile: RankingProfile = GROUP_RANKING): GroupRanking {
   const excluded = [...(input.excluded ?? [])];
   const excludedIds = new Set(excluded.map((item) => item.entryId));
+  const canonicalIds = new Set(input.entryIds);
+  // 16.2.5：弃权、退赛、取消资格的负方没有打完全部小组比赛，全部小组成绩删除（等同排除），自动生效。
+  for (const match of input.matches) {
+    if (match.fact.stage !== "CONFIRMED" || !match.fact.winner) continue;
+    if (!match.fact.outcome || !(match.fact.outcome in OUTCOME_REASON)) continue;
+    if (!canonicalIds.has(match.sideA) || !canonicalIds.has(match.sideB)) continue;
+    const loser = match.fact.winner === "A" ? match.sideB : match.sideA;
+    if (excludedIds.has(loser)) continue;
+    excludedIds.add(loser);
+    excluded.push({ entryId: loser, reason: `${match.code} ${OUTCOME_REASON[match.fact.outcome] ?? match.fact.outcome}，未打完全部小组比赛，成绩按 BWF GCR 16.2.5 删除。`, automatic: true });
+  }
   const ranked = input.entryIds.filter((id) => !excludedIds.has(id));
   const rows = new Map(ranked.map((id) => [id, emptyRow(id)]));
   const canonical = new Map(input.entryIds.map((id, index) => [id, index]));

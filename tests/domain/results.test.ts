@@ -12,7 +12,7 @@ import {
 import { computePlacements } from "@/domain/results/placements";
 import {
   applyRankingDecision,
-  CAMPUS_DEMO_RANKING,
+  GROUP_RANKING,
   computeGroupRanking,
   describeStep,
   type GroupRanking,
@@ -82,10 +82,9 @@ function recount(ranking: GroupRanking, matches: RankingMatch[]) {
 }
 
 describe("校园演示排名方案", () => {
-  it("明确标注为演示方案，须组织者确认", () => {
-    expect(CAMPUS_DEMO_RANKING.demo).toBe(true);
-    expect(CAMPUS_DEMO_RANKING.name).toBe("校园演示排名方案");
-    expect(CAMPUS_DEMO_RANKING.notice).toContain("组织者确认");
+  it("方案标明依据 BWF GCR 16.2，并有独立的方案键（旧确认记录保留 campus-demo 键）", () => {
+    expect(GROUP_RANKING).toMatchObject({ key: "bwf-gcr-16-2", version: 1, demo: false, name: "BWF 小组排名方案" });
+    expect(GROUP_RANKING.notice).toContain("16.2");
   });
 
   it("正常排名：胜场各不相同时按胜场排序", () => {
@@ -214,7 +213,7 @@ describe("校园演示排名方案", () => {
     expect(applyRankingDecision(ranking, null).error).toContain("暂定");
   });
 
-  it("特殊结果阻止正式名次；裁判长排除该单位后按其余比赛排名，原比赛不删除", () => {
+  it("弃权负方的全部小组成绩自动删除（GCR 16.2.5），其余单位照常排名，原比赛不删除；终止待裁决仍阻止名次", () => {
     const wo: MatchResultFact = { stage: "CONFIRMED", source: "LIVE", outcome: "WO", winner: "A", games: [], partial: null };
     const matches = [
       match("P1", "P2", confirmed(W)),
@@ -224,29 +223,29 @@ describe("校园演示排名方案", () => {
       match("P2", "P4", confirmed(W)),
       match("P3", "P4", confirmed(W)),
     ];
-    const blocked = computeGroupRanking({ entryIds: ["P1", "P2", "P3", "P4"], matches });
-    expect(blocked.status).toBe("BLOCKED");
-    expect(blocked.blockers).toEqual([{ code: "SPECIAL_OUTCOME", matchCode: "P1-P4", entryIds: ["P1", "P4"], outcome: "WO" }]);
-    expect(applyRankingDecision(blocked, null).error).toContain("特殊结果");
-
-    const handled = computeGroupRanking({
-      entryIds: ["P1", "P2", "P3", "P4"],
-      matches,
-      excluded: [{ entryId: "P4", reason: "赛前弃权，不能完成本组比赛" }],
-    });
+    const handled = computeGroupRanking({ entryIds: ["P1", "P2", "P3", "P4"], matches });
+    expect(handled.blockers).toEqual([]);
+    expect(handled.excluded).toEqual([expect.objectContaining({ entryId: "P4", automatic: true, reason: expect.stringContaining("16.2.5") })]);
     expect(handled.status).toBe("READY");
     expect(order(handled)).toEqual(["P1", "P2", "P3"]);
     expect(handled.excludedMatchCodes).toEqual(["P1-P4", "P2-P4", "P3-P4"]);
     // 其他参赛者对被排除单位的胜场也同步排除。
     expect(row(handled, "P2").won).toBe(1);
     recount(handled, matches);
+
+    const abandoned: MatchResultFact = { stage: "CONFIRMED", source: "LIVE", outcome: "ABANDONED", winner: null, games: [], partial: { a: 3, b: 2 } };
+    const blocked = computeGroupRanking({ entryIds: ["P1", "P2", "P3"], matches: [match("P1", "P2", abandoned), match("P1", "P3", confirmed(W)), match("P2", "P3", confirmed(W))] });
+    expect(blocked.status).toBe("BLOCKED");
+    expect(blocked.blockers).toEqual([{ code: "SPECIAL_OUTCOME", matchCode: "P1-P2", entryIds: ["P1", "P2"], outcome: "ABANDONED" }]);
+    expect(applyRankingDecision(blocked, null).error).toContain("特殊结果");
   });
 
-  it("退赛保留实际比分，但同样只作为特殊结果阻止正式名次", () => {
+  it("比赛中途退赛也算没打完全部小组比赛（GCR 16.2.5）：退赛方成绩删除，对手的这场胜利也不计", () => {
     const ret: MatchResultFact = { stage: "CONFIRMED", source: "LIVE", outcome: "RET", winner: "B", games: [{ a: 21, b: 18 }], partial: { a: 5, b: 9 } };
-    const ranking = computeGroupRanking({ entryIds: ["P1", "P2"], matches: [match("P1", "P2", ret)] });
-    expect(ranking.status).toBe("BLOCKED");
-    expect(ranking.rows.every((item) => item.played === 0)).toBe(true);
+    const ranking = computeGroupRanking({ entryIds: ["P1", "P2", "P3"], matches: [match("P1", "P2", ret), match("P2", "P3", confirmed(W))] });
+    expect(ranking.excluded.map((item) => item.entryId)).toEqual(["P1"]);
+    expect(row(ranking, "P2")).toMatchObject({ played: 1, won: 1 });
+    expect(ranking.excludedMatchCodes).toEqual(["P1-P2"]);
   });
 });
 

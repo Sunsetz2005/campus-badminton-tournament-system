@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import type { RegistrationStatus } from "@/generated/prisma/enums";
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { GENDER_LABEL } from "@/domain/registration/team-roster";
 import { formatZoned } from "@/domain/time/zoned-time";
 import {
@@ -48,7 +49,7 @@ export default async function RegistrationsPage({
     orderBy: { code: "asc" },
   });
   const competitionFilter = competitions.find((item) => item.code === query.competition) ?? null;
-  const locked = await prisma.$transaction((transaction) =>
+  const locked = await runTransaction((transaction) =>
     lockedCompetitionIds(transaction, tournament.phase, competitions.map((item) => item.id)),
   );
 

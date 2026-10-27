@@ -78,6 +78,7 @@ export default async function TeamTiePage({ params }: { params: Promise<{ slug: 
             endpoint={`/api/team/${data.access.tournament.slug}/fixtures/${fixture.id}/lineup`}
             expectedVersion={own?.lineup?.version ?? null}
             initial={initial}
+            initialConceded={own?.lineup?.conceded ?? []}
             roster={roster}
             rubbers={view.rubbers.map((rubber) => ({ order: rubber.order, kind: rubber.kind as RubberKind }))}
             submitLabel={own?.lineup ? "保存名单修改" : "提交出场名单"}

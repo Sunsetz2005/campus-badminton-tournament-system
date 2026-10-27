@@ -2,6 +2,7 @@ import Link from "next/link";
 import { forbidden, notFound, redirect } from "next/navigation";
 
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { describeRubbers, GENDER_LABEL, type RubberKind } from "@/domain/registration/team-roster";
 import { formatZoned, formatZonedShort } from "@/domain/time/zoned-time";
 import { registrationStatusLabel, registrationStatusTone } from "@/features/management/labels";
@@ -51,7 +52,7 @@ export default async function TeamPortalPage({ params }: { params: Promise<{ slu
     orderBy: { code: "asc" },
     select: { id: true, code: true, name: true, teamRubbers: true, teamRosterMin: true, teamRosterMax: true, teamMinMale: true, teamMinFemale: true },
   });
-  const locked = await prisma.$transaction((transaction) =>
+  const locked = await runTransaction((transaction) =>
     lockedCompetitionIds(transaction, tournament.phase, competitions.map((item) => item.id)),
   );
   // 只读取本人负责的队伍的报名。

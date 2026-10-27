@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 
 import { ISSUE_TITLE, type ScheduleIssueCode } from "@/domain/schedule/check";
-import { DiscardSlotButton, ReplaceRefereeForm, SlotEditor } from "@/features/schedule/schedule-draft";
+import { DiscardSlotButton, ReplaceRefereeForm, SlotEditor, TransferCourtForm } from "@/features/schedule/schedule-draft";
 import local from "@/features/schedule/schedule.module.css";
 import type { ScheduleRowView, SlotView } from "@/server/services/schedule-service";
 import { StatusBadge, type StatusTone } from "@/ui/status-badge";
@@ -157,6 +157,9 @@ export function ScheduleRows({
               ) : null}
               {mode === "published" && canReplaceReferee && showReferees && (row.status === "NOT_STARTED" || row.status === "IN_PROGRESS") ? (
                 <ReplaceRefereeForm currentId={slot.refereeId} matchCode={row.code} referees={referees} slug={slug} />
+              ) : null}
+              {mode === "published" && canReplaceReferee && row.lifecycleStatus === "SUSPENDED" ? (
+                <TransferCourtForm courts={courts} currentCourtCode={slot.courtCode} matchCode={row.code} slug={slug} />
               ) : null}
             </li>
           </Fragment>

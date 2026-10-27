@@ -2,10 +2,10 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 import { Prisma, type TournamentRole } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { requireAssignedReferee, requireChiefReferee } from "@/server/auth/authorization";
 import { logServerEvent } from "@/server/logging";
 import { AppError } from "@/server/services/errors";
-import { transactWithRetry } from "@/server/services/transaction-retry";
 
 export const SESSION_LIFETIME_MS = 2 * 60 * 1000;
 const DENIED_AUDIT_WINDOW_MS = 60 * 1000;
@@ -75,7 +75,16 @@ function sessionResponse(session: { id: string; takeoverGeneration: number; expi
   };
 }
 
-export async function acquireScoringSession(userId: string, matchCode: string, deviceSessionId: string) {
+/**
+ * 共用裁判账号模式（赛务口径 O-2）：取得控制前必须填写本人姓名，姓名记在控制会话与审计里。
+ * 同一设备续用时换了姓名视为换人交接，更新会话上的姓名并单独记一条审计。
+ */
+function normalizeOfficiatingName(value: string | null | undefined) {
+  const name = value?.replace(/\s+/g, " ").trim() ?? "";
+  return name ? name.slice(0, 40) : null;
+}
+
+export async function acquireScoringSession(userId: string, matchCode: string, deviceSessionId: string, rawOfficiatingName?: string | null) {
   let match: Awaited<ReturnType<typeof requireAssignedReferee>>;
   try {
     match = await requireAssignedReferee(userId, matchCode);
@@ -83,12 +92,17 @@ export async function acquireScoringSession(userId: string, matchCode: string, d
     if (error instanceof AppError && error.status === 403) await recordDeniedAcquire(userId, matchCode, error);
     throw error;
   }
+  const tournament = await prisma.tournament.findUniqueOrThrow({ where: { id: match.tournamentId }, select: { refereeMode: true } });
+  const officiatingName = tournament.refereeMode === "SHARED_ACCOUNT" ? normalizeOfficiatingName(rawOfficiatingName) : null;
+  if (tournament.refereeMode === "SHARED_ACCOUNT" && !officiatingName) {
+    throw new AppError(400, "officiating_name_required", "共用裁判账号请先填写本人姓名，再取得控制开始执裁。");
+  }
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_LIFETIME_MS);
   const { controlToken, tokenHash } = createControlToken();
   try {
     // 可串行化冲突（P2034/40001）时整段重跑：事务已整体回滚，重跑仍按「同一设备续用、其他设备 controller_exists」判定。
-    return await transactWithRetry(() => prisma.$transaction(async (transaction) => {
+    return await runTransaction(async (transaction) => {
       await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${match.id}::uuid FOR UPDATE`;
       await assertLiveScoring(transaction, match.id);
       await transaction.scoringSession.updateMany({
@@ -102,9 +116,22 @@ export async function acquireScoringSession(userId: string, matchCode: string, d
         }
         const resumed = await transaction.scoringSession.update({
           where: { id: active.id },
-          data: { tokenHash, expiresAt, lastHeartbeatAt: now },
+          data: { tokenHash, expiresAt, lastHeartbeatAt: now, ...(officiatingName ? { officiatingName } : {}) },
           select: { id: true, takeoverGeneration: true, expiresAt: true },
         });
+        if (officiatingName && active.officiatingName !== officiatingName) {
+          await transaction.auditLog.create({
+            data: {
+              tournamentId: match.tournamentId,
+              actorUserId: userId,
+              action: "OFFICIATING_HANDOVER",
+              targetType: "Match",
+              targetId: match.id,
+              outcome: "SUCCESS",
+              metadata: { matchCode, deviceSessionId, from: active.officiatingName, to: officiatingName },
+            },
+          });
+        }
         return { status: "resumed" as const, ...sessionResponse(resumed, controlToken), matchVersion: match.version };
       }
       const hadPrior = await transaction.scoringSession.count({ where: { matchId: match.id } });
@@ -112,7 +139,7 @@ export async function acquireScoringSession(userId: string, matchCode: string, d
         ? (await transaction.match.update({ where: { id: match.id }, data: { controlGeneration: { increment: 1 } }, select: { controlGeneration: true } })).controlGeneration
         : match.controlGeneration;
       const created = await transaction.scoringSession.create({
-        data: { matchId: match.id, userId, deviceSessionId, tokenHash, expiresAt, takeoverGeneration: generation, actingRole: "REFEREE" },
+        data: { matchId: match.id, userId, deviceSessionId, tokenHash, expiresAt, takeoverGeneration: generation, actingRole: "REFEREE", officiatingName },
         select: { id: true, takeoverGeneration: true, expiresAt: true },
       });
       await transaction.auditLog.create({
@@ -123,11 +150,11 @@ export async function acquireScoringSession(userId: string, matchCode: string, d
           targetType: "Match",
           targetId: match.id,
           outcome: "SUCCESS",
-          metadata: { matchCode, deviceSessionId, actingRole: "REFEREE", takeoverGeneration: generation },
+          metadata: { matchCode, deviceSessionId, actingRole: "REFEREE", takeoverGeneration: generation, officiatingName },
         },
       });
       return { status: "acquired" as const, ...sessionResponse(created, controlToken), matchVersion: match.version };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   } catch (error) {
     if (error instanceof AppError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
@@ -222,7 +249,7 @@ export async function takeoverScoringSession(userId: string, matchCode: string, 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_LIFETIME_MS);
   const { controlToken, tokenHash } = createControlToken();
-  return transactWithRetry(() => prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${match.id}::uuid FOR UPDATE`;
     await assertLiveScoring(transaction, match.id);
     const previous = await transaction.scoringSession.findFirst({ where: { matchId: match.id, status: "ACTIVE" } });
@@ -255,5 +282,5 @@ export async function takeoverScoringSession(userId: string, matchCode: string, 
       },
     });
     return { status: "taken_over" as const, ...sessionResponse(created, controlToken), matchVersion: match.version };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }

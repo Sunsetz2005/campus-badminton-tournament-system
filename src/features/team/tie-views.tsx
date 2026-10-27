@@ -16,6 +16,7 @@ export function sideName(view: TieView, side: "A" | "B") {
 }
 
 export function rubberStatus(rubber: Rubber): { label: string; tone: "ok" | "warn" | "info" | "neutral" } {
+  if (rubber.conceded) return { label: "认输", tone: "neutral" };
   if (rubber.notPlayed) return { label: "未进行", tone: "neutral" };
   if (rubber.final) return { label: "已锁定", tone: "ok" };
   if (rubber.verificationStatus === "PENDING_REVIEW") return { label: "待复核", tone: "warn" };
@@ -32,6 +33,8 @@ export function rubberStatus(rubber: Rubber): { label: string; tone: "ok" | "war
 }
 
 function resultText(view: TieView, rubber: Rubber) {
+  if (rubber.conceded === "BOTH") return "双方认输，无胜方";
+  if (rubber.conceded) return `${sideName(view, rubber.conceded === "A" ? "B" : "A")}胜（${sideName(view, rubber.conceded)}认输，按 GCR 16.3.8 计）`;
   if (rubber.notPlayed) return "胜负已定，不再进行";
   if (!rubber.final) return "—";
   const winner = rubber.winner ? sideName(view, rubber.winner) : "无胜方";
@@ -45,6 +48,8 @@ function playersText(view: TieView, rubber: Rubber, side: "A" | "B") {
   const info = view.sides.find((entry) => entry.side === side);
   if (!info?.entry) return "待定";
   if (players === null) return info.lineup ? "已提交，未公开" : "未提交";
+  // 名单里声明认输的小场（W-6）不排人；揭晓前只有本队看得到，结算到揭晓后才生效。
+  if (!players.length && info.lineup?.conceded.includes(rubber.order)) return view.revealedAt ? "认输" : "认输（名单揭晓后生效）";
   if (!players.length) return "未提交";
   return players.map((player) => player.name).join(" / ");
 }

@@ -117,8 +117,8 @@ test.describe.serial("阶段 6 成绩、名次与晋级", () => {
     await page.goto(`/management/${slug}/results`);
     await expect(page.getByRole("heading", { name: "成绩名次", level: 1 })).toBeVisible();
     await page.getByRole("link", { name: "成绩与名次" }).click();
-    await expect(page.getByTestId("ranking-profile")).toContainText("校园演示排名方案");
-    await expect(page.getByTestId("ranking-profile")).toContainText("须组织者确认");
+    await expect(page.getByTestId("ranking-profile")).toContainText("BWF 小组排名方案");
+    await expect(page.getByTestId("ranking-profile")).toContainText("16.2");
     const row = page.getByTestId(`match-${first.code}`);
     await row.getByRole("button", { name: "补录结果" }).click();
     await row.getByLabel("第 1 局 A 方比分").fill("25");
@@ -215,6 +215,25 @@ test.describe.serial("阶段 6 成绩、名次与晋级", () => {
     await chiefPage.reload();
     await noHorizontalOverflow(chiefPage);
     await shot(chiefPage, "05-results-mobile");
+
+    // 7. 赛务口径 W-2：裁判长登记选手退出，未开始的那一场（刚重开的第一场）自动以 WO 判给对手。
+    await chiefPage.setViewportSize({ width: 1280, height: 900 });
+    const withdrawn = await prisma.entryMember.findFirstOrThrow({ where: { entryId: loser }, include: { participant: true } });
+    await chiefPage.goto(`/management/${slug}/results`);
+    const withdrawal = chiefPage.getByTestId("withdrawal-panel");
+    await withdrawal.getByLabel("对象").selectOption(`person:${withdrawn.participant.publicCode}`);
+    await withdrawal.getByLabel("类型").selectOption("WITHDRAWN");
+    await withdrawal.getByLabel("原因（必填）").fill("赛前伤病，经队医确认不能继续比赛");
+    chiefPage.once("dialog", (dialog) => void dialog.accept());
+    await withdrawal.getByRole("button", { name: "登记并处理后续比赛" }).click();
+    await expect(withdrawal.getByRole("status")).toContainText(`以 WO 判给对手：${first.matches[0].code}`);
+    await expect(withdrawal.getByLabel("对象").locator("option", { hasText: withdrawn.participant.publicCode })).toHaveCount(0);
+    await shot(chiefPage, "06-withdrawal-walkover");
+    await expect(prisma.match.findUniqueOrThrow({ where: { id: first.matches[0].id }, select: { outcomeType: true, verificationStatus: true } })).resolves.toEqual({
+      outcomeType: "WO",
+      verificationStatus: "LOCKED",
+    });
+    await expect(prisma.participant.findUniqueOrThrow({ where: { id: withdrawn.participantId }, select: { withdrawalKind: true } })).resolves.toEqual({ withdrawalKind: "WITHDRAWN" });
     await chief.context.close();
   });
 });

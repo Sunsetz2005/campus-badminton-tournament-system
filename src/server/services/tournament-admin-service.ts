@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { Prisma, type TournamentPhase } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import {
   COMPETITION_CODE_PATTERN,
   COMPETITION_KIND_ENTRY_TYPE,
@@ -173,7 +174,7 @@ export async function createTournament(actorUserId: string, rawInput: unknown) {
   const preset = RULE_PRESETS[input.rulePreset];
 
   try {
-    return await prisma.$transaction(async (transaction) => {
+    return await runTransaction(async (transaction) => {
       const tournament = await transaction.tournament.create({
         data: {
           slug: input.slug,
@@ -267,7 +268,7 @@ export async function updateTournamentSettings(actorUserId: string, slug: string
   }
   const input = parseOrThrow(settingsSchema, rawInput);
   const window = registrationWindow(input.registrationOpensAt, input.registrationClosesAt, tournament.timezone);
-  await prisma.$transaction(async (transaction) => {
+  await runTransaction(async (transaction) => {
     await transaction.tournament.update({
       where: { id: tournament.id },
       data: { ...window, regulations: input.regulations },
@@ -322,7 +323,7 @@ export async function updateTournamentProfile(actorUserId: string, slug: string,
     startDate: new Date(`${input.startDate}T00:00:00.000Z`),
     endDate: new Date(`${input.endDate}T00:00:00.000Z`),
   };
-  await prisma.$transaction(async (transaction) => {
+  await runTransaction(async (transaction) => {
     const before = await transaction.tournament.findUniqueOrThrow({
       where: { id: tournament.id },
       select: { name: true, subtitle: true, organizer: true, venue: true, summary: true, startDate: true, endDate: true },
@@ -377,7 +378,7 @@ export async function transitionTournamentPhase(actorUserId: string, slug: strin
     if (competitions === 0) throw new AppError(409, "no_competitions", "至少设置一个比赛项目后才能开放报名。");
   }
 
-  await prisma.$transaction(async (transaction) => {
+  await runTransaction(async (transaction) => {
     const updated = await transaction.tournament.updateMany({
       where: { id: tournament.id, phase: tournament.phase },
       data: { phase: input.to },
@@ -413,7 +414,7 @@ export async function publishTournament(actorUserId: string, slug: string) {
   if (detail._count.competitions === 0) throw new AppError(409, "no_competitions", "发布前至少需要一个比赛项目。");
 
   const publishedAt = new Date();
-  await prisma.$transaction(async (transaction) => {
+  await runTransaction(async (transaction) => {
     const updated = await transaction.tournament.updateMany({
       where: { id: tournament.id, status: "DRAFT" },
       data: { status: "PUBLISHED", publishedAt },
@@ -442,7 +443,7 @@ export async function addCompetition(actorUserId: string, slug: string, rawInput
   const input = parseOrThrow(competitionInputSchema, rawInput);
   const columns = competitionColumns(input);
   try {
-    return await prisma.$transaction(async (transaction) => {
+    return await runTransaction(async (transaction) => {
       const competition = await transaction.competition.create({
         data: {
           tournamentId: tournament.id,

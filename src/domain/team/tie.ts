@@ -7,6 +7,10 @@
  *   淘汰赛「决出即止」：胜负已定时尚未开始的小场记为「未进行」，不是弃权、不记比分；
  *   已经开始的小场照常打完并计入。（2026-09-24 用户决定，与国际羽联团体赛通行做法一致。）
  * - 结果被重开后按事实重新推导：胜负可能撤回，「未进行」的小场随之恢复。
+ * - 认输与中途退赛（赛务口径 R-4 / W-6，BWF GCR 16.3.8）：一方因伤病、人数不足等不能完成某个小场，
+ *   该小场按「认输方不再得分」补完后计入局、分统计（例如 15:21 时退赛记 15:21、0:21）；
+ *   负方在本场对抗里退赛或弃权的队员，后续小场不再上场且不得替换，那些小场同样按认输计（GCR 13.6.2）。
+ *   比分展示仍用实际比分，补完的比分只用于积分榜统计。
  */
 
 import type { RubberKind } from "@/domain/registration/team-roster";
@@ -35,6 +39,39 @@ export interface RubberFact {
   winner: TieSide | null;
   /** 已完成各局比分（锁定结果）；退赛时包含中断局的已得分。 */
   games: readonly { a: number; b: number }[];
+  /** 计入积分榜的各局比分：认输、退赛时按 GCR 16.3.8 补完；缺省与 `games` 相同。 */
+  countedGames?: readonly { a: number; b: number }[];
+}
+
+export interface ConcessionRules {
+  bestOf: number;
+  targetPoints: number;
+  winBy: number;
+  capPoints: number;
+}
+
+/**
+ * GCR 16.3.8：认输方不再得分。先把进行中的那一局补到胜方赢下（不少于目标分、领先 winBy，封顶 capPoints），
+ * 再按 目标分:0 补齐胜方还差的局数。`partial` 是中断局的比分（赛前认输为 null）。
+ */
+export function concededGames(
+  games: readonly { a: number; b: number }[],
+  partial: { a: number; b: number } | null,
+  winner: TieSide,
+  rules: ConcessionRules,
+): { a: number; b: number }[] {
+  const result = games.map((game) => ({ ...game }));
+  const needed = Math.floor(rules.bestOf / 2) + 1;
+  const wonBy = (side: TieSide) => result.filter((game) => (side === "A" ? game.a > game.b : game.b > game.a)).length;
+  const loserScore = partial ? (winner === "A" ? partial.b : partial.a) : 0;
+  if (wonBy(winner) < needed && partial && (partial.a > 0 || partial.b > 0)) {
+    const winnerScore = Math.min(rules.capPoints, Math.max(rules.targetPoints, loserScore + rules.winBy));
+    result.push(winner === "A" ? { a: winnerScore, b: loserScore } : { a: loserScore, b: winnerScore });
+  }
+  while (wonBy(winner) < needed) {
+    result.push(winner === "A" ? { a: rules.targetPoints, b: 0 } : { a: 0, b: rules.targetPoints });
+  }
+  return result;
 }
 
 export type TieStatus = "NOT_STARTED" | "IN_PROGRESS" | "DECIDED" | "COMPLETE" | "NO_RESULT";
@@ -73,7 +110,7 @@ export function computeTie(rubbers: readonly RubberFact[], policy: TiePolicy): T
   for (const rubber of rubbers) {
     if (!rubber.final) continue;
     if (rubber.winner) rubbersWon[rubber.winner] += 1;
-    for (const game of rubber.games) {
+    for (const game of rubber.countedGames ?? rubber.games) {
       points.A += game.a;
       points.B += game.b;
       if (game.a > game.b) games.A += 1;

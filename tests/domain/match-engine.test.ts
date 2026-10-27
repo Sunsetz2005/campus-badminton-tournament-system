@@ -1114,3 +1114,26 @@ describe("阶段 2 纯规则引擎", () => {
     }
   });
 });
+
+describe("赛务口径 S-7：作废本场计分（开错比赛）", () => {
+  it("第一局打完前作废：回到抛币前的初始状态，版本继续递增，历史重放一致；第一局打完后拒绝", () => {
+    let aggregate = tossAndOpen(createSingles());
+    aggregate = accept(aggregate, command("RALLY_WON", { side: "A" }));
+    aggregate = accept(aggregate, command("RALLY_WON", { side: "B" }));
+    const before = aggregate.state.version;
+    const voided = accept(aggregate, command("VOID_MATCH_SCORING", { reason: "开错场次" }));
+    expect(voided.state).toMatchObject({ phase: "AWAITING_COIN_TOSS", score: { A: 0, B: 0 }, coinToss: null, version: before + 1 });
+    expect(voided.events.at(-1)?.metadata).toEqual({ voidedFromVersion: before });
+    expect(replayMatch(voided.initialState, voided.events)).toEqual(voided.state);
+    // 作废后照常重新开赛。
+    expect(tossAndOpen(voided).state.phase).toBe("IN_PROGRESS");
+    // 原因必填。
+    expect(applyCommand(aggregate, command("VOID_MATCH_SCORING", { reason: " " }))).toMatchObject({ status: "rejected" });
+
+    let finished = tossAndOpen(createSingles());
+    finished = accept(finished, command("CORRECT_SCORE_STATE", { reason: "推进到局末", replacement: replacement(finished.state, 20, 0), obligationModel: 2 } as never));
+    finished = clearObligations(accept(finished, command("RALLY_WON", { side: "A" })));
+    expect(finished.state.completedGames).toHaveLength(1);
+    expect(applyCommand(finished, command("VOID_MATCH_SCORING", { reason: "开错场次" }))).toMatchObject({ status: "rejected", error: { code: "void_after_first_game" } });
+  });
+});

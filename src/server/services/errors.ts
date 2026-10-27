@@ -1,6 +1,18 @@
 import { NextResponse } from "next/server";
 
 import { logServerEvent } from "@/server/logging";
+import { classifyTransientDatabaseError, type TransientDatabaseFailure } from "@/server/services/transaction-retry";
+
+/**
+ * SF-01 / SF-03 / SF-04：可以原样重发的数据库失败，返回 503 + Retry-After，与真正的程序错误（500）分开。
+ * 冲突与等连接超时发生在提交之前，事务已整体回滚，可以明确说「没有保存」；
+ * 连接中途断开可能恰好落在提交时，结果未知，只提示重发——记分命令靠 commandId 幂等对账。
+ */
+const TRANSIENT_RESPONSES: Record<TransientDatabaseFailure, { code: string; message: string; retryAfterSeconds: number }> = {
+  conflict: { code: "write_conflict", message: "同时提交的人较多，本次没有保存。请直接重新提交，不会重复记录。", retryAfterSeconds: 1 },
+  busy: { code: "service_busy", message: "服务繁忙，本次没有保存。请稍等几秒后直接重新提交。", retryAfterSeconds: 2 },
+  unavailable: { code: "database_unavailable", message: "数据库暂时连接不上，请稍后重新提交；记分会按原命令编号核对，不会重复记录。", retryAfterSeconds: 3 },
+};
 
 export class AppError extends Error {
   constructor(
@@ -24,6 +36,20 @@ export function errorResponse(error: unknown, fields: Record<string, unknown> = 
     return NextResponse.json(
       { error: { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) } },
       { status: error.status },
+    );
+  }
+  const transient = classifyTransientDatabaseError(error);
+  if (transient) {
+    const response = TRANSIENT_RESPONSES[transient];
+    logServerEvent("request_failed", {
+      ...fields,
+      status: 503,
+      code: response.code,
+      ...describeUnexpectedError(error),
+    });
+    return NextResponse.json(
+      { error: { code: response.code, message: response.message, retryable: true } },
+      { status: 503, headers: { "Retry-After": String(response.retryAfterSeconds) } },
     );
   }
   logServerEvent("request_failed", {

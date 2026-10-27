@@ -37,6 +37,46 @@ export function isRetryableTransactionError(error: unknown) {
   return false;
 }
 
+/**
+ * SF-03 / SF-04：可以原样重发的数据库失败。数据层由事务回滚与 commandId 幂等保证不重不丢，
+ * 这些失败交给 `errorResponse` 返回 503，客户端据此提示「暂时中断、正在重试」，而不是当成程序错误。
+ * - `conflict`：重试耗尽仍冲突（见 `isRetryableTransactionError`）；
+ * - `busy`：`P2028` 等连接超过 maxWait 或事务超时被回滚；
+ * - `unavailable`：库不可达、连接被终止或实例拒绝新连接（M4 停库、`pg_terminate_backend` 实测形状）。
+ */
+export type TransientDatabaseFailure = "conflict" | "busy" | "unavailable";
+
+const UNAVAILABLE_PRISMA_CODES = new Set(["P1001", "P1002", "P1008", "P1017"]);
+const UNAVAILABLE_SQLSTATES = new Set(["57P01", "57P02", "57P03", "53300", "08000", "08001", "08003", "08004", "08006"]);
+const UNAVAILABLE_DRIVER_KINDS = new Set(["DatabaseNotReachable", "ConnectionClosed", "SocketTimeout", "TooManyConnections"]);
+const UNAVAILABLE_NODE_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EPIPE"]);
+const UNAVAILABLE_MESSAGES = [/connection terminated/i, /can't reach database server/i, /terminating connection/i];
+
+export function classifyTransientDatabaseError(error: unknown): TransientDatabaseFailure | null {
+  if (isRetryableTransactionError(error)) return "conflict";
+  if (!(error instanceof Error)) return null;
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    if (error.code === "P2028") return "busy";
+    if (UNAVAILABLE_PRISMA_CODES.has(error.code)) return "unavailable";
+    const meta = error.meta as { code?: unknown; driverAdapterError?: { cause?: { originalCode?: unknown; kind?: unknown } } } | undefined;
+    const sqlState = meta?.code ?? meta?.driverAdapterError?.cause?.originalCode;
+    if (typeof sqlState === "string" && UNAVAILABLE_SQLSTATES.has(sqlState)) return "unavailable";
+    if (UNAVAILABLE_MESSAGES.some((pattern) => pattern.test(error.message))) return "unavailable";
+    return null;
+  }
+  if (error instanceof Prisma.PrismaClientInitializationError) return "unavailable";
+  if (error.name === "DriverAdapterError") {
+    const cause = error.cause as { kind?: unknown; originalCode?: unknown } | undefined;
+    if (typeof cause?.kind === "string" && UNAVAILABLE_DRIVER_KINDS.has(cause.kind)) return "unavailable";
+    if (typeof cause?.originalCode === "string" && UNAVAILABLE_SQLSTATES.has(cause.originalCode)) return "unavailable";
+    return null;
+  }
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" && (UNAVAILABLE_NODE_CODES.has(code) || UNAVAILABLE_SQLSTATES.has(code))) return "unavailable";
+  if (UNAVAILABLE_MESSAGES.some((pattern) => pattern.test(error.message))) return "unavailable";
+  return null;
+}
+
 function pause(attempt: number) {
   // 指数退避加抖动（10、20、40…ms，封顶 400ms），避免多个冲突方同时重试再次撞在一起。
   const base = Math.min(10 * 2 ** (attempt - 1), 400);

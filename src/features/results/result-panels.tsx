@@ -424,3 +424,104 @@ export function PublishStandingsPanel({ slug, competitionCode, disabledReason }:
     </form>
   );
 }
+
+/**
+ * 裁判长登记选手退出 / 取消资格、团体报名单位整体退出（赛务口径 W-2、W-4、W-7）。
+ * 提交后未开始的比赛以 WO 判给对手，后续签位记为空位；进行中、待复核的比赛原样列出，须在裁判台处理。
+ */
+export function WithdrawalPanel({
+  slug,
+  participants,
+  teams,
+}: {
+  slug: string;
+  participants: { id: string; label: string }[];
+  teams: { id: string; label: string }[];
+}) {
+  const router = useRouter();
+  const [target, setTarget] = useState("");
+  const [kind, setKind] = useState<"WITHDRAWN" | "DISQUALIFIED">("WITHDRAWN");
+  const [reason, setReason] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const [type, id] = target.split(":");
+    if (!id) return;
+    if (!window.confirm(type === "team" ? "确定登记该队整体退出吗？未开始的对抗将全部按认输计。" : "确定登记吗？该选手未开始的比赛将以 WO 判给对手。")) return;
+    setPending(true);
+    setError(null);
+    setDone(null);
+    const url = type === "team" ? `/api/admin/tournaments/${slug}/entries/${id}/withdrawal` : `/api/admin/tournaments/${slug}/participants/${id}/withdrawal`;
+    const result = await sendJson<{ walkovers: string[]; vacatedFixtures: string[]; concededFixtures: string[]; untouched: string[] }>(
+      url,
+      "POST",
+      type === "team" ? { reason } : { kind, reason },
+    );
+    setPending(false);
+    if (!result.ok) {
+      setError(errorText(result.error));
+      return;
+    }
+    const { walkovers, vacatedFixtures, concededFixtures, untouched } = result.data;
+    setDone(
+      [
+        walkovers.length ? `以 WO 判给对手：${walkovers.join("、")}` : null,
+        vacatedFixtures.length ? `后续签位记为空位：${vacatedFixtures.join("、")}` : null,
+        concededFixtures.length ? `团体对抗按认输结算：${concededFixtures.join("、")}` : null,
+        untouched.length ? `进行中或待复核、未自动处理（请到裁判台记录）：${untouched.join("、")}` : null,
+      ]
+        .filter(Boolean)
+        .join("；") || "已登记，没有需要处理的未开始比赛。",
+    );
+    setTarget("");
+    setReason("");
+    router.refresh();
+  }
+
+  return (
+    <form className={styles.form} data-testid="withdrawal-panel" onSubmit={submit}>
+      <div className={styles.grid}>
+        <label className={styles.field}>
+          <span>对象</span>
+          <select onChange={(event) => setTarget(event.target.value)} value={target}>
+            <option value="">请选择</option>
+            {participants.length ? (
+              <optgroup label="选手（个人项目与团体出场）">
+                {participants.map((item) => <option key={item.id} value={`person:${item.id}`}>{item.label}</option>)}
+              </optgroup>
+            ) : null}
+            {teams.length ? (
+              <optgroup label="团体报名单位（整队退出）">
+                {teams.map((item) => <option key={item.id} value={`team:${item.id}`}>{item.label}</option>)}
+              </optgroup>
+            ) : null}
+          </select>
+        </label>
+        {target.startsWith("person:") ? (
+          <label className={styles.field}>
+            <span>类型</span>
+            <select onChange={(event) => setKind(event.target.value as "WITHDRAWN" | "DISQUALIFIED")} value={kind}>
+              <option value="WITHDRAWN">退出（伤病等，GCR 13.6.1）</option>
+              <option value="DISQUALIFIED">取消资格（ITTO 3.6.2.2）</option>
+            </select>
+          </label>
+        ) : null}
+        <label className={styles.field}>
+          <span>原因（必填）</span>
+          <input maxLength={200} onChange={(event) => setReason(event.target.value)} placeholder="例如：赛前伤病，经队医确认不能继续比赛" value={reason} />
+        </label>
+      </div>
+      {error ? <p className={styles.alert} role="alert">{error}</p> : null}
+      {done ? <p className={styles.success} role="status">{done}</p> : null}
+      <div className={styles.actions}>
+        <ActionButton disabled={!target || !reason.trim()} loading={pending} loadingLabel="正在登记…" type="submit" variant="secondary">登记并处理后续比赛</ActionButton>
+        <span className={styles.hint}>
+          对整个赛事生效：个人项目未开始的比赛以 WO 判给对手，已打完的结果不改写；团体中该队员排在里面的未开始小场按认输计，之后不能再选他。
+        </span>
+      </div>
+    </form>
+  );
+}

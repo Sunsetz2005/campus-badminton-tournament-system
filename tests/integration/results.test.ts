@@ -280,7 +280,7 @@ describe("个人项目小组名次", () => {
     expect(loaded!.results!.placementsComplete).toBe(true);
   });
 
-  it("特殊结果阻止正式名次；裁判长排除不能完成比赛的单位后才能确认，原比赛保留", async () => {
+  it("弃权的单位没有打完全部小组比赛：全部小组成绩自动删除（GCR 16.2.5），可以直接确认名次，原比赛保留", async () => {
     const { slug, tournamentId, competitionId } = await published("special", 4, { format: "ROUND_ROBIN" });
     const fixtures = await groupFixtures(competitionId, "A");
     const withdrawn = fixtures[0].sideBEntryId as string;
@@ -293,20 +293,16 @@ describe("个人项目小组名次", () => {
         await resultOnly(slug, item.matches[0].code, { outcome: "NORMAL", games: aWins ? WIN : LOSE });
       }
     }
-    let ranking = (await loadCompetitionResults(prisma, tournamentId, "MS"))!.results!.groups[0].ranking;
-    expect(ranking.status).toBe("BLOCKED");
-    expect(ranking.blockers).toHaveLength(3);
-    await expect(confirmIndividualGroupRanking(chiefId, slug, "MS", "A", {})).rejects.toMatchObject({ code: "ranking_not_confirmable" });
-
-    await expect(setRankingExclusion(chiefId, slug, "MS", "A", { entryId: withdrawn, action: "ADD", reason: "" })).rejects.toMatchObject({ code: "reason_required" });
-    await expect(setRankingExclusion(refereeId, slug, "MS", "A", { entryId: withdrawn, action: "ADD", reason: "x" })).rejects.toMatchObject({ status: 403 });
-    await setRankingExclusion(chiefId, slug, "MS", "A", { entryId: withdrawn, action: "ADD", reason: "赛前伤病弃权，不能完成本组比赛" });
-    ranking = (await loadCompetitionResults(prisma, tournamentId, "MS"))!.results!.groups[0].ranking;
+    const ranking = (await loadCompetitionResults(prisma, tournamentId, "MS"))!.results!.groups[0].ranking;
+    expect(ranking.blockers).toHaveLength(0);
+    expect(ranking.excluded).toEqual([expect.objectContaining({ entryId: withdrawn, automatic: true })]);
     expect(ranking.status).toBe("READY");
     expect(ranking.rows).toHaveLength(3);
     expect(ranking.excludedMatchCodes).toHaveLength(3);
+    // 手工排除仍可用于其他情形，权限与原因要求不变。
+    await expect(setRankingExclusion(chiefId, slug, "MS", "A", { entryId: withdrawn, action: "ADD", reason: "" })).rejects.toMatchObject({ code: "reason_required" });
+    await expect(setRankingExclusion(refereeId, slug, "MS", "A", { entryId: withdrawn, action: "ADD", reason: "x" })).rejects.toMatchObject({ status: 403 });
     await confirmIndividualGroupRanking(chiefId, slug, "MS", "A", {});
-    await expect(setRankingExclusion(chiefId, slug, "MS", "A", { entryId: withdrawn, action: "REMOVE" })).rejects.toMatchObject({ code: "ranking_confirmed" });
     // 原比赛与比分都还在。
     await expect(prisma.match.count({ where: { fixture: { competitionId }, outcomeType: "WO", verificationStatus: "LOCKED" } })).resolves.toBe(3);
     const placements = (await loadCompetitionResults(prisma, tournamentId, "MS"))!.results!.placements;
@@ -437,5 +433,77 @@ describe("晋级、重复确认与结果更正", () => {
     const v3 = await publishStandings(adminId, slug, "MS", { note: "更正决赛结果后重新发布" });
     expect(v3.version).toBe(3);
     await expect(prisma.standingsPublication.count({ where: { competitionId } })).resolves.toBe(3);
+  });
+});
+
+describe("淘汰签位空缺（赛务口径 K-1 / K-2）", () => {
+  it("小组有效名次不足出线名额：空签位的对手以 WO 晋级；淘汰赛确认为双方终止：下一轮对手晋级；空位撤回后恢复待进行", async () => {
+    const { slug, competitionId } = await published("vacancy", 6, { format: "GROUPS_KNOCKOUT", qualifiersPerGroup: 2, thirdPlaceMatch: true });
+    // A 组：编号最小者打满，另外两人逐场弃权 → 两人成绩都按 16.2.5 删除，A 组只剩 1 个有效名次。
+    const groupA = await groupFixtures(competitionId, "A");
+    const codesA = [...new Set(groupA.flatMap((item) => [item.sideAEntry!.code, item.sideBEntry!.code]))].sort();
+    for (const item of groupA) {
+      const aIsBest = item.sideAEntry!.code === codesA[0];
+      const bIsBest = item.sideBEntry!.code === codesA[0];
+      const winnerSide = aIsBest ? "A" : bIsBest ? "B" : item.sideAEntry!.code < item.sideBEntry!.code ? "A" : "B";
+      await resultOnly(slug, item.matches[0].code, { outcome: "WO", winnerSide });
+    }
+    await playGroupByCode(slug, competitionId, "B");
+    await confirmIndividualGroupRanking(chiefId, slug, "MS", "A", {});
+    await confirmIndividualGroupRanking(chiefId, slug, "MS", "B", {});
+
+    // SF2 = B1 对 A2：A2 空缺，B1 以 WO 直接进入决赛，SF2 的比赛记为未进行。
+    const sf2 = await fixture(competitionId, "SF2");
+    expect(sf2).toMatchObject({ sideBEntryId: null, sideBVacant: true, vacancyDecided: true, winnerEntryId: sf2.sideAEntryId });
+    expect(sf2.matches[0].notPlayedAt).not.toBeNull();
+    let final = await fixture(competitionId, "F");
+    expect(final.sideBEntryId).toBe(sf2.sideAEntryId);
+
+    // SF1 双方都不能比：仅结果记录为终止、无胜方，复核锁定 → 决赛另一侧空缺，SF2 胜者以 WO 夺冠；三四名赛两侧都空。
+    const sf1 = await fixture(competitionId, "SF1");
+    await resultOnly(slug, sf1.matches[0].code, { outcome: "ABANDONED", games: [], partial: null });
+    final = await fixture(competitionId, "F");
+    expect(final).toMatchObject({ sideAVacant: true, vacancyDecided: true, winnerEntryId: sf2.sideAEntryId });
+    const third = await fixture(competitionId, "3P");
+    expect(third).toMatchObject({ sideAVacant: true, sideBVacant: true, vacancyDecided: true, winnerEntryId: null });
+    const placements = (await loadCompetitionResults(prisma, (await prisma.tournament.findUniqueOrThrow({ where: { slug } })).id, "MS"))!.results!.placements;
+    expect(placements.find((item) => item.entryId === sf2.sideAEntryId)?.label).toBe("冠军");
+
+    // 重开 SF1 的终止结果（更正）：决赛的空位与直接决出一并撤回，决赛恢复为等待 SF1 胜者、比赛恢复待进行。
+    const sf1Revision = (await prisma.match.findUniqueOrThrow({ where: { id: sf1.matches[0].id }, select: { resultRevisions: { orderBy: { revision: "desc" }, take: 1, select: { revision: true } } } })).resultRevisions[0].revision;
+    await reviewResultOnly(chiefId, slug, sf1.matches[0].code, { action: "REOPEN", expectedRevision: sf1Revision, reason: "核对记分表：双方实际到场" });
+    final = await fixture(competitionId, "F");
+    expect(final).toMatchObject({ sideAEntryId: null, sideAVacant: false, vacancyDecided: false, winnerEntryId: null, decidedAt: null });
+    expect(final.matches[0].notPlayedAt).toBeNull();
+    expect(await fixture(competitionId, "3P")).toMatchObject({ sideAVacant: false, sideBVacant: true, vacancyDecided: false });
+  });
+});
+
+describe("退出与取消资格（赛务口径 W-2 / W-4）", () => {
+  it("裁判长登记取消资格：未开始的小组比赛以 WO 判给对手并锁定，成绩按 16.2.5 自动删除；只有裁判长能登记，不能重复登记", async () => {
+    const { withdrawParticipant } = await import("@/server/services/withdrawal-service");
+    const { slug, tournamentId, competitionId } = await published("withdraw", 6, { format: "GROUPS_KNOCKOUT", qualifiersPerGroup: 2, thirdPlaceMatch: true });
+    const groupA = await groupFixtures(competitionId, "A");
+    const entryId = groupA[0].sideAEntryId as string;
+    const member = await prisma.entryMember.findFirstOrThrow({ where: { entryId }, select: { participant: { select: { publicCode: true } } } });
+    const code = member.participant.publicCode;
+
+    await expect(withdrawParticipant(adminId, slug, code, { kind: "DISQUALIFIED", reason: "" })).rejects.toMatchObject({ code: "reason_required" });
+    await expect(withdrawParticipant(refereeId, slug, code, { kind: "DISQUALIFIED", reason: "x" })).rejects.toMatchObject({ status: 403 });
+    const outcome = await withdrawParticipant(chiefId, slug, code, { kind: "DISQUALIFIED", reason: "严重违反赛场纪律" });
+    const involved = groupA.filter((item) => item.sideAEntryId === entryId || item.sideBEntryId === entryId);
+    expect(outcome.walkovers.sort()).toEqual(involved.map((item) => item.matches[0].code).sort());
+    expect(outcome.untouched).toEqual([]);
+    const locked = await prisma.match.findMany({ where: { id: { in: involved.map((item) => item.matches[0].id) } }, select: { outcomeType: true, verificationStatus: true } });
+    expect(locked.every((match) => match.outcomeType === "WO" && match.verificationStatus === "LOCKED")).toBe(true);
+
+    // 其余组内比赛打完后，被取消资格的单位不计名次，可以直接确认。
+    for (const item of groupA.filter((fixture) => !involved.includes(fixture))) {
+      await resultOnly(slug, item.matches[0].code, { outcome: "NORMAL", games: WIN });
+    }
+    const ranking = (await loadCompetitionResults(prisma, tournamentId, "MS"))!.results!.groups[0].ranking;
+    expect(ranking.excluded.map((item) => item.entryId)).toEqual([entryId]);
+    expect(ranking.status).toBe("READY");
+    await expect(withdrawParticipant(chiefId, slug, code, { kind: "WITHDRAWN", reason: "再次登记" })).rejects.toMatchObject({ code: "already_withdrawn" });
   });
 });

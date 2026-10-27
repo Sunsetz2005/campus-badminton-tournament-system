@@ -116,6 +116,9 @@ test.describe.serial("共用裁判账号：开通、登录、任意一场开赛"
     const matchCode = (await cards.first().locator(".officiating-match-code").textContent())!.trim();
     await cards.first().click();
     await expect(phone.page).toHaveURL(`/officiating/${matchCode}`);
+    // 赛务口径 O-2：共用账号先填写执裁人姓名，才能取得控制。
+    await expect(phone.page.getByRole("button", { name: "取得本机控制权" })).toBeDisabled();
+    await phone.page.getByLabel("执裁人姓名").fill("张裁判");
     await phone.page.getByRole("button", { name: "取得本机控制权" }).click();
     await expect(phone.page.locator(".scoring-workbench, body")).toContainText("本机可写");
 
@@ -123,6 +126,7 @@ test.describe.serial("共用裁判账号：开通、登录、任意一场开赛"
     const tablet = await loggedIn(browser, refereeUsername, refereePassword);
     await tablet.page.goto(`/officiating/${matchCode}`);
     await expect(tablet.page.getByTestId("badminton-court")).toBeVisible();
+    await tablet.page.getByLabel("执裁人姓名").fill("李裁判");
     await tablet.page.getByRole("button", { name: "取得本机控制权" }).click();
     await expect(tablet.page.locator("body")).toContainText("另一台设备控制");
     await expect(tablet.page.locator("body")).not.toContainText("本机可写");

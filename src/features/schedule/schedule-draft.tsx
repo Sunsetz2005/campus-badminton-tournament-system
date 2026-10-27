@@ -479,12 +479,16 @@ export function PublishPanel({
   slug,
   digest,
   hardCount,
+  unrelatedHardCount = 0,
   warningCount,
   draftChangeCount,
 }: {
   slug: string;
   digest: string;
+  /** 涉及本次草稿改动的硬冲突数；只有它挡住发布（赛务口径 S-2）。 */
   hardCount: number;
+  /** 与本次改动无关的既有硬冲突数：照常可以发布，但须另行处理。 */
+  unrelatedHardCount?: number;
   warningCount: number;
   draftChangeCount: number;
 }) {
@@ -495,13 +499,19 @@ export function PublishPanel({
   return (
     <div className={styles.form} data-testid="publish-panel">
       {blocked ? (
-        <p className={styles.alert}>草稿还有 {hardCount} 个硬冲突，必须先调整，不能通过确认放宽。</p>
+        <p className={styles.alert}>本次改动涉及的比赛还有 {hardCount} 个硬冲突，必须先调整，不能通过确认放宽。</p>
       ) : (
         <p className={styles.info}>
           草稿相对已发布版本有 {draftChangeCount} 场改动。发布后：计划时间与场地写入比赛、主裁判同步到各自的「我的执裁」、
           已排定时间的比赛进入公开赛程（按姓名公开策略显示）。已开始的比赛不会被移动。
         </p>
       )}
+      {unrelatedHardCount > 0 ? (
+        <p className={styles.alert} data-testid="unrelated-conflicts">
+          另有 {unrelatedHardCount} 个与本次改动无关的既有硬冲突（例如出场名单揭晓后出现的选手重叠），不影响本次发布，
+          会记入发布记录；请在上面的问题列表里找到对应比赛另行改期。
+        </p>
+      ) : null}
       {!blocked && warningCount > 0 ? (
         <label className={styles.checkRow}>
           <input checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} type="checkbox" />
@@ -586,6 +596,49 @@ export function ReplaceRefereeForm({ slug, matchCode, referees, currentId }: { s
         ) : null}
         <div className={styles.actions}>
           <ActionButton disabled={!refereeId || !reason.trim()} loading={pending} size="sm" type="submit">确认更换</ActionButton>
+        </div>
+      </form>
+    </details>
+  );
+}
+
+/** 裁判长把暂停中的比赛转到另一块空场地（赛务口径 S-5）：比分与发接发不变，从暂停处继续。 */
+export function TransferCourtForm({ slug, matchCode, courts, currentCourtCode }: { slug: string; matchCode: string; courts: Option[]; currentCourtCode: string | null }) {
+  const { pending, run, feedback } = useAction();
+  const [courtCode, setCourtCode] = useState("");
+  const [reason, setReason] = useState("");
+  return (
+    <details className={local.editor}>
+      <summary>转到其他场地</summary>
+      <form
+        className={local.editorBody}
+        data-testid={`transfer-court-${matchCode}`}
+        onSubmit={async (event) => {
+          event.preventDefault();
+          await run(
+            () => sendJson(`/api/admin/tournaments/${slug}/schedule/matches/${matchCode}/court`, "POST", { courtCode, reason }),
+            "已转场。比分与发接发保持不变，裁判在新场地恢复比赛即可。",
+          );
+        }}
+      >
+        <div className={local.editorGrid}>
+          <label className={styles.field}>
+            <span>新场地</span>
+            <select aria-label="新场地" onChange={(event) => setCourtCode(event.target.value)} required value={courtCode}>
+              <option value="">请选择</option>
+              {courts
+                .filter((court) => court.active !== false && court.code && court.code !== currentCourtCode)
+                .map((court) => <option key={court.id} value={court.code}>{court.name}</option>)}
+            </select>
+          </label>
+          <label className={styles.field}>
+            <span>原因</span>
+            <input aria-label="转场原因" maxLength={400} onChange={(event) => setReason(event.target.value)} placeholder="例如：场地漏水、灯光故障" required value={reason} />
+          </label>
+        </div>
+        {feedback}
+        <div className={styles.actions}>
+          <ActionButton disabled={!courtCode || !reason.trim()} loading={pending} size="sm" type="submit">确认转场</ActionButton>
         </div>
       </form>
     </details>

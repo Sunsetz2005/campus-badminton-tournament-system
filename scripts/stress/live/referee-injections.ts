@@ -19,6 +19,7 @@ import { brief, driver, toRally, withBorrowed, type Env } from "./injections";
 import { available, checkIn, type Official } from "./officials";
 import type { MatchStateView } from "./referee";
 import type { LiveRegistry } from "./venue";
+import { SIM_OFFICIATING_NAME } from "../officiating-name";
 
 const GROUP = "§13.9 裁判相关（逐场指派）";
 
@@ -162,8 +163,8 @@ async function swapBeforeStart(env: Env) {
     const replacement = env.tournament.officials.find((item) => item.userId !== original.userId && item.key !== "PLATFORM" && !item.busyWith);
     if (!replacement) return;
     const swapped = await replaceReferee(env, match.code, replacement, "仿真注入：开赛前换人");
-    const oldTry = await original.client!.call("POST", `/api/matches/${match.code}/control`, { deviceSessionId: env.rng.uuid() }, { route: "/api/matches/[code]/control" });
-    const newTry = await replacement.client!.call<{ sessionId: string; takeoverGeneration: number; controlToken: string }>("POST", `/api/matches/${match.code}/control`, { deviceSessionId: env.rng.uuid() }, { route: "/api/matches/[code]/control" });
+    const oldTry = await original.client!.call("POST", `/api/matches/${match.code}/control`, { deviceSessionId: env.rng.uuid(), officiatingName: SIM_OFFICIATING_NAME }, { route: "/api/matches/[code]/control" });
+    const newTry = await replacement.client!.call<{ sessionId: string; takeoverGeneration: number; controlToken: string }>("POST", `/api/matches/${match.code}/control`, { deviceSessionId: env.rng.uuid(), officiatingName: SIM_OFFICIATING_NAME }, { route: "/api/matches/[code]/control" });
     if (newTry.ok) {
       await replacement.client!.call("DELETE", `/api/matches/${match.code}/control`, { scoringSessionId: newTry.json!.sessionId, takeoverGeneration: newTry.json!.takeoverGeneration }, {
         route: "/api/matches/[code]/control",

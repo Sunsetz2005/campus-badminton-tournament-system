@@ -7,6 +7,8 @@
  *   兼项由报名时的报项约束。组织者可以按规程为团体项目设置按性别的上限（如「男队员不得兼项、女队员最多 2 项」，
  *   2026-09-25 按用户提供的校园联赛秩序册加入，为空仍表示不设上限）；
  * - 赛程发布后，计划时间重叠的两个小场（淘汰赛多块场地同时打）不能由同一名队员出场。
+ * - 人数不足时可以明确声明认输某个小场（不排人），按 BWF GCR 16.3.8 计（赛务口径 W-6）；
+ *   不能全部小场都认输——那等于退出这场对抗，须由裁判长按退赛处理。
  */
 
 import {
@@ -33,6 +35,8 @@ export interface LineupRubber {
 export interface LineupRubberInput {
   order: number;
   participantIds: readonly string[];
+  /** 本方认输该小场，不排人。 */
+  conceded?: boolean;
 }
 
 /** 同一队员在一场对抗里最多上几个小场（按性别）；null 表示不设上限。 */
@@ -52,7 +56,9 @@ export interface LineupOptions {
 export interface NormalizedLineupRubber {
   order: number;
   kind: RubberKind;
+  /** 认输的小场为空数组。 */
   participantIds: string[];
+  conceded?: boolean;
 }
 
 export function rubberTitle(rubber: LineupRubber) {
@@ -94,6 +100,14 @@ export function validateLineup(
     const title = rubberTitle(rubber);
     const item = inputByOrder.get(rubber.order);
     const ids = (item?.participantIds ?? []).filter((id) => typeof id === "string" && id !== "");
+    if (item?.conceded) {
+      if (ids.length) {
+        errors.push(`${title}已声明认输，不能同时排队员`);
+        continue;
+      }
+      lineup.push({ order: rubber.order, kind: rubber.kind, participantIds: [], conceded: true });
+      continue;
+    }
     const size = rubberSize(rubber.kind);
     if (ids.length !== size) {
       errors.push(`${title}需要 ${size} 名队员，当前 ${ids.length} 名`);
@@ -131,6 +145,9 @@ export function validateLineup(
     lineup.push({ order: rubber.order, kind: rubber.kind, participantIds: [...ids] });
   }
 
+  if (!errors.length && lineup.length && lineup.every((rubber) => rubber.conceded)) {
+    errors.push("不能所有小场都认输：这等于退出本场对抗，请联系裁判长按退赛处理");
+  }
   if (!errors.length) errors.push(...appearanceErrors(lineup, roster, options));
   return errors.length ? { lineup: null, errors: [...new Set(errors)] } : { lineup, errors };
 }

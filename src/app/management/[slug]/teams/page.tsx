@@ -1,4 +1,5 @@
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { describeRubbers, type RubberKind } from "@/domain/registration/team-roster";
 import { registrationStatusLabel, registrationStatusTone } from "@/features/management/labels";
 import styles from "@/features/management/management.module.css";
@@ -75,7 +76,7 @@ export default async function TeamsPage({ params }: { params: Promise<{ slug: st
       },
     }),
   ]);
-  const locked = await prisma.$transaction((transaction) =>
+  const locked = await runTransaction((transaction) =>
     lockedCompetitionIds(transaction, tournament.phase, competitions.map((item) => item.id)),
   );
 

@@ -1,11 +1,13 @@
 /**
  * 团体小组积分榜的纯规则。无 IO、无框架。
  *
- * 排名依据（项目默认，参照团体赛常见做法，正式规程须由组织者采纳）：
- * 1. 对抗胜场多者列前；
- * 2. 两队胜场相同：看两队之间那场对抗的胜负；
- * 3. 三队及以上胜场相同：依次比较组内全部对抗的小场胜负差、局数差、分数差；
- *    比较后仍剩两队相同时看两队之间的胜负，仍剩三队及以上相同时须抽签决定。
+ * 排名依据：BWF General Competition Regulations 16.3（2024-11 V6.0），赛务口径 R-2（2026-10-27）。
+ * 1. 对抗胜场多者列前（16.3.1）；
+ * 2. 两队胜场相同：看两队之间那场对抗的胜负（16.3.2）；
+ * 3. 三队及以上胜场相同：逐层比较组内全部对抗的对抗净胜、小场净胜、局净胜、分净胜（16.3.3—16.3.6）；
+ *    **每一层比完只剩两队相同时，立即回到两队之间的胜负**（16.3.3.1—16.3.6.1），不再比下一层；
+ *    各层都用整个小组的统计，不在缩小的子集上重算；最后仍有三队及以上相同须抽签（16.3.6.2）。
+ * 旧实现把三项差值当作一个整体比较，要全部比完才看相互胜负（M5 R4 S1 TEAM/A 两种口径结果相反）。
  * 只统计已结束（全部小场都有最终去向）的对抗。系统不替组织者抽签，无法区分的名次交由裁判长确认。
  */
 
@@ -77,18 +79,13 @@ function headToHead(ties: readonly StandingTie[], left: string, right: string): 
   return tie.winner === "A" ? tie.sideA : tie.sideB;
 }
 
-function diffKey(row: StandingRow) {
-  return [row.rubbersWon - row.rubbersLost, row.gamesWon - row.gamesLost, row.pointsWon - row.pointsLost];
-}
-
-function compareDiffs(left: StandingRow, right: StandingRow) {
-  const a = diffKey(left);
-  const b = diffKey(right);
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index] !== b[index]) return b[index] - a[index];
-  }
-  return 0;
-}
+/** 16.3.3—16.3.6 的逐层比较指标，顺序即层次。 */
+const DIFFERENTIAL_LAYERS: ((row: StandingRow) => number)[] = [
+  (row) => row.won - row.lost,
+  (row) => row.rubbersWon - row.rubbersLost,
+  (row) => row.gamesWon - row.gamesLost,
+  (row) => row.pointsWon - row.pointsLost,
+];
 
 /** 规范顺序：输入名单顺序作为最后的稳定排序依据，不含任何随机性。 */
 export function computeStandings(entryIds: readonly string[], ties: readonly StandingTie[]): GroupStandings {
@@ -138,6 +135,32 @@ export function computeStandings(entryIds: readonly string[], ties: readonly Sta
     return sorted;
   };
 
+  /** 三队及以上从第 `layer` 层开始逐层比较；某层分出的两队回到相互胜负，单独一队即定。 */
+  const resolveLayered = (block: StandingRow[], layer: number): StandingRow[] => {
+    if (layer >= DIFFERENTIAL_LAYERS.length) {
+      block.forEach((row) => (row.basis = "LOTS"));
+      unresolved.push(block.map((row) => row.entryId));
+      return block;
+    }
+    const metric = DIFFERENTIAL_LAYERS[layer];
+    const sorted = [...block].sort((left, right) => metric(right) - metric(left) || stable(left, right));
+    const result: StandingRow[] = [];
+    let cursor = 0;
+    while (cursor < sorted.length) {
+      const sub = sorted.filter((row) => metric(row) === metric(sorted[cursor]));
+      cursor += sub.length;
+      if (sub.length === 1) {
+        sub[0].basis = "DIFFERENTIALS";
+        result.push(sub[0]);
+      } else if (sub.length === 2) {
+        result.push(...resolvePair(sub));
+      } else {
+        result.push(...resolveLayered(sub, layer + 1));
+      }
+    }
+    return result;
+  };
+
   const all = [...rows.values()].sort((left, right) => right.won - left.won || stable(left, right));
   let index = 0;
   while (index < all.length) {
@@ -146,27 +169,10 @@ export function computeStandings(entryIds: readonly string[], ties: readonly Sta
     if (block.length === 1) {
       block[0].basis = "WINS";
       ordered.push(block[0]);
-      continue;
-    }
-    if (block.length === 2) {
+    } else if (block.length === 2) {
       ordered.push(...resolvePair(block));
-      continue;
-    }
-    const byDiff = [...block].sort((left, right) => compareDiffs(left, right) || stable(left, right));
-    let cursor = 0;
-    while (cursor < byDiff.length) {
-      const sub = byDiff.filter((row) => compareDiffs(row, byDiff[cursor]) === 0);
-      cursor += sub.length;
-      if (sub.length === 1) {
-        sub[0].basis = "DIFFERENTIALS";
-        ordered.push(sub[0]);
-      } else if (sub.length === 2) {
-        ordered.push(...resolvePair(sub));
-      } else {
-        sub.forEach((row) => (row.basis = "LOTS"));
-        unresolved.push(sub.map((row) => row.entryId));
-        ordered.push(...sub);
-      }
+    } else {
+      ordered.push(...resolveLayered(block, 0));
     }
   }
 

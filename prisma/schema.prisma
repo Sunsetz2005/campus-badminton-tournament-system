@@ -119,6 +119,12 @@ enum FixtureKind {
   THIRD_PLACE
 }
 
+// 选手退出（GCR 13.6.1）或被取消资格（ITTO 3.6.2.2），赛务口径 W-2 / W-4。
+enum WithdrawalKind {
+  WITHDRAWN
+  DISQUALIFIED
+}
+
 // 对阵一侧的来源：确定的报名单位、某组第几名、某场对阵的胜者/负者。未决来源不虚构参赛者。
 enum FixtureSourceType {
   ENTRY
@@ -402,6 +408,10 @@ model Participant {
   studentId           String?
   contact             String?
   gender              Gender?
+  // 裁判长登记的退出 / 取消资格（赛务口径 W-2、W-4）；对整个赛事生效。
+  withdrawnAt         DateTime?
+  withdrawalKind      WithdrawalKind?
+  withdrawalReason    String?
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
   tournament          Tournament           @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
@@ -424,6 +434,9 @@ model Entry {
   entryType     EntryType
   teamId        String?            @db.Uuid
   frozenAt      DateTime?
+  // 团体报名单位整体退出（赛务口径 W-7）。个人项目的退出登记在参赛者上。
+  withdrawnAt      DateTime?
+  withdrawalReason String?
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
   competition   Competition        @relation(fields: [competitionId], references: [id], onDelete: Cascade)
@@ -809,6 +822,8 @@ model ScoringSession {
   tokenHash          String               @unique
   takeoverGeneration Int                  @default(1)
   actingRole         TournamentRole       @default(REFEREE)
+  // 共用裁判账号模式下裁判自报的姓名（赛务口径 O-2）；逐场指派模式与裁判长接管为空。
+  officiatingName    String?
   status             ScoringSessionStatus @default(ACTIVE)
   expiresAt          DateTime
   lastHeartbeatAt    DateTime             @default(now())
@@ -993,6 +1008,10 @@ model Fixture {
   // 对抗胜负：由已锁定的小场结果推导，随结果重开自动撤回。
   winnerEntryId     String?           @db.Uuid
   decidedAt         DateTime?
+  // 淘汰签位空缺（赛务口径 K-1/K-2）：该侧来源已确定但无人可填；因空位直接决出时 vacancyDecided 为真。
+  sideAVacant       Boolean           @default(false)
+  sideBVacant       Boolean           @default(false)
+  vacancyDecided    Boolean           @default(false)
   createdAt         DateTime          @default(now())
   draw              Draw              @relation(fields: [drawId], references: [id], onDelete: Cascade)
   competition       Competition       @relation(fields: [competitionId], references: [id], onDelete: Cascade)
@@ -1025,6 +1044,8 @@ model FixtureLineup {
   source            LineupSource
   // 截止时间（首个小场计划开始前若干分钟）之后由管理员代交。
   submittedLate     Boolean      @default(false)
+  // 本方认输（不排人）的小场顺序号（赛务口径 W-6，BWF GCR 16.3.8）。
+  concededOrders    Int[]        @default([])
   version           Int          @default(1)
   submittedByUserId String?      @db.Uuid
   submittedAt       DateTime     @default(now())

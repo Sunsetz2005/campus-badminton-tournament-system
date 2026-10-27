@@ -2,6 +2,7 @@ import { randomInt } from "node:crypto";
 
 import { Prisma, type TournamentRole } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import {
   applyCommand,
   fingerprintMatchCommand,
@@ -12,7 +13,6 @@ import {
 import { validateRefereeSpecialOutcome } from "@/domain/rules/special-outcome";
 import { getMatchAccess } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
-import { transactWithRetry } from "@/server/services/transaction-retry";
 import {
   asInputJson,
   hashMatchValue,
@@ -34,6 +34,7 @@ export interface ScoringCommandEnvelope {
 
 const CHIEF_ONLY = new Set<MatchCommand["type"]>([
   "INVALIDATE_COIN_TOSS",
+  "VOID_MATCH_SCORING",
   "CONFIRM_RESULT",
   "REOPEN_RESULT",
 ]);
@@ -147,6 +148,42 @@ function endedAtProjection(before: MatchState, after: MatchState, now: Date) {
   return wasEnded ? null : undefined;
 }
 
+/**
+ * 赛务口径 S-4（2026-10-27，P-08）：本场任一选手正在另一场比赛（已开始未结束）时，本场不能开始。
+ * 只在「开局设置 → 进行中」这一步检查；暂停中的比赛不算占用（转场、伤停可能很长）。
+ * 个人项目的选手来自报名成员，团体小场来自出场名单（`MatchPlayer`）；团体报名本身没有成员行，两者取并集即可。
+ */
+async function assertPlayersNotOnCourt(transaction: Prisma.TransactionClient, matchId: string) {
+  const match = await transaction.match.findUniqueOrThrow({
+    where: { id: matchId },
+    select: {
+      players: { select: { participantId: true } },
+      sideAEntry: { select: { members: { select: { participantId: true } } } },
+      sideBEntry: { select: { members: { select: { participantId: true } } } },
+    },
+  });
+  const ids = [...match.players, ...(match.sideAEntry?.members ?? []), ...(match.sideBEntry?.members ?? [])].map((person) => person.participantId);
+  if (!ids.length) return;
+  const busy = await transaction.match.findFirst({
+    where: {
+      id: { not: matchId },
+      lifecycleStatus: "IN_PROGRESS",
+      OR: [
+        { players: { some: { participantId: { in: ids } } } },
+        { sideAEntry: { members: { some: { participantId: { in: ids } } } } },
+        { sideBEntry: { members: { some: { participantId: { in: ids } } } } },
+      ],
+    },
+    select: { code: true, court: { select: { name: true } } },
+    orderBy: { code: "asc" },
+  });
+  if (busy) {
+    throw new AppError(409, "player_on_other_court", `本场有选手正在${busy.court ? ` ${busy.court.name} ` : "另一场"}比赛（${busy.code}），等那场结束后再开始本场。`, {
+      busyMatchCode: busy.code,
+    });
+  }
+}
+
 function lifecycleProjection(state: MatchState) {
   if (state.phase === "PAUSED") return "SUSPENDED" as const;
   if (state.phase === "MATCH_COMPLETE_PENDING_SUBMISSION" || state.phase === "SPECIAL_OUTCOME_PENDING_SUBMISSION") {
@@ -174,7 +211,13 @@ async function updateProjections(
       lifecycleStatus,
       outcomeType,
       verificationStatus: after.phase === "CONFIRMED" ? "LOCKED" : after.phase === "SUBMITTED" ? "PENDING_REVIEW" : "UNVERIFIED",
-      startedAt: before.phase === "AWAITING_OPENING_SETUP" && after.phase === "IN_PROGRESS" ? now : undefined,
+      // 作废本场计分（S-7）回到抛币前：实际开始时刻一并清除，公开页不再显示进行中。
+      startedAt:
+        before.phase === "AWAITING_OPENING_SETUP" && after.phase === "IN_PROGRESS"
+          ? now
+          : after.phase === "AWAITING_COIN_TOSS" && before.phase !== "AWAITING_COIN_TOSS"
+            ? null
+            : undefined,
       endedAt: endedAtProjection(before, after, now),
     },
   });
@@ -253,7 +296,7 @@ export async function previewScoringCommand(
   controlToken: string,
 ) {
   const access = await getMatchAccess(actorUserId, matchCode);
-  return prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${access.id}::uuid FOR UPDATE`;
     const { match } = await requireController(transaction, access.id, actorUserId, envelope, controlToken);
     if (match.version !== envelope.expectedVersion) {
@@ -281,7 +324,7 @@ export async function submitScoringCommand(
   controlToken: string,
 ) {
   const access = await getMatchAccess(actorUserId, matchCode);
-  return transactWithRetry(() => prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${access.id}::uuid FOR UPDATE`;
     const { session, match } = await requireController(transaction, access.id, actorUserId, envelope, controlToken);
     const fingerprint = envelopeFingerprint(access.id, envelope);
@@ -313,6 +356,9 @@ export async function submitScoringCommand(
     const result = applyCommand(aggregate, command);
     if (result.status === "rejected") throw new AppError(422, result.error.code, result.error.message);
     if (result.status === "duplicate") throw new AppError(409, "event_history_duplicate", "内存历史与数据库幂等记录不一致。");
+    if (aggregate.state.phase === "AWAITING_OPENING_SETUP" && result.aggregate.state.phase === "IN_PROGRESS") {
+      await assertPlayersNotOnCourt(transaction, access.id);
+    }
     const event = result.events[0];
     const stateHash = hashMatchValue(result.aggregate.state);
     const now = new Date();
@@ -375,7 +421,7 @@ export async function submitScoringCommand(
       },
     });
     return response;
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
 export async function getScoringCommandResult(actorUserId: string, matchCode: string, commandId: string) {
@@ -408,7 +454,7 @@ export interface CoinTossDrawRequest {
  */
 export async function drawCoinToss(actorUserId: string, matchCode: string, request: CoinTossDrawRequest, controlToken: string) {
   const access = await getMatchAccess(actorUserId, matchCode);
-  return transactWithRetry(() => prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${access.id}::uuid FOR UPDATE`;
     const { match } = await requireController(transaction, access.id, actorUserId, { ...request, type: "RECORD_COIN_TOSS" }, controlToken);
     const aggregate = await loadVerifiedAggregate(transaction, access.id);
@@ -437,5 +483,5 @@ export async function drawCoinToss(actorUserId: string, matchCode: string, reque
       },
     });
     return { status: "drawn" as const, winnerSide, drawnAt: drawnAt.toISOString(), version: match.version };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }

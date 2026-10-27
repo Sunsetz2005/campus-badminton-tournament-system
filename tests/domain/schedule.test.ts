@@ -133,6 +133,26 @@ describe("赛程冲突检查", () => {
     expect(codes(check([a, b], [at("A", 0), at("B", 10, "c2", "r2")], { lockedChanges: ["B"] }))).toEqual(["HARD:STARTED_MATCH_CHANGED"]);
   });
 
+  it("赛务口径 S-1（SF-02）：一侧已开始或已结束造成的重叠是延误，记为警告；两场都未开始才是硬冲突", () => {
+    // 上一场超时：已结束的实际时间压到下一场的计划时间（同场地、同一人、同一裁判）。
+    const overran = match("A", { status: "ENDED", actualStart: T0, actualEnd: T0 + 50 * MINUTE, confirmedPersons: ["p-x"] });
+    const next = match("B", { confirmedPersons: ["p-x"] });
+    const delayed = check([overran, next], [at("A", 0, "c1", "r1"), at("B", 40, "c1", "r1")]);
+    expect(delayed.hardCount).toBe(0);
+    expect(codes(delayed).sort()).toEqual(["WARNING:COURT_OVERLAP", "WARNING:PERSON_OVERLAP", "WARNING:REFEREE_OVERLAP"]);
+    expect(delayed.issues.every((issue) => issue.message.startsWith("延误："))).toBe(true);
+    // 进行中的比赛同样按延误处理。
+    const live = match("A", { status: "IN_PROGRESS", actualStart: T0, confirmedPersons: ["p-x"] });
+    expect(check([live, next], [at("A", 0, "c1", "r1"), at("B", 20, "c1", "r1")]).hardCount).toBe(0);
+    // 淘汰依赖：前序已开始、按延误推算结束晚于下一轮计划时间 → 警告。
+    const semi = match("SF", { kind: "KNOCKOUT", status: "IN_PROGRESS", actualStart: T0, confirmedPersons: ["p1", "p2"] });
+    const final = match("F", { kind: "KNOCKOUT", stageOrder: 2, predecessors: ["SF"], candidateEntries: ["e1"] });
+    expect(codes(check([semi, final], [at("SF", 0), at("F", 20, "c2", "r2")]))).toContain("WARNING:DEPENDENCY_ORDER");
+    // 两场都未开始：仍是硬冲突。
+    const early = match("A", { confirmedPersons: ["p-x"] });
+    expect(check([early, next], [at("A", 0, "c1", "r1"), at("B", 20, "c1", "r1")]).hardCount).toBe(3);
+  });
+
   it("警告：超出开放时段、未指派裁判；摘要随警告集合变化", () => {
     const a = match("A");
     const b = match("B");
@@ -260,6 +280,29 @@ describe("自动排程建议", () => {
     const withReferee = result.placements.filter((placement) => placement.refereeId === "r1");
     for (const left of withReferee) for (const right of withReferee) if (left !== right) expect(overlap(left, right)).toBe(false);
     expect(result.placements.some((placement) => placement.refereeId === null)).toBe(true);
+  });
+
+  it("赛务口径 O-1：裁判负荷均衡优先，同一裁判最多连续执裁 2 场；范围外已排的场次也计入负荷", () => {
+    // 1 块场地、12 场互不相干的单打，3 名裁判：每人 4 场，没有人连续执裁 3 场。
+    const matches = Array.from({ length: 12 }, (_, index) => match(`M-${index + 1}`, { confirmedPersons: [`p${index}a`, `p${index}b`], fixtureSequence: index + 1 }));
+    const result = run(matches, { courtIds: ["c1"] });
+    const ordered = [...result.placements].sort((left, right) => left.start! - right.start!);
+    const counts = new Map<string, number>();
+    for (const placement of ordered) counts.set(placement.refereeId!, (counts.get(placement.refereeId!) ?? 0) + 1);
+    expect([...counts.values()]).toEqual([4, 4, 4]);
+    for (let index = 2; index < ordered.length; index += 1) {
+      const window = ordered.slice(index - 2, index + 1).map((placement) => placement.refereeId);
+      expect(new Set(window).size).toBeGreaterThan(1);
+    }
+    // r1 已在范围外执裁 3 场：本次 3 场新比赛先派给 r2、r3。
+    const fixed = [0, 1, 2].map((index) => match(`X-${index}`, { confirmedPersons: [`x${index}a`, `x${index}b`], status: "ENDED", actualStart: T0 - (3 - index) * 40 * MINUTE, actualEnd: T0 - (3 - index) * 40 * MINUTE + 30 * MINUTE }));
+    const fresh = matches.slice(0, 2);
+    const balanced = run([...fixed, ...fresh], {
+      scope: new Set(fresh.map((item) => item.id)),
+      current: new Map(fixed.map((item, index) => [item.id, { matchId: item.id, courtId: "c2", start: T0 - (3 - index) * 40 * MINUTE, durationMinutes: 30, refereeId: "r1", estimated: false }])),
+      courtIds: ["c1"],
+    });
+    expect(balanced.placements.map((placement) => placement.refereeId).sort()).toEqual(["r2", "r3"]);
   });
 
   it("排程无解：没有场地、没有比赛日或时段内排不下时如实列出原因，不硬塞", () => {

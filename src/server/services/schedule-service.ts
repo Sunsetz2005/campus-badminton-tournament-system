@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
+import { runTransaction } from "@/server/services/transaction";
 import { normalizeReason } from "@/domain/registration/registration-rules";
 import { RUBBER_LABEL, type RubberKind } from "@/domain/registration/team-roster";
 import { checkSchedule, warningDigest, type ScheduleCheckResult } from "@/domain/schedule/check";
@@ -121,6 +122,19 @@ export function draftChanges(facts: ScheduleFacts) {
   return facts.rows.filter((row) => row.scheduleSlot && !samePlacement(facts.draft.get(row.id)!, facts.published.get(row.id)!)).map((row) => row.id);
 }
 
+/**
+ * 赛务口径 S-2（2026-10-27，SF-05）：发布只被「本次草稿改动涉及的比赛」上的硬冲突挡住。
+ * 与本次改动无关的既有硬冲突（典型是团体出场名单揭晓后才出现的选手重叠）列为待处理，照常可以发布；
+ * 否则任何一条既有冲突都会让整个赛事再也发布不了（M5、M6 实测）。
+ */
+export function publishGate(facts: ScheduleFacts, all: ScheduleCheckResult = checkDraft(facts)) {
+  const changed = new Set(draftChanges(facts));
+  const blocking = changed.size ? checkDraft(facts, changed).issues.filter((issue) => issue.severity === "HARD") : [];
+  const blockingKeys = new Set(blocking.map((issue) => issue.key));
+  const unrelated = all.issues.filter((issue) => issue.severity === "HARD" && !blockingKeys.has(issue.key));
+  return { blocking, unrelated };
+}
+
 async function checkResponse(tournamentId: string, focusMatchIds?: string[]) {
   const facts = await loadScheduleFacts(prisma, tournamentId);
   const all = checkDraft(facts);
@@ -150,7 +164,7 @@ const configSchema = z.object({
 export async function updateScheduleConfig(actorUserId: string, slug: string, rawInput: unknown) {
   const tournament = await managedTournament(actorUserId, slug);
   const input = parseOrThrow(configSchema, rawInput, "赛程设置无效。");
-  return prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     await lockTournamentRow(transaction, tournament.id);
     await transaction.scheduleConfig.upsert({ where: { tournamentId: tournament.id }, create: { tournamentId: tournament.id, ...input }, update: input });
     await audit(transaction, tournament.id, actorUserId, "SCHEDULE_CONFIG_UPDATED", "Tournament", tournament.id, input);
@@ -190,7 +204,7 @@ export async function replaceScheduleDays(actorUserId: string, slug: string, raw
       throw new AppError(400, "invalid_window", `${row.day} 不是赛事时区下的有效日期或时段。`);
     }
   }
-  return prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     await lockTournamentRow(transaction, tournament.id);
     await transaction.scheduleDay.deleteMany({ where: { tournamentId: tournament.id } });
     if (rows.length) {
@@ -209,7 +223,7 @@ const courtsSchema = z.object({ count: z.number().int().min(1).max(40), namePref
 export async function addCourts(actorUserId: string, slug: string, rawInput: unknown) {
   const tournament = await managedTournament(actorUserId, slug);
   const input = parseOrThrow(courtsSchema, rawInput, "场地数量须为 1—40。");
-  return prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     await lockTournamentRow(transaction, tournament.id);
     const existing = await transaction.court.findMany({ where: { tournamentId: tournament.id }, select: { code: true, sortOrder: true } });
     if (existing.length + input.count > 40) throw new AppError(400, "too_many_courts", "一个赛事最多 40 块场地。");
@@ -241,7 +255,7 @@ const courtUpdateSchema = z.object({
 export async function updateCourt(actorUserId: string, slug: string, courtCode: string, rawInput: unknown) {
   const tournament = await managedTournament(actorUserId, slug);
   const input = parseOrThrow(courtUpdateSchema, rawInput, "场地设置无效。");
-  return prisma.$transaction(async (transaction) => {
+  return runTransaction(async (transaction) => {
     await lockTournamentRow(transaction, tournament.id);
     const court = await transaction.court.findUnique({ where: { tournamentId_code: { tournamentId: tournament.id, code: courtCode } } });
     if (!court) throw new AppError(404, "court_not_found", "场地不存在。");
@@ -304,7 +318,7 @@ export async function saveDraftSlot(actorUserId: string, slug: string, matchCode
   if ((input.courtCode === null) !== (input.start === null)) {
     throw new AppError(400, "court_and_time_required", "场地和开始时间要一起填写，或一起清空。");
   }
-  const matchId = await prisma.$transaction(async (transaction) => {
+  const matchId = await runTransaction(async (transaction) => {
     await lockTournamentRow(transaction, tournament.id);
     const detail = await transaction.tournament.findUniqueOrThrow({ where: { id: tournament.id }, select: { phase: true } });
     assertNotFinished(detail.phase);
@@ -339,7 +353,7 @@ export async function saveDraftSlot(actorUserId: string, slug: string, matchCode
 /** 放弃一场比赛的草稿改动，恢复为已发布的安排。 */
 export async function discardDraftSlot(actorUserId: string, slug: string, matchCode: string) {
   const tournament = await managedTournament(actorUserId, slug);
-  await prisma.$transaction(async (transaction) => {
+  await runTransaction(async (transaction) => {
     await lockTournamentRow(transaction, tournament.id);
     const match = await loadMatchInTournament(transaction, tournament.id, matchCode);
     await transaction.scheduleSlot.deleteMany({ where: { matchId: match.id } });
@@ -350,7 +364,7 @@ export async function discardDraftSlot(actorUserId: string, slug: string, matchC
 /** 放弃全部草稿改动。 */
 export async function discardDraft(actorUserId: string, slug: string) {
   const tournament = await managedTournament(actorUserId, slug);
-  const removed = await prisma.$transaction(async (transaction) => {
+  const removed = await runTransaction(async (transaction) => {
     await lockTournamentRow(transaction, tournament.id);
     const result = await transaction.scheduleSlot.deleteMany({ where: { tournamentId: tournament.id } });
     await audit(transaction, tournament.id, actorUserId, "SCHEDULE_DRAFT_DISCARDED", "Tournament", tournament.id, { removed: result.count });
@@ -373,7 +387,7 @@ export async function relayoutTie(actorUserId: string, slug: string, fixtureId: 
   const input = parseOrThrow(relayoutSchema, rawInput, "整场重排内容无效。");
   if (new Set(input.courtCodes).size !== input.courtCodes.length) throw new AppError(400, "duplicate_court", "场地不能重复选择。");
   const start = localToUtc(input.start, tournament.timezone, "开始时间").getTime();
-  const matchIds = await prisma.$transaction(async (transaction) => {
+  const matchIds = await runTransaction(async (transaction) => {
     await lockTournamentRow(transaction, tournament.id);
     const facts = await loadScheduleFacts(transaction, tournament.id);
     const fixture = facts.fixtureById.get(fixtureId);
@@ -426,7 +440,7 @@ export async function suggestDraft(actorUserId: string, slug: string, rawInput: 
   const tournament = await managedTournament(actorUserId, slug);
   const input = parseOrThrow(suggestSchema, rawInput ?? {}, "自动建议的范围无效。");
   const now = new Date();
-  const outcome = await prisma.$transaction(
+  const outcome = await runTransaction(
     async (transaction) => {
       await lockTournamentRow(transaction, tournament.id);
       const detail = await transaction.tournament.findUniqueOrThrow({ where: { id: tournament.id }, select: { phase: true } });
@@ -587,16 +601,17 @@ export async function publishSchedule(actorUserId: string, slug: string, rawInpu
   const input = parseOrThrow(publishSchema, rawInput, "发布请求无效。");
   const note = input.note ? normalizeReason(input.note) : null;
 
-  return prisma.$transaction(
+  return runTransaction(
     async (transaction) => {
       await lockTournamentRow(transaction, tournament.id);
       const detail = await transaction.tournament.findUniqueOrThrow({ where: { id: tournament.id }, select: { phase: true } });
       assertNotFinished(detail.phase);
       const facts = await loadScheduleFacts(transaction, tournament.id);
       const check = checkDraft(facts);
-      if (check.hardCount > 0) {
-        throw new AppError(409, "schedule_has_conflicts", `草稿还有 ${check.hardCount} 个硬冲突，不能发布。`, {
-          issues: check.issues.filter((issue) => issue.severity === "HARD").slice(0, 50),
+      const gate = publishGate(facts, check);
+      if (gate.blocking.length > 0) {
+        throw new AppError(409, "schedule_has_conflicts", `本次改动涉及的比赛还有 ${gate.blocking.length} 个硬冲突，不能发布。`, {
+          issues: gate.blocking.slice(0, 50),
         });
       }
       if (hashWarnings(check) !== input.warningDigest) {
@@ -704,8 +719,8 @@ export async function publishSchedule(actorUserId: string, slug: string, rawInpu
           publishedByUserId: actorUserId,
           matchCount: snapshot.length,
           snapshot: asJson(snapshot),
-          changes: asJson({ ...changes, madePublic: madePublic.count, revokedSessions }),
-          warnings: asJson(warnings),
+          changes: asJson({ ...changes, madePublic: madePublic.count, revokedSessions, unresolvedHard: gate.unrelated.length }),
+          warnings: asJson([...gate.unrelated.map((issue) => ({ code: issue.code, message: `未处理的既有冲突：${issue.message}` })), ...warnings]),
           note,
         },
         select: { id: true },
@@ -720,6 +735,7 @@ export async function publishSchedule(actorUserId: string, slug: string, rawInpu
         madePublic: madePublic.count,
         revokedSessions,
         acknowledgedWarnings: warnings.length,
+        unresolvedHard: gate.unrelated.length,
       });
       return {
         version,
@@ -729,6 +745,7 @@ export async function publishSchedule(actorUserId: string, slug: string, rawInpu
         refereeChanged: changes.referee.length,
         madePublic: madePublic.count,
         acknowledgedWarnings: warnings.length,
+        unresolvedHard: gate.unrelated.length,
       };
     },
     { timeout: 60_000 },
@@ -746,6 +763,60 @@ const replaceSchema = z.object({ refereeUserId: z.string().uuid(), reason: z.str
  * 同一事务内：停用原指派、启用新指派、吊销该场全部活动控制会话；新裁判进入工作台后按接管规则取得控制（控制代次递增），
  * 旧设备之后的任何写入都会因指派与会话失效而被拒绝。已结束并提交的比赛不能再换裁判。
  */
+const transferSchema = z.object({
+  courtCode: z.string().min(1).max(32),
+  reason: z.string().max(400),
+});
+
+/**
+ * 赛务口径 S-5（2026-10-27，P-05）：裁判长把暂停中的比赛转到另一块空场地，从暂停处继续（BWF Laws 16.3.3）。
+ * 只改场地，不动计划时间、比分与发接发；目标场地必须启用且没有进行中或暂停中的比赛。
+ * 数据库触发器只在本事务声明 `badminton.court_transfer` 时放行这一种改动。
+ */
+export async function transferSuspendedMatch(actorUserId: string, slug: string, matchCode: string, rawInput: unknown) {
+  const { tournament } = await requireManagedTournament(actorUserId, slug, ["CHIEF_REFEREE"]);
+  const parsed = transferSchema.safeParse(rawInput);
+  if (!parsed.success) throw new AppError(400, "invalid_input", "转场请求无效。");
+  const reason = normalizeReason(parsed.data.reason);
+  if (!reason) throw new AppError(400, "reason_required", "转场必须写明原因（例如场地漏水、灯光故障）。");
+
+  return runTransaction(async (transaction) => {
+    await lockTournamentRow(transaction, tournament.id);
+    const match = await transaction.match.findFirst({
+      where: { code: matchCode, stage: { competition: { tournamentId: tournament.id } } },
+      select: { id: true, code: true, lifecycleStatus: true, courtId: true, court: { select: { code: true, name: true } } },
+    });
+    if (!match) throw new AppError(404, "match_not_found", "比赛不存在。");
+    await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${match.id}::uuid FOR UPDATE`;
+    const current = await transaction.match.findUniqueOrThrow({ where: { id: match.id }, select: { lifecycleStatus: true } });
+    if (current.lifecycleStatus !== "SUSPENDED") {
+      throw new AppError(409, "match_not_suspended", "只有暂停中的比赛可以转场：请裁判先在工作台暂停比赛。");
+    }
+    const court = await transaction.court.findFirst({
+      where: { tournamentId: tournament.id, code: parsed.data.courtCode },
+      select: { id: true, code: true, name: true, active: true },
+    });
+    if (!court) throw new AppError(404, "court_not_found", "场地不存在。");
+    if (!court.active) throw new AppError(409, "court_closed", `${court.name} 已关闭，不能转入。`);
+    if (court.id === match.courtId) throw new AppError(409, "same_court", "比赛已经在这块场地。");
+    const busy = await transaction.match.findFirst({
+      where: { id: { not: match.id }, courtId: court.id, lifecycleStatus: { in: ["IN_PROGRESS", "SUSPENDED"] } },
+      select: { code: true },
+    });
+    if (busy) throw new AppError(409, "court_busy", `${court.name} 上 ${busy.code} 还没打完，不能转入。`);
+    await transaction.$executeRaw`SELECT set_config('badminton.court_transfer', 'on', true)`;
+    await transaction.match.update({ where: { id: match.id }, data: { courtId: court.id } });
+    await transaction.$executeRaw`SELECT set_config('badminton.court_transfer', 'off', true)`;
+    await audit(transaction, tournament.id, actorUserId, "MATCH_COURT_TRANSFERRED", "Match", match.id, {
+      matchCode: match.code,
+      fromCourt: match.court?.code ?? null,
+      toCourt: court.code,
+      reason,
+    });
+    return { matchCode: match.code, fromCourt: match.court?.name ?? null, toCourt: court.name };
+  });
+}
+
 export async function replaceMatchReferee(actorUserId: string, slug: string, matchCode: string, rawInput: unknown) {
   const { tournament } = await requireManagedTournament(actorUserId, slug, ["CHIEF_REFEREE"]);
   const parsed = replaceSchema.safeParse(rawInput);
@@ -754,7 +825,7 @@ export async function replaceMatchReferee(actorUserId: string, slug: string, mat
   if (!reason) throw new AppError(400, "reason_required", "临时更换裁判必须写明原因。");
   const newRefereeId = parsed.data.refereeUserId;
 
-  return prisma.$transaction(
+  return runTransaction(
     async (transaction) => {
       await lockTournamentRow(transaction, tournament.id);
       const match = await transaction.match.findFirst({
@@ -922,6 +993,7 @@ function utcLocal(instant: Date, timeZone: string) {
 export async function loadScheduleWorkspace(tournamentId: string, now: Date, filters: ScheduleWorkspaceFilters = {}) {
   const facts = await loadScheduleFacts(prisma, tournamentId);
   const draftCheck = checkDraft(facts);
+  const gate = publishGate(facts, draftCheck);
   const publishedCheck = checkPublished(facts);
   const delays = await loadPublishedDelays(prisma, tournamentId, now);
   const publications = await prisma.schedulePublication.findMany({
@@ -1013,6 +1085,9 @@ export async function loadScheduleWorkspace(tournamentId: string, now: Date, fil
       truncated: draftCheck.issues.length > 200,
     },
     warningDigest: hashWarnings(draftCheck),
+    /** S-2：真正挡住发布的硬冲突数（涉及本次改动），以及与本次改动无关、照常可发布的既有硬冲突数。 */
+    blockingHardCount: gate.blocking.length,
+    unrelatedHardCount: gate.unrelated.length,
     publishedCheck: {
       hardCount: publishedCheck.hardCount,
       warningCount: publishedCheck.warningCount,

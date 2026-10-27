@@ -9,6 +9,8 @@ import { acquireScoringSession, releaseScoringSession } from "@/server/services/
 
 const requestSchema = z.object({
   deviceSessionId: z.string().uuid(),
+  /** 共用裁判账号模式必填（赛务口径 O-2）。 */
+  officiatingName: z.string().max(80).nullish(),
 });
 
 const releaseSchema = z.object({
@@ -25,7 +27,7 @@ export async function POST(request: Request, context: { params: Promise<{ matchC
     const parsed = requestSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) throw new AppError(400, "invalid_request", "设备会话参数无效。");
     const { matchCode } = await context.params;
-    const result = await acquireScoringSession(user.id, matchCode, parsed.data.deviceSessionId);
+    const result = await acquireScoringSession(user.id, matchCode, parsed.data.deviceSessionId, parsed.data.officiatingName);
     return NextResponse.json(result, { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return errorResponse(error, {

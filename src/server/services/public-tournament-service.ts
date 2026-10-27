@@ -13,6 +13,7 @@ import {
   publicTournamentSelect,
   publishedMatchWhere,
 } from "@/reports/public-fields";
+import { publicReadCache } from "@/server/cache/shared-read-cache";
 import { AppError } from "@/server/services/errors";
 import { loadPublishedDelays } from "@/server/services/schedule-facts";
 import {
@@ -42,7 +43,7 @@ export function isPublicMatchCode(value: string): boolean {
 }
 
 /** 阶段 1 的公开白名单端点，保留给 `GET /api/public/tournaments/[slug]`。 */
-export async function getPublicTournament(slug: string) {
+async function loadPublicTournament(slug: string) {
   const tournament = await prisma.tournament.findFirst({
     where: { slug, status: "PUBLISHED" },
     select: publicTournamentSelect,
@@ -55,7 +56,7 @@ export async function getPublicTournament(slug: string) {
  * 首页赛事列表。只返回已发布赛事，按生命周期分桶交给界面分组。
  * 每个赛事额外带上已发布比赛数和进行中比赛数，用于卡片上的简要信息。
  */
-export async function listPublicTournaments(): Promise<PublicTournamentCard[]> {
+async function loadPublicTournaments(): Promise<PublicTournamentCard[]> {
   const tournaments = await prisma.tournament.findMany({
     where: { status: "PUBLISHED" },
     select: { ...publicTournamentCardSelect, id: true },
@@ -120,7 +121,7 @@ export interface PublicTournamentHeader {
  * 一旦进入该 Suspense 边界响应头就已经以 200 发出，页面内再 `notFound()`
  * 只能换掉内容、换不掉状态码。
  */
-export async function getPublicTournamentHeader(slug: string): Promise<PublicTournamentHeader | null> {
+async function loadPublicTournamentHeader(slug: string): Promise<PublicTournamentHeader | null> {
   if (!isPublicTournamentSlug(slug)) return null;
   return prisma.tournament.findFirst({
     where: { slug, status: "PUBLISHED" },
@@ -165,7 +166,7 @@ async function evidencedDelaysByCode(slug: string): Promise<Map<string, Date>> {
  * 顺序由服务端决定（计划时间 → 场地 → 比赛编号），界面不得自行按「进行中优先」重排。
  * 日期按赛事时区折算，绝不按访问设备时区。
  */
-export async function getPublicSchedule(slug: string): Promise<PublicScheduleResult> {
+async function loadPublicSchedule(slug: string): Promise<PublicScheduleResult> {
   if (!isPublicTournamentSlug(slug)) {
     throw new AppError(404, "tournament_not_found", "公开赛事不存在或尚未发布。");
   }
@@ -268,7 +269,7 @@ export interface PublicMatchDetailResult {
  * 公开比赛详情。同时校验赛事、比赛归属和逐场发布边界：
  * 不存在、未发布或不属于该赛事的比赛统一返回公开 404，不泄露草稿或跨赛事信息。
  */
-export async function getPublicMatchDetail(slug: string, matchCode: string): Promise<PublicMatchDetailResult> {
+async function loadPublicMatchDetail(slug: string, matchCode: string): Promise<PublicMatchDetailResult> {
   if (!isPublicTournamentSlug(slug) || !isPublicMatchCode(matchCode)) {
     throw new AppError(404, "match_not_found", "比赛不存在或尚未公开。");
   }
@@ -334,4 +335,28 @@ export async function getPublicMatchDetail(slug: string, matchCode: string): Pro
       venue: tournament.venue,
     },
   };
+}
+
+/*
+ * SF-06：对外导出的公开读取都经过短时共享缓存（见 `shared-read-cache.ts`）。
+ * 键里只有公开路径参数；结果不依赖访问者身份。
+ */
+export function getPublicTournament(slug: string) {
+  return publicReadCache.get(`tournament:${slug}`, () => loadPublicTournament(slug));
+}
+
+export function listPublicTournaments(): Promise<PublicTournamentCard[]> {
+  return publicReadCache.get("tournaments", loadPublicTournaments);
+}
+
+export function getPublicTournamentHeader(slug: string): Promise<PublicTournamentHeader | null> {
+  return publicReadCache.get(`header:${slug}`, () => loadPublicTournamentHeader(slug));
+}
+
+export function getPublicSchedule(slug: string): Promise<PublicScheduleResult> {
+  return publicReadCache.get(`schedule:${slug}`, () => loadPublicSchedule(slug));
+}
+
+export function getPublicMatchDetail(slug: string, matchCode: string): Promise<PublicMatchDetailResult> {
+  return publicReadCache.get(`match:${slug}:${matchCode}`, () => loadPublicMatchDetail(slug, matchCode));
 }
