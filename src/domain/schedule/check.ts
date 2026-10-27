@@ -2,8 +2,9 @@
  * 赛程冲突检查（纯函数）。
  *
  * 硬冲突（HARD）阻止发布，不能被确认放宽；警告（WARNING）需要发布者逐项看过并确认。
- * 赛务口径 S-1（2026-10-27，SF-02）：一侧已经开始或结束的重叠是延误造成的，记为警告并交给延误推算，
- * 只有两场都未开始时才是硬冲突。比赛按「接着打」执行（ITTO 3.5.17），延误不应让整份草稿不能发布。
+ * 赛务口径 S-1（2026-10-27，SF-02）：一侧已经开始或结束、且重叠只落在它原计划时段之外的，是延误造成的，
+ * 记为警告并交给延误推算；比赛按「接着打」执行（ITTO 3.5.17），延误不应让整份草稿不能发布。
+ * 未开始的比赛压进已开始比赛的原计划时段，是排程本身的冲突（例如新拖过去的比赛），仍是硬冲突。
  * 对尚未确定的晋级来源只做保守的「暂定」检查，绝不承诺未知对阵没有冲突。
  */
 
@@ -98,6 +99,12 @@ function pairKey(code: ScheduleIssueCode, ids: readonly string[], extra = "") {
 function nameList(ids: readonly string[], names: ReadonlyMap<string, string>, limit = 4) {
   const labels = ids.map((id) => names.get(id) ?? "（未命名）");
   return labels.length > limit ? `${labels.slice(0, limit).join("、")} 等 ${labels.length} 人` : labels.join("、");
+}
+
+function overlapsPlan(left: Placement | undefined, right: Placement | undefined) {
+  const a = plannedInterval(left);
+  const b = plannedInterval(right);
+  return a !== null && b !== null && overlaps(a, b);
 }
 
 export function checkSchedule(input: ScheduleCheckInput): ScheduleCheckResult {
@@ -202,8 +209,8 @@ export function checkSchedule(input: ScheduleCheckInput): ScheduleCheckResult {
     }
     if (tooEarly.length) {
       const last = [...tooEarly].sort((left, right) => right.end - left.end)[0];
-      // 前序比赛都已开始或结束：它们的结束时间是实际 / 延误推算值，属于延误，不是排程错误（S-1）。
-      const delayed = tooEarly.every((item) => !isMovable(item.match));
+      // 前序比赛都已开始或结束、且本场排在它们原计划结束之后：早于实际 / 延误推算的结束属于延误，不是排程错误（S-1）。
+      const delayed = tooEarly.every((item) => !isMovable(item.match) && planned.start >= (plannedInterval(placements.get(item.match.id))?.end ?? Number.NEGATIVE_INFINITY));
       add({
         key: pairKey("DEPENDENCY_ORDER", [match.id]),
         code: "DEPENDENCY_ORDER",
@@ -251,8 +258,10 @@ export function checkSchedule(input: ScheduleCheckInput): ScheduleCheckResult {
     right: { match: ScheduleMatchFacts; placement: Placement | undefined },
   ) {
     const ids = [left.match.id, right.match.id];
-    // S-1：一侧已开始或结束，重叠来自延误，降为警告。
-    const delayed = !isMovable(left.match) || !isMovable(right.match);
+    // S-1：一侧已开始或结束，且未开始一侧没有压进它的原计划时段，重叠来自延误，降为警告。
+    const fixed = !isMovable(left.match) ? left : !isMovable(right.match) ? right : null;
+    const movable = fixed === left ? right : left;
+    const delayed = fixed !== null && !overlapsPlan(movable.placement, fixed.placement);
     const severity: ScheduleIssueSeverity = delayed ? "WARNING" : "HARD";
     const labels = `${delayed ? "延误：" : ""}${left.match.label} 与 ${right.match.label}`;
     const leftCourt = left.placement?.courtId ?? null;

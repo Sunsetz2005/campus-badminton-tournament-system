@@ -784,7 +784,7 @@ export async function transferSuspendedMatch(actorUserId: string, slug: string, 
     await lockTournamentRow(transaction, tournament.id);
     const match = await transaction.match.findFirst({
       where: { code: matchCode, stage: { competition: { tournamentId: tournament.id } } },
-      select: { id: true, code: true, lifecycleStatus: true, courtId: true, court: { select: { code: true, name: true } } },
+      select: { id: true, code: true, lifecycleStatus: true, courtId: true, rubberKind: true, court: { select: { code: true, name: true } } },
     });
     if (!match) throw new AppError(404, "match_not_found", "比赛不存在。");
     await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${match.id}::uuid FOR UPDATE`;
@@ -804,6 +804,21 @@ export async function transferSuspendedMatch(actorUserId: string, slug: string, 
       select: { code: true },
     });
     if (busy) throw new AppError(409, "court_busy", `${court.name} 上 ${busy.code} 还没打完，不能转入。`);
+    // 目标场地接下来已排定、尚未开始的比赛：转来的比赛立即续打，会把它们顺延。临场转场不因此拒绝，但如实返回（与临时换裁判一致）。
+    const config = await loadScheduleConfig(transaction, tournament.id);
+    const now = new Date();
+    const until = new Date(now.getTime() + (match.rubberKind ? config.rubberMinutes : config.matchMinutes) * MINUTE);
+    const upcoming = await transaction.match.findMany({
+      where: {
+        courtId: court.id,
+        notPlayedAt: null,
+        lifecycleStatus: { in: ["SCHEDULED", "READY"] },
+        scheduledAt: { lt: until },
+        OR: [{ scheduledEndAt: { gt: now } }, { scheduledEndAt: null, scheduledAt: { gt: new Date(now.getTime() - config.matchMinutes * MINUTE) } }],
+      },
+      select: { code: true, scheduledAt: true },
+      orderBy: { scheduledAt: "asc" },
+    });
     await transaction.$executeRaw`SELECT set_config('badminton.court_transfer', 'on', true)`;
     await transaction.match.update({ where: { id: match.id }, data: { courtId: court.id } });
     await transaction.$executeRaw`SELECT set_config('badminton.court_transfer', 'off', true)`;
@@ -811,9 +826,15 @@ export async function transferSuspendedMatch(actorUserId: string, slug: string, 
       matchCode: match.code,
       fromCourt: match.court?.code ?? null,
       toCourt: court.code,
+      upcoming: upcoming.map((item) => item.code),
       reason,
     });
-    return { matchCode: match.code, fromCourt: match.court?.name ?? null, toCourt: court.name };
+    return {
+      matchCode: match.code,
+      fromCourt: match.court?.name ?? null,
+      toCourt: court.name,
+      upcoming: upcoming.map((item) => ({ code: item.code, scheduledAt: item.scheduledAt?.toISOString() ?? null })),
+    };
   });
 }
 

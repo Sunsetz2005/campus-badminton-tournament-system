@@ -179,7 +179,14 @@ describe("S-5 暂停中的比赛转场（P-05）", () => {
     await expect(transferSuspendedMatch(refereeId, slug, matches[0].code, { courtCode: "C2", reason: "场地漏水" })).rejects.toMatchObject({ status: 403 });
     await expect(transferSuspendedMatch(adminId, slug, matches[0].code, { courtCode: "C2", reason: "" })).rejects.toMatchObject({ code: "reason_required" });
     await expect(transferSuspendedMatch(adminId, slug, matches[0].code, { courtCode: "C3", reason: "场地漏水" })).rejects.toMatchObject({ code: "court_closed" });
-    await expect(transferSuspendedMatch(adminId, slug, matches[0].code, { courtCode: "C2", reason: "场地漏水" })).resolves.toMatchObject({ toCourt: c2.name });
+    // 目标场地接下来已排定的比赛：不拒绝转场，但如实列出（会被顺延）；几小时后的比赛不列。
+    const soon = Date.now() + 5 * 60_000;
+    await prisma.match.update({ where: { id: matches[1].id }, data: { courtId: c2.id, scheduledAt: new Date(soon), scheduledEndAt: new Date(soon + 30 * 60_000) } });
+    const later = Date.now() + 5 * 3_600_000;
+    await prisma.match.update({ where: { id: matches[2].id }, data: { courtId: c2.id, scheduledAt: new Date(later), scheduledEndAt: new Date(later + 30 * 60_000) } });
+    const transferred = await transferSuspendedMatch(adminId, slug, matches[0].code, { courtCode: "C2", reason: "场地漏水" });
+    expect(transferred).toMatchObject({ toCourt: c2.name });
+    expect(transferred.upcoming.map((item) => item.code)).toEqual([matches[1].code]);
 
     const moved = await prisma.match.findUniqueOrThrow({ where: { id: matches[0].id }, select: { courtId: true, version: true, lifecycleStatus: true } });
     expect(moved).toMatchObject({ courtId: c2.id, version: paused.version, lifecycleStatus: "SUSPENDED" });

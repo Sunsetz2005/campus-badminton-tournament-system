@@ -962,7 +962,8 @@ export async function loadCompetitionResults(client: Client, tournamentId: strin
   const label = (entryId: string) => entryNames.get(entryId) ?? { code: "?", name: entryId };
   const snapshot: StandingsSnapshot = {
     competition: { code: competition.code, name: competition.name },
-    profile: groups[0]?.ranking.profile ?? {
+    // 名次按确认时的方案定下：取确认记录里保存的方案（旧赛事可能是 `campus-demo`），不用实时重算的当前方案。
+    profile: groups.find((item) => item.confirmed)?.confirmed?.profile ?? groups[0]?.ranking.profile ?? {
       key: GROUP_RANKING.key,
       version: GROUP_RANKING.version,
       name: GROUP_RANKING.name,

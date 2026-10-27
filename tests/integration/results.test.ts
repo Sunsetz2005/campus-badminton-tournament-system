@@ -339,6 +339,23 @@ describe("晋级、重复确认与结果更正", () => {
     expect(loaded.needsRepublish).toBe(false);
     expect(loaded.placements.find((item) => item.entryId === a3)?.label).toBe("A 组未出线");
 
+    // 发布快照的排名方案取自确认记录，而不是实时重算的当前方案：模拟一个旧版按 `campus-demo` 确认的小组（测试库夹具，验证后复原）。
+    expect(loaded.snapshot.profile.key).toBe("bwf-gcr-16-2");
+    const groupRows = await prisma.group.findMany({ where: { stage: { competitionId } }, orderBy: { code: "asc" }, select: { id: true, ranking: true } });
+    const original = groupRows[0].ranking as Record<string, unknown>;
+    const legacyProfile = { key: "campus-demo", version: 1, name: "校园演示排名方案", demo: true };
+    try {
+      for (const row of groupRows) {
+        await prisma.group.update({ where: { id: row.id }, data: { ranking: { ...(row.ranking as Record<string, unknown>), profile: legacyProfile } } });
+      }
+      const legacy = (await loadCompetitionResults(prisma, tournamentId, "MS"))!.results!;
+      expect(legacy.snapshot.profile).toMatchObject({ key: "campus-demo", name: "校园演示排名方案" });
+      expect(legacy.groups[0].ranking.profile.key).toBe("bwf-gcr-16-2");
+    } finally {
+      for (const row of groupRows) await prisma.group.update({ where: { id: row.id }, data: { ranking: row.ranking as object } });
+    }
+    expect(((await prisma.group.findUniqueOrThrow({ where: { id: groupRows[0].id } })).ranking as Record<string, unknown>).profile).toEqual(original.profile);
+
     // SF1：裁判台弃权结果，裁判长复核锁定 → 胜者进入决赛、负者进入三四名赛。
     const live = await liveWalkover(sf1.matches[0].id, "A");
     const final = await fixture(competitionId, "F");

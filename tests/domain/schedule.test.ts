@@ -141,13 +141,19 @@ describe("赛程冲突检查", () => {
     expect(delayed.hardCount).toBe(0);
     expect(codes(delayed).sort()).toEqual(["WARNING:COURT_OVERLAP", "WARNING:PERSON_OVERLAP", "WARNING:REFEREE_OVERLAP"]);
     expect(delayed.issues.every((issue) => issue.message.startsWith("延误："))).toBe(true);
-    // 进行中的比赛同样按延误处理。
-    const live = match("A", { status: "IN_PROGRESS", actualStart: T0, confirmedPersons: ["p-x"] });
-    expect(check([live, next], [at("A", 0, "c1", "r1"), at("B", 20, "c1", "r1")]).hardCount).toBe(0);
+    // 进行中的比赛同样按延误处理：晚开 10 分钟，推算占用压到下一场的计划时间。
+    const live = match("A", { status: "IN_PROGRESS", actualStart: T0 + 10 * MINUTE, confirmedPersons: ["p-x"] });
+    expect(check([live, next], [at("A", 0, "c1", "r1"), at("B", 30, "c1", "r1")]).hardCount).toBe(0);
+    // 但把未开始的比赛排进已开始比赛的原计划时段（例如新拖过去），是排程冲突，仍是硬冲突。
+    const dragged = check([live, next], [at("A", 0, "c1", "r1"), at("B", 20, "c1", "r1")]);
+    expect(dragged.hardCount).toBe(3);
+    expect(dragged.issues.some((issue) => issue.message.startsWith("延误："))).toBe(false);
     // 淘汰依赖：前序已开始、按延误推算结束晚于下一轮计划时间 → 警告。
-    const semi = match("SF", { kind: "KNOCKOUT", status: "IN_PROGRESS", actualStart: T0, confirmedPersons: ["p1", "p2"] });
+    const semi = match("SF", { kind: "KNOCKOUT", status: "IN_PROGRESS", actualStart: T0 + 10 * MINUTE, confirmedPersons: ["p1", "p2"] });
     const final = match("F", { kind: "KNOCKOUT", stageOrder: 2, predecessors: ["SF"], candidateEntries: ["e1"] });
-    expect(codes(check([semi, final], [at("SF", 0), at("F", 20, "c2", "r2")]))).toContain("WARNING:DEPENDENCY_ORDER");
+    expect(codes(check([semi, final], [at("SF", 0), at("F", 30, "c2", "r2")]))).toContain("WARNING:DEPENDENCY_ORDER");
+    // 下一轮排在前序原计划结束之前：排程错误，硬冲突。
+    expect(codes(check([semi, final], [at("SF", 0), at("F", 20, "c2", "r2")]))).toContain("HARD:DEPENDENCY_ORDER");
     // 两场都未开始：仍是硬冲突。
     const early = match("A", { confirmedPersons: ["p-x"] });
     expect(check([early, next], [at("A", 0, "c1", "r1"), at("B", 20, "c1", "r1")]).hardCount).toBe(3);

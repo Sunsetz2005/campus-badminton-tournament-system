@@ -333,9 +333,10 @@ describe("从对阵表到赛程：建议、检查、发布、执裁衔接", () =
     expect(replaced.revokedSessions).toBe(1);
     // 两个小组同时 09:00 开打，新裁判原本在另一块场地执裁：如实返回时间重叠，由裁判长决定是否再改派。
     expect(replaced.overlapping.length).toBeGreaterThan(0);
-    // 一侧已经开始：按赛务口径 S-1 记为延误警告（不再是硬冲突），仍如实列出。
+    // 一侧已经开始，但新裁判的另一场与这场的原计划时段本来就重叠：不是延误，是排程冲突，仍为硬冲突（赛务口径 S-1）。
     const overlap = checkPublished(await loadScheduleFacts(prisma, ctx.tournamentId)).issues.find((issue) => issue.code === "REFEREE_OVERLAP");
-    expect(overlap?.severity).toBe("WARNING");
+    expect(overlap?.severity).toBe("HARD");
+    expect(overlap?.message.startsWith("延误：")).toBe(false);
     const stale = { ...coinToss(control), expectedVersion: 1 };
     // 指派已失效：旧设备连读取权限都没有了，写入在进入会话校验前就被拒绝。
     await expect(submitScoringCommand(originalReferee, rubber.code, stale, control.controlToken)).rejects.toMatchObject({ status: 403 });

@@ -607,6 +607,7 @@ export function TransferCourtForm({ slug, matchCode, courts, currentCourtCode }:
   const { pending, run, feedback } = useAction();
   const [courtCode, setCourtCode] = useState("");
   const [reason, setReason] = useState("");
+  const [upcoming, setUpcoming] = useState<string[]>([]);
   return (
     <details className={local.editor}>
       <summary>转到其他场地</summary>
@@ -615,10 +616,12 @@ export function TransferCourtForm({ slug, matchCode, courts, currentCourtCode }:
         data-testid={`transfer-court-${matchCode}`}
         onSubmit={async (event) => {
           event.preventDefault();
-          await run(
-            () => sendJson(`/api/admin/tournaments/${slug}/schedule/matches/${matchCode}/court`, "POST", { courtCode, reason }),
-            "已转场。比分与发接发保持不变，裁判在新场地恢复比赛即可。",
-          );
+          setUpcoming([]);
+          await run(async () => {
+            const result = await sendJson<{ upcoming: { code: string }[] }>(`/api/admin/tournaments/${slug}/schedule/matches/${matchCode}/court`, "POST", { courtCode, reason });
+            if (result.ok) setUpcoming(result.data.upcoming.map((item) => item.code));
+            return result;
+          }, "已转场。比分与发接发保持不变，裁判在新场地恢复比赛即可。");
         }}
       >
         <div className={local.editorGrid}>
@@ -637,6 +640,11 @@ export function TransferCourtForm({ slug, matchCode, courts, currentCourtCode }:
           </label>
         </div>
         {feedback}
+        {upcoming.length ? (
+          <p className={styles.alert} role="alert">
+            注意：新场地接下来已排定 {upcoming.join("、")}，会因这场续打而顺延；请在赛程草稿里调整后重新发布。
+          </p>
+        ) : null}
         <div className={styles.actions}>
           <ActionButton disabled={!courtCode || !reason.trim()} loading={pending} size="sm" type="submit">确认转场</ActionButton>
         </div>
