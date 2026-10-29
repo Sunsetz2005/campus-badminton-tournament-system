@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { createPortal } from "react-dom";
 
 import { ActionButton } from "@/components/ui/action-button";
@@ -215,7 +215,22 @@ async function responseJson(response: Response) {
   return body;
 }
 
+/** 平板横屏与桌面（≥1000px）是双栏布局，右栏默认展开次要操作；服务端渲染时按窄屏处理。 */
+const WIDE_LAYOUT_QUERY = "(min-width: 1000px)";
+function useWideLayout() {
+  return useSyncExternalStore(
+    (onChange) => {
+      const query = window.matchMedia(WIDE_LAYOUT_QUERY);
+      query.addEventListener("change", onChange);
+      return () => query.removeEventListener("change", onChange);
+    },
+    () => window.matchMedia(WIDE_LAYOUT_QUERY).matches,
+    () => false,
+  );
+}
+
 export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
+  const wideLayout = useWideLayout();
   const [snapshot, setSnapshot] = useState<SnapshotResponse | null>(null);
   const [initialLoadState, setInitialLoadState] = useState<InitialLoadState>({ kind: "loading" });
   const [dataFreshness, setDataFreshness] = useState<"FRESH" | "STALE">("FRESH");
@@ -1061,20 +1076,122 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     );
   }
 
+  // 还没进入回合（未取得控制、抛币、首发设置、暂停、待提交/复核）时，「下一步」放在场地图之前，
+  // 手机上不用越过整块场地去找要做的事；回合进行中则场地与加分键在前。
+  const rallyPhase = canWrite && ["IN_PROGRESS", "OBLIGATIONS_PENDING", "GAME_COMPLETE"].includes(state.phase);
+  const nextStepFirst = !rallyPhase || setupActive;
+  const nextStep = (
+    <div className={`workbench-next ${nextStepFirst ? "is-first" : ""}`}>
+        {/* 本机可写且无异常时不再重复说明；只读或异常原因必须保留，不能为了简洁隐藏。 */}
+        {canAcquireControl || readOnlyReason ? (
+          <div className="control-strip">
+            {canAcquireControl && snapshot?.access.officiatingNameRequired ? (
+              <label className="officiating-name">
+                <span>执裁人姓名</span>
+                <input
+                  aria-label="执裁人姓名"
+                  autoComplete="name"
+                  maxLength={40}
+                  onChange={(event) => setOfficiatingName(event.target.value)}
+                  placeholder="共用裁判账号请填写本人姓名"
+                  value={officiatingName}
+                />
+              </label>
+            ) : null}
+            {canAcquireControl ? (
+              <ActionButton
+                disabled={Boolean(snapshot?.access.officiatingNameRequired) && !officiatingName.trim()}
+                loading={actionRequestState === "ACQUIRING"}
+                loadingLabel="正在取得控制…"
+                onClick={() => void acquire()}
+              >
+                取得本机控制权
+              </ActionButton>
+            ) : null}
+            {readOnlyReason ? <span>{readOnlyReason}</span> : null}
+          </div>
+        ) : null}
+
+        {state.specialOutcome ? (
+          <section className="special-outcome-summary" aria-labelledby="special-outcome-title">
+            <div>
+              <span className="eyebrow">特殊结果待处理</span>
+              <h2 id="special-outcome-title">{specialOutcomeLabels[state.specialOutcome.type]}</h2>
+            </div>
+            <dl>
+              <div><dt>胜方（如适用）</dt><dd>{state.specialOutcome.winnerSide ? `${state.specialOutcome.winnerSide} 方` : "无胜方"}</dd></div>
+              <div><dt>记录原因</dt><dd>{state.specialOutcome.reason}</dd></div>
+            </dl>
+            <p>作废会由服务器恢复到录入前的完整权威状态，不会在浏览器本地拼接比分或站位。</p>
+          </section>
+        ) : null}
+        {intervalObligation && !intervalOverlayOpen ? (
+          <IntervalClock
+            key={`${intervalStartedAt}:${snapshot.serverTime}`}
+            onShow={() => setHiddenIntervalId(null)}
+            seconds={state.phase === "GAME_COMPLETE" ? state.ruleConfig.betweenGamesSeconds : state.ruleConfig.intervalSeconds}
+            serverTime={snapshot.serverTime}
+            startedAt={intervalStartedAt ?? snapshot.serverTime}
+          />
+        ) : null}
+
+        {setupActive && setupServingSide && setupReceivingSide ? (
+          <section className="opening-setup-panel" aria-labelledby="opening-setup-title">
+            <div><span className="eyebrow">确认后才写入比赛</span><h2 id="opening-setup-title">本局首发与首接设置</h2></div>
+            <label>首发球员（{setupServingSide} 方）
+              <select value={effectiveSetupServerId} onChange={(event) => { setSetupSelectionScope(setupScope); setSetupServerId(event.target.value); }}>
+                {state.players[setupServingSide].map((id) => <option key={id} value={id}>{playerName(id)}</option>)}
+              </select>
+            </label>
+            <label>首接球员（{setupReceivingSide} 方）
+              <select value={effectiveSetupReceiverId} onChange={(event) => { setSetupSelectionScope(setupScope); setSetupReceiverId(event.target.value); }}>
+                {state.players[setupReceivingSide].map((id) => <option key={id} value={id}>{playerName(id)}</option>)}
+              </select>
+            </label>
+            <button className="button" disabled={!canWrite || !setupCourts && state.format === "DOUBLES"} onClick={() => void confirmSetup()}>
+              {state.phase === "AWAITING_OPENING_SETUP" ? "确认首局设置并开赛" : "确认下一局设置"}
+            </button>
+          </section>
+        ) : null}
+
+        <PhaseActions
+          canWrite={canWrite}
+          chief={snapshot.access.chiefReferee}
+          coinTossWinner={coinTossWinner}
+          onCoinTossDraw={drawCoinToss}
+          flipped={flipped}
+          intervalOverlayOpen={intervalOverlayOpen}
+          scope="URGENT"
+          sideName={(side) => sideName(side) ?? `${side} 方`}
+          state={state}
+          onSend={send}
+          onCorrection={() => openActionSheet({ kind: "SCORE" })}
+          onEndingUndo={(side) => openActionSheet({ kind: "UNDO", side })}
+          onReasonCommand={(title, type, payload) => openActionSheet({ kind: "REASON_COMMAND", title, type, payload })}
+          onServiceOrder={() => openActionSheet({ kind: "SERVICE_ORDER" })}
+          onSpecial={() => openActionSheet({ kind: "SPECIAL" })}
+        />
+    </div>
+  );
+
   return (
     <>
     <section className="scoring-shell" inert={actionSheet ? true : undefined}>
-      <header className="scoring-statusbar">
-        <div><span className="eyebrow">{match.competitionName} · {match.courtName ?? "场地待定"}</span><h1>{match.code}</h1></div>
-        <div className="status-facts" aria-live="polite">
-          <span><i className={`sync-dot ${online ? "online" : "offline"}`} />网络<strong>{online ? "在线" : "离线"}</strong></span>
-          <span>控制<strong>{canWrite ? "本机可写" : "只读"}</strong></span>
-          <span>同步<strong>{syncLabel}</strong></span>
-          <span>局数<strong>第 {state.currentGame} 局</strong></span>
-          <span>数据<strong>{dataFreshness === "FRESH" ? "最新" : "可能过期"}</strong></span>
-          {control ? <span data-testid="wake-lock-status">常亮<strong>{wakeLock.label}</strong></span> : null}
+      <header className={`scoring-statusbar ${canWrite ? "is-writable" : "is-readonly"}`}>
+        <div className="scoring-title"><span className="eyebrow">{match.competitionName} · {match.courtName ?? "场地待定"}</span><h1>{match.code}</h1></div>
+        <div className="status-facts">
+          <span className={`status-chip ${online ? "is-ok" : "is-bad"}`}><i className={`sync-dot ${online ? "online" : "offline"}`} />网络<strong>{online ? "在线" : "离线"}</strong></span>
+          <span className={`status-chip ${canWrite ? "is-ok" : "is-muted"}`}>控制<strong>{canWrite ? "本机可写" : "只读"}</strong></span>
+          <span className={`status-chip ${syncState === "UNKNOWN" ? "is-bad" : syncState === "SUBMITTING" ? "is-busy" : ""}`}>同步<strong>{syncLabel}</strong></span>
+          <span className="status-chip">局数<strong>第 {state.currentGame} 局</strong></span>
+          <span className={`status-chip ${dataFreshness === "FRESH" ? "" : "is-bad"}`}>数据<strong>{dataFreshness === "FRESH" ? "最新" : "可能过期"}</strong></span>
+          {control ? <span className="status-chip" data-testid="wake-lock-status">常亮<strong>{wakeLock.label}</strong></span> : null}
           <small>服务器版本 {state.version}</small>
         </div>
+        {/* 只播报网络、控制与同步的变化；比分另有播报，版本号不打扰读屏。 */}
+        <p aria-atomic="true" aria-live="polite" className="visually-hidden">
+          网络{online ? "在线" : "离线"}，{canWrite ? "本机可写" : "只读"}，同步{syncLabel}。
+        </p>
       </header>
 
       {!commandIdCapability.available ? (
@@ -1115,6 +1232,8 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
           {state.completedGames.map((game) => <span key={game.number}>第{game.number}局 {game.scoreA}:{game.scoreB}</span>)}
         </div>
       ) : null}
+      <div className="workbench-body">
+      {nextStepFirst ? nextStep : null}
       <CourtConsole
         busy={syncState === "SUBMITTING" || syncState === "UNKNOWN"}
         canWrite={canWrite}
@@ -1144,98 +1263,10 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
         ) : null}
       />
 
-      {/* 本机可写且无异常时不再重复说明；只读或异常原因必须保留，不能为了简洁隐藏。 */}
-      {canAcquireControl || readOnlyReason ? (
-        <div className="control-strip">
-          {canAcquireControl && snapshot?.access.officiatingNameRequired ? (
-            <label className="officiating-name">
-              <span>执裁人姓名</span>
-              <input
-                aria-label="执裁人姓名"
-                autoComplete="name"
-                maxLength={40}
-                onChange={(event) => setOfficiatingName(event.target.value)}
-                placeholder="共用裁判账号请填写本人姓名"
-                value={officiatingName}
-              />
-            </label>
-          ) : null}
-          {canAcquireControl ? (
-            <ActionButton
-              disabled={Boolean(snapshot?.access.officiatingNameRequired) && !officiatingName.trim()}
-              loading={actionRequestState === "ACQUIRING"}
-              loadingLabel="正在取得控制…"
-              onClick={() => void acquire()}
-            >
-              取得本机控制权
-            </ActionButton>
-          ) : null}
-          {readOnlyReason ? <span>{readOnlyReason}</span> : null}
-        </div>
-      ) : null}
-
-      {state.specialOutcome ? (
-        <section className="special-outcome-summary" aria-labelledby="special-outcome-title">
-          <div>
-            <span className="eyebrow">特殊结果待处理</span>
-            <h2 id="special-outcome-title">{specialOutcomeLabels[state.specialOutcome.type]}</h2>
-          </div>
-          <dl>
-            <div><dt>胜方（如适用）</dt><dd>{state.specialOutcome.winnerSide ? `${state.specialOutcome.winnerSide} 方` : "无胜方"}</dd></div>
-            <div><dt>记录原因</dt><dd>{state.specialOutcome.reason}</dd></div>
-          </dl>
-          <p>作废会由服务器恢复到录入前的完整权威状态，不会在浏览器本地拼接比分或站位。</p>
-        </section>
-      ) : null}
-      {intervalObligation && !intervalOverlayOpen ? (
-        <IntervalClock
-          key={`${intervalStartedAt}:${snapshot.serverTime}`}
-          onShow={() => setHiddenIntervalId(null)}
-          seconds={state.phase === "GAME_COMPLETE" ? state.ruleConfig.betweenGamesSeconds : state.ruleConfig.intervalSeconds}
-          serverTime={snapshot.serverTime}
-          startedAt={intervalStartedAt ?? snapshot.serverTime}
-        />
-      ) : null}
-
-      {setupActive && setupServingSide && setupReceivingSide ? (
-        <section className="opening-setup-panel" aria-labelledby="opening-setup-title">
-          <div><span className="eyebrow">确认后才写入比赛</span><h2 id="opening-setup-title">本局首发与首接设置</h2></div>
-          <label>首发球员（{setupServingSide} 方）
-            <select value={effectiveSetupServerId} onChange={(event) => { setSetupSelectionScope(setupScope); setSetupServerId(event.target.value); }}>
-              {state.players[setupServingSide].map((id) => <option key={id} value={id}>{playerName(id)}</option>)}
-            </select>
-          </label>
-          <label>首接球员（{setupReceivingSide} 方）
-            <select value={effectiveSetupReceiverId} onChange={(event) => { setSetupSelectionScope(setupScope); setSetupReceiverId(event.target.value); }}>
-              {state.players[setupReceivingSide].map((id) => <option key={id} value={id}>{playerName(id)}</option>)}
-            </select>
-          </label>
-          <button className="button" disabled={!canWrite || !setupCourts && state.format === "DOUBLES"} onClick={() => void confirmSetup()}>
-            {state.phase === "AWAITING_OPENING_SETUP" ? "确认首局设置并开赛" : "确认下一局设置"}
-          </button>
-        </section>
-      ) : null}
-
-      <PhaseActions
-        canWrite={canWrite}
-        chief={snapshot.access.chiefReferee}
-        coinTossWinner={coinTossWinner}
-        onCoinTossDraw={drawCoinToss}
-        flipped={flipped}
-        intervalOverlayOpen={intervalOverlayOpen}
-        scope="URGENT"
-        sideName={(side) => sideName(side) ?? `${side} 方`}
-        state={state}
-        onSend={send}
-        onCorrection={() => openActionSheet({ kind: "SCORE" })}
-        onEndingUndo={(side) => openActionSheet({ kind: "UNDO", side })}
-        onReasonCommand={(title, type, payload) => openActionSheet({ kind: "REASON_COMMAND", title, type, payload })}
-        onServiceOrder={() => openActionSheet({ kind: "SERVICE_ORDER" })}
-        onSpecial={() => openActionSheet({ kind: "SPECIAL" })}
-      />
+      {nextStepFirst ? null : nextStep}
 
       {/* 次要操作收进折叠抽屉；需要提交或复核时默认展开，避免误藏关键一步。 */}
-      <details className="secondary-drawer" open={secondaryNeedsAttention}>
+      <details className="secondary-drawer" open={secondaryNeedsAttention || wideLayout}>
         <summary>
           次要操作与记录
           <span>暂停 · 详细更正 · 弃赛与特殊结果 · 接管 · 视角 · 事件记录{secondaryNeedsAttention ? " · 待提交或复核" : ""}</span>
@@ -1277,6 +1308,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
           </section>
         </div>
       </details>
+      </div>
 
     </section>
       {actionSheet ? createPortal(<WorkbenchActionSheet

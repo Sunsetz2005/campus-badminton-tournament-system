@@ -186,6 +186,27 @@ async function assertPlayersNotOnCourt(transaction: Prisma.TransactionClient, ma
   }
 }
 
+/**
+ * 赛务口径 S-8（2026-10-29，组织方决定）：一块场地同时只进行一场比赛。场地上已有进行中或暂停中的比赛
+ * （暂停的比赛仍占着场地，要换场地须走 S-5 转场）时，本场不能抛币、也不能开始；与转场的「空场地」判断一致。
+ * 未排定场地的比赛不检查。
+ */
+async function assertCourtFree(transaction: Prisma.TransactionClient, matchId: string) {
+  const match = await transaction.match.findUniqueOrThrow({ where: { id: matchId }, select: { courtId: true } });
+  if (!match.courtId) return;
+  const busy = await transaction.match.findFirst({
+    where: { id: { not: matchId }, courtId: match.courtId, lifecycleStatus: { in: ["IN_PROGRESS", "SUSPENDED"] } },
+    select: { code: true, lifecycleStatus: true, court: { select: { name: true } } },
+    orderBy: { code: "asc" },
+  });
+  if (busy) {
+    const state = busy.lifecycleStatus === "SUSPENDED" ? "暂停在场上" : "正在进行";
+    throw new AppError(409, "court_occupied", `${busy.court?.name ?? "本场地"}上 ${busy.code} ${state}，等那场结束或转场后再开始本场。`, {
+      busyMatchCode: busy.code,
+    });
+  }
+}
+
 function lifecycleProjection(state: MatchState) {
   if (state.phase === "PAUSED") return "SUSPENDED" as const;
   if (state.phase === "MATCH_COMPLETE_PENDING_SUBMISSION" || state.phase === "SPECIAL_OUTCOME_PENDING_SUBMISSION") {
@@ -358,7 +379,12 @@ export async function submitScoringCommand(
     const result = applyCommand(aggregate, command);
     if (result.status === "rejected") throw new AppError(422, result.error.code, result.error.message);
     if (result.status === "duplicate") throw new AppError(409, "event_history_duplicate", "内存历史与数据库幂等记录不一致。");
+    // 抛币是第一条命令，之后时间与场地被冻结：场地被占时在抛币前就拦下，免得比赛被锁在一块占用的场地上。
+    if (aggregate.state.phase === "AWAITING_COIN_TOSS" && result.aggregate.state.phase !== "AWAITING_COIN_TOSS") {
+      await assertCourtFree(transaction, access.id);
+    }
     if (aggregate.state.phase === "AWAITING_OPENING_SETUP" && result.aggregate.state.phase === "IN_PROGRESS") {
+      await assertCourtFree(transaction, access.id);
       await assertPlayersNotOnCourt(transaction, access.id);
     }
     const event = result.events[0];

@@ -46,8 +46,25 @@
 .table tbody th small { display: block; margin-top: 2px; color: var(--muted); font-size: .76rem; font-weight: 600; white-space: normal; }
 .table td[data-winner] { color: var(--ink); font-weight: 800; }
 .table td[data-winner]::after { content: " 胜"; color: var(--green-dark, #0b6b4f); font-size: .78rem; }
-.score { white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 700; }
+.score { white-space: nowrap; font-family: var(--font-num, inherit); font-variant-numeric: tabular-nums; font-weight: 700; letter-spacing: .02em; }
+.compact { min-width: 0; }
+.compact td:first-child { width: 4.5em; text-align: center; }
+.compact td:last-child { white-space: nowrap; }
+
+/* 项目跳转：观众先找到自己关心的项目。 */
+.jump { position: sticky; top: var(--sticky-top, 0px); z-index: 5; display: flex; gap: 8px; margin: -8px 0; padding: 8px 0; overflow-x: auto; scrollbar-width: none; background: linear-gradient(var(--paper) 75%, transparent); }
+.jump::-webkit-scrollbar { display: none; }
+.jump a { flex: none; display: inline-flex; align-items: center; min-height: 40px; padding: 0 14px; color: #55298a; background: var(--surface); border: 1px solid #ddd2ee; border-radius: 999px; font-size: .88rem; font-weight: 750; text-decoration: none; }
+.jump a:hover { background: #f3eefa; }
+.jump a:focus-visible { outline: 3px solid #f4b41a; outline-offset: 2px; }
+.competition { scroll-margin-top: calc(var(--sticky-top, 0px) + 64px); }
+.table td[data-label] { vertical-align: middle; }
 .place { display: inline-grid; min-width: 2em; place-items: center; font-family: var(--font-num); font-style: italic; font-weight: 900; font-variant-numeric: tabular-nums; }
+/* 前三名用奖牌色圆章；名次数字本身仍在，颜色不是唯一信息。 */
+.place[data-medal] { width: 2em; height: 2em; border-radius: 50%; color: #3a2a00; font-style: normal; box-shadow: inset 0 -2px 0 rgba(0, 0, 0, .12); }
+.place[data-medal="1"] { background: linear-gradient(160deg, #ffe08a, #e7b625); }
+.place[data-medal="2"] { background: linear-gradient(160deg, #eef1f5, #b9c2cc); color: #2c3540; }
+.place[data-medal="3"] { background: linear-gradient(160deg, #f6c8a0, #c98a55); color: #3d2410; }
 
 .groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 12px; }
 .group { padding: 14px 16px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px; }
@@ -68,6 +85,21 @@
 .file dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 
 .srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* 手机：对阵表改成一场一张卡片，不用左右滑动；表头由每格的 data-label 代替。 */
+@media (max-width: 640px) {
+  .stack { min-width: 0; }
+  .stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .stack tbody, .stack .matchRow { display: block; }
+  .stack .matchRow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .stack .matchRow:last-child { border-bottom: 0; }
+  .stack .matchRow > th, .stack .matchRow > td { display: block; padding: 0; border: 0; }
+  .stack .matchRow > th { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+  .stack .matchRow > th small { display: inline; margin: 0; }
+  .stack .matchRow > td[data-label="A 方"], .stack .matchRow > td[data-label="B 方"] { grid-column: 1 / -1; font-size: .98rem; }
+  .stack .matchRow > td.score { grid-column: 1; align-self: center; margin-top: 4px; font-size: 1.05rem; }
+  .stack .matchRow > td:last-child { grid-column: 2; align-self: center; margin-top: 4px; justify-self: end; }
+}
 
 @media (prefers-contrast: more) {
   .hero { background: #1b1040; }

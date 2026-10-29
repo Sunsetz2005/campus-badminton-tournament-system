@@ -278,6 +278,17 @@ describe("草稿与正式版、更正后替代、历史文件不可改写", () =
     expect(rankings.every((row) => row[5] !== "暂定（未确认，不作为正式名次）")).toBe(true);
     expect(tableRows(sheet(v2Sheets, "说明"), "项目").rows.find((row) => row[0] === "名次榜单版本")?.[1]).toBe("MS：第 1 版");
 
+    // P-13：有结果的比赛未公开时，公开页不列名次，正式版拒绝生成。
+    const hiddenAt = (await prisma.match.findFirstOrThrow({ where: { code: matchCodes[1] }, select: { publishedAt: true } })).publishedAt;
+    await prisma.match.update({ where: { code: matchCodes[1] }, data: { publishedAt: null } });
+    const lenient = await prisma.$transaction((tx) => buildReportSnapshot(tx, tournamentId, "OFFICIAL", { strictStandings: false }));
+    const ms = lenient.competitions.find((item) => item.code === "MS")!;
+    expect(ms.placements).toHaveLength(0);
+    expect(ms.rankings).toHaveLength(0);
+    expect(ms.placementsNote).toContain("尚未全部公开");
+    await expect(generateReportExport(adminId, slug, { kind: "DATA_WORKBOOK", edition: "OFFICIAL" })).rejects.toMatchObject({ code: "matches_not_public" });
+    await prisma.match.update({ where: { code: matchCodes[1] }, data: { publishedAt: hiddenAt } });
+
     // 更正一场已确认结果：名次撤回、榜单需重发 → 拒绝生成正式版；草稿仍可生成。
     const lockedRevision = (await prisma.resultRevision.findFirstOrThrow({ where: { match: { code: matchCodes[0] }, status: "LOCKED" } })).revision;
     await reviewResultOnly(chiefId, slug, matchCodes[0], { action: "REOPEN", expectedRevision: lockedRevision, reason: "记分表抄错" });

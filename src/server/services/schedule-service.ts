@@ -466,8 +466,11 @@ export async function suggestDraft(actorUserId: string, slug: string, rawInput: 
         scope,
         current: facts.draft,
         courtIds: activeCourts,
-        // 共用裁判账号模式不逐场指派主裁判。
-        refereeIds: input.assignReferees && facts.refereeMode === "PER_MATCH" ? facts.referees.map((referee) => referee.id) : [],
+        // 共用裁判账号模式不逐场指派主裁判；逐场指派时只分配具名裁判，平台共用账号不计入负荷（赛务口径 O-3）。
+        refereeIds:
+          input.assignReferees && facts.refereeMode === "PER_MATCH"
+            ? facts.referees.filter((referee) => !referee.platform).map((referee) => referee.id)
+            : [],
         windows: facts.windows,
         notBefore: Math.max(notBefore.getTime(), now.getTime()),
         config: facts.config,
@@ -1091,7 +1094,7 @@ export async function loadScheduleWorkspace(tournamentId: string, now: Date, fil
     timeZone: facts.timeZone,
     config: facts.config,
     courts: facts.courts,
-    referees: facts.referees,
+    referees: facts.referees.map((referee) => (referee.platform ? { ...referee, name: `${referee.name}（共用账号，自动建议不分配）` } : referee)),
     refereeMode: facts.refereeMode,
     days: facts.days.map((day) => ({ date: day.day, start: minuteText(day.startMinute), end: minuteText(day.endMinute) })),
     competitions: [...new Set(rows.map((row) => row.competitionCode))].sort(),

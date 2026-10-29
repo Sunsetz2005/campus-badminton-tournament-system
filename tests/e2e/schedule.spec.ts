@@ -247,6 +247,10 @@ test.describe.serial("阶段 4-C 赛程与裁判排班：从对阵表到赛程�
   });
 
   test("发布：确认警告后发布，裁判的「我的执裁」出现带时间与场地的比赛，并能进入执裁台", async ({ browser }) => {
+    // 赛务口径 O-3：自动建议不把平台共用裁判账号当具名裁判分配；示例裁判员就是共用账号，这里按管理员手工指派处理最早的一场。
+    const platformReferee = await prisma.user.findUniqueOrThrow({ where: { email: process.env.DEMO_REFEREE_EMAIL! } });
+    const earliest = await prisma.scheduleSlot.findMany({ where: { tournament: { slug }, startsAt: { not: null } }, orderBy: [{ startsAt: "asc" }], take: 1, select: { id: true } });
+    await prisma.scheduleSlot.updateMany({ where: { id: { in: earliest.map((slot) => slot.id) } }, data: { refereeUserId: platformReferee.id } });
     const admin = await loggedIn(browser, process.env.DEMO_ADMIN_EMAIL!, process.env.DEMO_ADMIN_PASSWORD!);
     await admin.page.goto(`/management/${slug}/schedule`);
     const panel = admin.page.getByTestId("publish-panel");

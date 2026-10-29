@@ -185,8 +185,11 @@
   .preview-nav-area nav { margin: 0; padding: 0 0 4px; white-space: nowrap; }
   .preview-nav-scroll-hint { display: block; margin-bottom: 2px; color: var(--muted); font-size: .75rem; }
   .preview-nav-label { align-self: center; }
-  .topbar-workbench nav { grid-column: auto; order: initial; justify-self: end; margin: 0; padding: 0; }
-  .topbar-workbench .session-slot { grid-column: 1 / -1; }
+  /* 裁判工作台：顶栏收成一行（品牌 · 返回 · 退出），把屏幕留给场地和加分键。 */
+  .topbar-workbench { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .topbar-workbench nav { grid-column: auto; order: initial; justify-self: end; margin: 0; padding: 0; overflow: visible; }
+  .topbar-workbench .brand-context, .topbar-workbench .session-user { display: none; }
+  .topbar-workbench .session-slot { grid-column: auto; }
   .page-shell { width: calc(100vw - 32px); padding: 32px 0 64px; }
 }
 

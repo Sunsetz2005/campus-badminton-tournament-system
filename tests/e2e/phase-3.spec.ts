@@ -68,6 +68,9 @@ async function resetMatches() {
       endedAt: null,
     },
   });
+  // 赛务口径 S-8：一块场地同时只进行一场。本文件会让 MS-DEMO-001 进行中时再开 MD-DEMO-002，两场不能同在 1 号场。
+  const court3 = await prisma.court.findFirstOrThrow({ where: { code: "C3", tournament: { slug: "phase-1-demo" } }, select: { id: true } });
+  await prisma.match.updateMany({ where: { code: "MD-DEMO-002" }, data: { courtId: court3.id } });
   const demoEmails = [process.env.DEMO_ADMIN_EMAIL, process.env.DEMO_REFEREE_EMAIL].filter(
     (email): email is string => Boolean(email),
   );
@@ -424,7 +427,9 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("1");
     expect((await readAuthoritativeState(request, matchCode)).version).toBe(versionBeforePreview);
 
-    await page.locator(".secondary-drawer > summary").click();
+    // 宽屏双栏时次要操作默认展开；窄屏才需要先点开。
+    const drawer = page.locator(".secondary-drawer");
+    if (!(await drawer.evaluate((element) => (element as HTMLDetailsElement).open))) await drawer.locator("summary").click();
     await page.getByRole("button", { name: "翻转本机视角" }).click();
     await expect(court).toHaveAttribute("data-flipped", "true");
     await expect(court.locator(".court-visual-half").first()).toHaveAttribute("data-physical-end", "END_2");

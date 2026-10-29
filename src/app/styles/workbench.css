@@ -309,6 +309,78 @@
 }
 
 
+
+/* ── 布局（2026-10-29）：状态条压缩为状态胶囊、「下一步」卡片、平板双栏、手机加分键吸底 ── */
+.scoring-statusbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+.scoring-statusbar.is-writable { box-shadow: inset 5px 0 0 var(--green), 0 16px 44px rgba(21,62,104,.11); }
+.scoring-title { min-width: 0; }
+.status-chip { padding: 4px 10px; background: #f0f3f2; border-radius: 999px; white-space: nowrap; }
+.status-chip.is-ok strong { color: #0d6447; }
+.status-chip.is-muted strong { color: #5a6470; }
+.status-chip.is-busy { background: #fff4dc; }
+.status-chip.is-bad { background: #fdeceb; }
+.status-chip.is-bad strong { color: #8a2420; }
+.workbench-body { display: grid; gap: 14px; min-width: 0; }
+.workbench-body > * { min-width: 0; }
+.workbench-next { display: grid; gap: 12px; min-width: 0; }
+.workbench-next > .phase-actions:empty { display: none; }
+.workbench-next.is-first:has(.control-strip, .opening-setup-panel, .coin-toss-form, .phase-actions > *) {
+  padding: 14px 16px;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: inset 5px 0 0 var(--blue), 0 12px 32px rgba(21,62,104,.08);
+}
+.workbench-next.is-first:has(.control-strip, .opening-setup-panel, .coin-toss-form, .phase-actions > *)::before {
+  content: "下一步";
+  color: var(--blue);
+  font-size: .74rem;
+  font-weight: 900;
+  letter-spacing: .12em;
+}
+.control-strip .button, .control-strip button { min-height: 48px; }
+/* 卡片里不再套卡片。 */
+.workbench-next .phase-actions { padding: 0; background: none; border: 0; border-radius: 0; }
+.workbench-next .opening-setup-panel { padding: 0; background: none; border: 0; box-shadow: none; }
+
+/* 触屏：加分键与场地操作键放大到拇指好按的尺寸。 */
+@media (pointer: coarse) {
+  .score-adjust, .score-adjust.minus { min-height: 72px; }
+  .score-adjust span { font-size: 1.5rem; }
+  .court-action-button { min-height: 52px; }
+}
+
+/* 平板横屏与桌面：场地在左常驻，下一步与次要操作在右，不用上下滚动。 */
+@media (min-width: 1000px) {
+  .workbench-body { grid-template-columns: minmax(0, 1.65fr) minmax(300px, 1fr); align-items: start; row-gap: 0; }
+  .workbench-body > * { grid-column: 2; margin-bottom: 14px; }
+  .workbench-body > .court-console { grid-column: 1; grid-row: 1 / span 12; position: sticky; top: calc(var(--sticky-top, 0px) + 8px); margin-bottom: 0; }
+  .workbench-body .opening-setup-panel { grid-template-columns: 1fr; }
+  .workbench-body .special-outcome-summary { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 800px) {
+  .scoring-shell { gap: 10px; }
+  .scoring-statusbar { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 10px 12px; }
+  .scoring-statusbar h1 { font-size: 1.25rem; }
+  .status-facts { flex-wrap: nowrap; overflow-x: auto; margin: 0 -12px; padding: 0 12px 2px; scrollbar-width: none; gap: 6px; font-size: .74rem; }
+  .status-facts::-webkit-scrollbar { display: none; }
+  .status-facts small { flex: none; align-self: center; white-space: nowrap; }
+  .workbench-body { gap: 10px; }
+  .workbench-next.is-first:has(.control-strip, .opening-setup-panel, .coin-toss-form, .phase-actions > *) { padding: 12px; }
+  .control-strip { align-items: stretch; flex-direction: column; }
+  .coin-toss-arc { width: 116px; height: 116px; }
+  .control-strip .officiating-name { flex-direction: column; align-items: stretch; }
+  .control-strip .officiating-name input { width: 100%; }
+  /* 回合进行中：加分区在视口底部吸住，场地图滚出去也能继续记分。 */
+  .court-score-console { position: sticky; bottom: 0; z-index: 6; margin: 0 -8px; padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); background: linear-gradient(to top, white 82%, rgba(255,255,255,0)); }
+}
+
+@media (min-width: 600px) and (max-width: 999px) and (pointer: coarse) {
+  .score-adjust, .score-adjust.minus { min-height: 84px; }
+  .court-score-number { font-size: min(12vw, 5rem); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .score-adjust, .court-action-button, .player-position-card { transition: none; }
   .correction-sheet, .correction-scrim { animation: none; }

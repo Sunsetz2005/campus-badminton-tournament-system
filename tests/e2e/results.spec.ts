@@ -189,8 +189,11 @@ test.describe.serial("阶段 6 成绩、名次与晋级", () => {
     await expect(group).toContainText("名次已由裁判长确认");
     await expect(chiefPage.getByTestId("placements")).toContainText("第 3 名");
 
-    // 4. 发布榜单第 1 版。
+    // 4. 发布榜单第 1 版。赛务口径 P-13：比赛还没公开时拒绝，并说明先发布赛程。
     await chiefPage.getByLabel("发布说明（选填）").fill("循环赛名次");
+    await chiefPage.getByRole("button", { name: "发布榜单新版本" }).click();
+    await expect(chiefPage.getByText(/还没有公开.*先在「赛程」里发布/)).toBeVisible();
+    await prisma.match.updateMany({ where: { stage: { competition: { tournament: { slug } } } }, data: { publishedAt: new Date() } });
     await chiefPage.getByRole("button", { name: "发布榜单新版本" }).click();
     await expect(chiefPage.getByText("已发布第 1 版榜单。")).toBeVisible();
     await shot(chiefPage, "03-ranking-confirmed-published");

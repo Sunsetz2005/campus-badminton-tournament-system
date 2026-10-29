@@ -28,7 +28,7 @@ import {
 import { publishedMatchWhere } from "@/reports/public-fields";
 import { AppError } from "@/server/services/errors";
 import { assertIanaTimeZone, projectRuleSummary } from "@/server/services/public-projection";
-import { loadCompetitionResults, matchFactOf, matchFactSelect, type StandingsSnapshot } from "@/server/services/results-service";
+import { countUnpublishedDecidedMatches, loadCompetitionResults, matchFactOf, matchFactSelect, type StandingsSnapshot } from "@/server/services/results-service";
 import { loadCompetitionTies, loadGroupStandings, summarizeTie } from "@/server/services/team-tie-service";
 
 type Tx = Prisma.TransactionClient;
@@ -471,6 +471,19 @@ export async function buildReportSnapshot(
         .filter((item) => item.label !== "名次待定")
         .map((item) => ({ competitionCode: competition.code, place: item.place, label: item.label, ...nameOfId(item.entryId) }));
       placementsNote = computed.complete ? "由已确认的小组名次与已锁定的对抗胜负得出。" : "尚有名次未决出；只列出已由已确认结果决出的名次。";
+    }
+
+    // 赛务口径 P-13：名次以公开的比赛为依据，有结果的比赛未公开时，对外不列本项目名次。
+    if (edition === "OFFICIAL" && draw && (rankings.length || placements.length)) {
+      const hidden = await countUnpublishedDecidedMatches(tx, competition.id);
+      if (hidden && strictStandings) {
+        throw new AppError(409, "matches_not_public", `项目 ${competition.code} 有 ${hidden} 场已有结果的比赛还没有公开，请先发布赛程，再生成正式版。`);
+      }
+      if (hidden) {
+        rankings.length = 0;
+        placements = [];
+        placementsNote = "本项目的比赛尚未全部公开，名次待赛程发布后显示。";
+      }
     }
 
     competitions.push({

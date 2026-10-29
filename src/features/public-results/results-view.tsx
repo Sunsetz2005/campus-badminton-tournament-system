@@ -7,15 +7,15 @@ import styles from "./results-view.module.css";
 
 function MatchRow({ match, basePath }: { match: ReportMatch; basePath: string }) {
   return (
-    <tr>
+    <tr className={styles.matchRow}>
       <th scope="row">
         <Link href={`${basePath}/matches/${match.code}`}>{match.code}</Link>
         <small>{[match.group ? `${match.group} 组` : "", match.round ?? "", match.rubber ?? ""].filter(Boolean).join(" · ") || match.stage}</small>
       </th>
-      <td data-winner={match.winner === "A" || undefined}>{sideLabel(match.sideA)}</td>
-      <td data-winner={match.winner === "B" || undefined}>{sideLabel(match.sideB)}</td>
-      <td className={styles.score}>{match.scoreline || "—"}</td>
-      <td>
+      <td data-label="A 方" data-winner={match.winner === "A" || undefined}>{sideLabel(match.sideA)}</td>
+      <td data-label="B 方" data-winner={match.winner === "B" || undefined}>{sideLabel(match.sideB)}</td>
+      <td className={styles.score} data-label="比分">{match.scoreline || "—"}</td>
+      <td data-label="状态">
         {match.confirmed ? (
           <StatusBadge tone="ok">已确认{match.outcomeLabel && match.outcome !== "NORMAL" ? ` · ${match.outcomeLabel}` : ""}</StatusBadge>
         ) : match.resultStage === "NOT_STARTED" ? (
@@ -48,7 +48,7 @@ function CompetitionResults({ competition, matches, basePath }: { competition: R
         <h3>最终名次</h3>
         {competition.placements.length ? (
           <div className={styles.tableWrap}>
-            <table className={styles.table}>
+            <table className={`${styles.table} ${styles.compact}`}>
               <caption className={styles.srOnly}>{competition.name}最终名次</caption>
               <thead>
                 <tr>
@@ -60,7 +60,11 @@ function CompetitionResults({ competition, matches, basePath }: { competition: R
               <tbody>
                 {competition.placements.map((placement) => (
                   <tr key={`${placement.code}-${placement.label}`}>
-                    <td className={styles.place}>{placement.place ?? "—"}</td>
+                    <td>
+                      <span className={styles.place} data-medal={placement.place && placement.place <= 3 ? placement.place : undefined}>
+                        {placement.place ?? "—"}
+                      </span>
+                    </td>
                     <td>{placement.name === placement.code ? placement.code : `${placement.code} ${placement.name}`}</td>
                     <td>{placement.label}</td>
                   </tr>
@@ -85,7 +89,7 @@ function CompetitionResults({ competition, matches, basePath }: { competition: R
                 <ol>
                   {ranking.rows.map((row) => (
                     <li key={row.code}>
-                      <span className={styles.place}>{row.position ?? "—"}</span>
+                      <span className={styles.place} data-medal={row.position && row.position <= 3 ? row.position : undefined}>{row.position ?? "—"}</span>
                       <span>{row.name === row.code ? row.code : `${row.code} ${row.name}`}</span>
                     </li>
                   ))}
@@ -101,7 +105,7 @@ function CompetitionResults({ competition, matches, basePath }: { competition: R
         <div className={styles.block}>
           <h3>团体对抗</h3>
           <div className={styles.tableWrap}>
-            <table className={styles.table}>
+            <table className={`${styles.table} ${styles.stack}`}>
               <caption className={styles.srOnly}>{competition.name}团体对抗</caption>
               <thead>
                 <tr>
@@ -114,15 +118,15 @@ function CompetitionResults({ competition, matches, basePath }: { competition: R
               </thead>
               <tbody>
                 {competition.ties.map((tie) => (
-                  <tr key={tie.code}>
+                  <tr className={styles.matchRow} key={tie.code}>
                     <th scope="row">
                       {tie.code}
                       <small>{[tie.group ? `${tie.group} 组` : "", tie.round].filter(Boolean).join(" · ")}</small>
                     </th>
-                    <td data-winner={tie.winner === "A" || undefined}>{sideLabel(tie.sideA)}</td>
-                    <td data-winner={tie.winner === "B" || undefined}>{sideLabel(tie.sideB)}</td>
-                    <td className={styles.score}>{tie.rubbersWon}</td>
-                    <td>{tie.winner ? sideLabel(tie.winner === "A" ? tie.sideA : tie.sideB) : "未决出"}</td>
+                    <td data-label="A 方" data-winner={tie.winner === "A" || undefined}>{sideLabel(tie.sideA)}</td>
+                    <td data-label="B 方" data-winner={tie.winner === "B" || undefined}>{sideLabel(tie.sideB)}</td>
+                    <td className={styles.score} data-label="小场">{tie.rubbersWon}</td>
+                    <td data-label="胜方">{tie.winner ? sideLabel(tie.winner === "A" ? tie.sideA : tie.sideB) : "未决出"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -135,7 +139,7 @@ function CompetitionResults({ competition, matches, basePath }: { competition: R
         <h3>{competition.team ? "小场结果" : "对阵与结果"}</h3>
         {matches.length ? (
           <div className={styles.tableWrap}>
-            <table className={styles.table}>
+            <table className={`${styles.table} ${styles.stack}`}>
               <caption className={styles.srOnly}>{competition.name}对阵与结果</caption>
               <thead>
                 <tr>
@@ -180,6 +184,13 @@ export function PublicResultsView({ snapshot, capturedAt, basePath }: { snapshot
           已确认 {snapshot.counts.confirmed} / {snapshot.counts.matches} 场 · 数据时间 {time}（{snapshot.tournament.timezone}）
         </p>
       </header>
+      {snapshot.competitions.length > 1 ? (
+        <nav aria-label="跳到项目" className={styles.jump}>
+          {snapshot.competitions.map((competition) => (
+            <a href={`#competition-${competition.code}`} key={competition.code}>{competition.name}</a>
+          ))}
+        </nav>
+      ) : null}
       {snapshot.competitions.length ? (
         snapshot.competitions.map((competition) => (
           <CompetitionResults

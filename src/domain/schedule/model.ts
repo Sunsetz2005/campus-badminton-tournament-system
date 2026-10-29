@@ -73,6 +73,8 @@ export interface CourtFacts {
 export interface RefereeFacts {
   id: string;
   name: string;
+  /** 平台共用裁判账号：谁登录都能用，无法追溯到具体的人，自动建议不把它当作具名裁判分配（赛务口径 O-3）。 */
+  platform?: boolean;
 }
 
 export function overlaps(left: Interval, right: Interval) {

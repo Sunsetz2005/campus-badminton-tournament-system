@@ -1018,6 +1018,16 @@ export async function loadCompetitionResults(client: Client, tournamentId: strin
 
 export type CompetitionResults = NonNullable<NonNullable<Awaited<ReturnType<typeof loadCompetitionResults>>>["results"]>;
 
+/**
+ * 赛务口径 P-13（2026-10-29）：名次以公开的比赛为依据。本项目已有结果、却因赛程未发布而不公开的比赛数。
+ * 大于 0 时不发布名次榜单，公开页与正式版也不列名次（与 BWF 赛事「结果随赛程与对阵一起公开」一致）。
+ */
+export async function countUnpublishedDecidedMatches(client: Client, competitionId: string) {
+  return client.match.count({
+    where: { stage: { competitionId }, publishedAt: null, notPlayedAt: null, outcomeType: { not: null } },
+  });
+}
+
 const publishSchema = z.object({ note: z.string().max(400).nullish() });
 
 /**
@@ -1038,6 +1048,10 @@ export async function publishStandings(actorUserId: string, slug: string, compet
       if (!loaded.results) throw new AppError(409, "results_unavailable", "该项目没有已发布的抽签，或是团体项目（团体积分榜在团体对抗页面确认）。");
       const { results } = loaded;
       if (!results.publishable) throw new AppError(409, "nothing_to_publish", "还没有已确认的小组名次或已决出的最终名次，不能发布榜单。");
+      const hidden = await countUnpublishedDecidedMatches(transaction, loaded.competition.id);
+      if (hidden) {
+        throw new AppError(409, "matches_not_public", `本项目有 ${hidden} 场已有结果的比赛还没有公开。请先在「赛程」里发布这些比赛，再发布名次。`, { count: hidden });
+      }
       const latest = results.publications[0];
       if (latest && latest.contentHash === results.contentHash) {
         throw new AppError(409, "standings_unchanged", `榜单内容与第 ${latest.version} 版相同，无需重新发布。`);

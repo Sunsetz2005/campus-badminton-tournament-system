@@ -218,7 +218,7 @@ export async function loadScheduleFacts(client: Client, tournamentId: string): P
     client.court.findMany({ where: { tournamentId }, orderBy: [{ sortOrder: "asc" }, { code: "asc" }] }),
     client.roleAssignment.findMany({
       where: { tournamentId, role: "REFEREE", user: { status: "ACTIVE" } },
-      select: { user: { select: { id: true, name: true } } },
+      select: { user: { select: { id: true, name: true, platformReferee: true } } },
       orderBy: { user: { name: "asc" } },
     }),
     client.scheduleDay.findMany({ where: { tournamentId }, orderBy: { day: "asc" } }),
@@ -374,7 +374,7 @@ export async function loadScheduleFacts(client: Client, tournamentId: string): P
     published,
     draft,
     courts: courts.map((court) => ({ id: court.id, code: court.code, name: court.name, active: court.active, sortOrder: court.sortOrder })),
-    referees: refereeRoles.map((item) => ({ id: item.user.id, name: item.user.name })),
+    referees: refereeRoles.map((item) => ({ id: item.user.id, name: item.user.name, platform: item.user.platformReferee })),
     days: dayRows,
     windows,
     names,

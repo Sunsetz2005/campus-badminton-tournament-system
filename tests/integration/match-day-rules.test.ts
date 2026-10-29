@@ -159,6 +159,49 @@ describe("S-4 选手正在别场比赛时不能开赛（P-08）", () => {
   });
 });
 
+describe("S-8 一块场地同时只进行一场（2026-10-29 组织方决定）", () => {
+  it("场地上有进行中或暂停中的比赛时，同场地另一场不能开始；暂停的比赛转场后可以开始", async () => {
+    const { slug, tournamentId, matches } = await roundRobin("court", 4);
+    const court = await prisma.court.create({ data: { tournamentId, code: "C1", name: "场地 1", active: true, sortOrder: 0 } });
+    const [first, ...rest] = matches;
+    const disjoint = rest.find((match) => ![match.sideAEntryId, match.sideBEntryId].some((id) => id === first.sideAEntryId || id === first.sideBEntryId))!;
+    await prisma.match.updateMany({ where: { id: { in: [first.id, disjoint.id] } }, data: { courtId: court.id } });
+
+    const { control, result } = await startMatchWithControl(first.code);
+    if (result.status !== "accepted") throw new Error("开局不应命中幂等分支。");
+    // 场地被占：第二场连抛币都不能记录（抛币后时间与场地即冻结）。
+    const second = await acquireScoringSession(refereeId, disjoint.code, randomUUID());
+    const tossCommand = () =>
+      command(second, 0, "RECORD_COIN_TOSS", { valid: true, winnerSide: "A", winnerChoice: { kind: "SERVICE", decision: "SERVE" }, loserChoice: { kind: "END", end: "END_2" } });
+    await expect(submitScoringCommand(refereeId, disjoint.code, tossCommand(), second.controlToken)).rejects.toMatchObject({
+      status: 409,
+      code: "court_occupied",
+      details: { busyMatchCode: first.code },
+    });
+    await expect(prisma.match.findUniqueOrThrow({ where: { id: disjoint.id }, select: { version: true, startedAt: true } })).resolves.toEqual({ version: 0, startedAt: null });
+
+    // 暂停的比赛仍占着场地。
+    const paused = await submitScoringCommand(refereeId, first.code, command(control, result.version, "PAUSE_MATCH", { reason: "地滑" }), control.controlToken);
+    expect(paused.status).toBe("accepted");
+    await expect(submitScoringCommand(refereeId, disjoint.code, tossCommand(), second.controlToken)).rejects.toMatchObject({ code: "court_occupied" });
+
+    // 裁判长把暂停的比赛转到另一块空场地（S-5）后，本场照常抛币、开始。
+    await prisma.court.create({ data: { tournamentId, code: "C2", name: "场地 2", active: true, sortOrder: 1 } });
+    await transferSuspendedMatch(adminId, slug, first.code, { courtCode: "C2", reason: "场地 1 地滑" });
+    const toss = await submitScoringCommand(refereeId, disjoint.code, tossCommand(), second.controlToken);
+    if (toss.status !== "accepted") throw new Error("抛币不应命中幂等分支。");
+    const players = (toss.state as { players: { A: string[]; B: string[] } }).players;
+    await expect(
+      submitScoringCommand(
+        refereeId,
+        disjoint.code,
+        command(second, toss.version, "CONFIRM_OPENING_SETUP", { serverPlayerId: players.A[0], receiverPlayerId: players.B[0], logicalCourts: null } as MatchCommand["payload"]),
+        second.controlToken,
+      ),
+    ).resolves.toMatchObject({ status: "accepted" });
+  });
+});
+
 describe("S-5 暂停中的比赛转场（P-05）", () => {
   it("只有暂停中的比赛能转；只能转到启用且空着的场地；比分不变；绕过接口直接改场地仍被数据库拒绝", async () => {
     const { slug, tournamentId, matches } = await roundRobin("transfer", 3);

@@ -331,6 +331,9 @@ describe("晋级、重复确认与结果更正", () => {
     expect([sf1.sideAEntryId, sf1.sideBEntryId]).toEqual([a1, b2]);
     expect([sf2.sideAEntryId, sf2.sideBEntryId]).toEqual([b1, a2]);
 
+    // P-13：已有结果的比赛未公开时不能发布名次。
+    await expect(publishStandings(adminId, slug, "MS", {})).rejects.toMatchObject({ status: 409, code: "matches_not_public" });
+    await prisma.match.updateMany({ where: { stage: { competitionId } }, data: { publishedAt: new Date() } });
     const v1 = await publishStandings(adminId, slug, "MS", { note: "小组赛名次" });
     expect(v1.version).toBe(1);
     await expect(publishStandings(adminId, slug, "MS", {})).rejects.toMatchObject({ code: "standings_unchanged" });

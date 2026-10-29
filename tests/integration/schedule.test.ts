@@ -47,6 +47,7 @@ const createdEmails: string[] = [];
 let adminId = "";
 let refereeId = "";
 let referee2Id = "";
+let referee3Id = "";
 let studentSeq = 0;
 
 function nextStudentId() {
@@ -111,6 +112,7 @@ async function teamTournament(name: string, teamCount: number, settings: Record<
     data: [
       { userId: refereeId, tournamentId: tournament.id, role: "REFEREE" },
       { userId: referee2Id, tournamentId: tournament.id, role: "REFEREE" },
+      { userId: referee3Id, tournamentId: tournament.id, role: "REFEREE" },
       { userId: adminId, tournamentId: tournament.id, role: "CHIEF_REFEREE" },
     ],
   });
@@ -156,6 +158,9 @@ beforeAll(async () => {
   const email = `ref2-${RUN}@example.invalid`;
   createdEmails.push(email);
   referee2Id = (await prisma.user.create({ data: { email, name: `第二裁判${RUN}` } })).id;
+  const email3 = `ref3-${RUN}@example.invalid`;
+  createdEmails.push(email3);
+  referee3Id = (await prisma.user.create({ data: { email: email3, name: `第三裁判${RUN}` } })).id;
 });
 
 afterAll(async () => {
@@ -226,12 +231,12 @@ describe("从对阵表到赛程：建议、检查、发布、执裁衔接", () =
       select: { scheduledAt: true, scheduledEndAt: true, courtId: true, publishedAt: true, officialAssignments: { where: { active: true } } },
     });
     expect(matches.every((match) => match.scheduledAt && match.scheduledEndAt && match.courtId && match.publishedAt)).toBe(true);
-    // 只有 2 名裁判员，而淘汰赛两场对抗并行时同时有 4 个小场：排程不为等裁判而压缩并行，
+    // 只有 2 名具名裁判员（平台共用账号不参与自动建议，赛务口径 O-3），而淘汰赛两场对抗并行时同时有 4 个小场：排程不为等裁判而压缩并行，
     // 指派不到的比赛如实缺裁判（发布前作为「尚未指派裁判」警告确认过），其余每场恰好 1 名主裁判。
     expect(matches.every((match) => match.officialAssignments.length <= 1)).toBe(true);
     expect(matches.filter((match) => match.officialAssignments.length === 1).length).toBeGreaterThan(matches.length / 2);
     // 「我的执裁」按真实指派读取。
-    const mine = await prisma.officialAssignment.count({ where: { userId: refereeId, active: true, match: { stage: { competition: { tournamentId: ctx.tournamentId } } } } });
+    const mine = await prisma.officialAssignment.count({ where: { userId: referee2Id, active: true, match: { stage: { competition: { tournamentId: ctx.tournamentId } } } } });
     expect(mine).toBeGreaterThan(0);
     await expect(prisma.scheduleSlot.count({ where: { tournamentId: ctx.tournamentId } })).resolves.toBe(0);
     const publication = await prisma.schedulePublication.findFirstOrThrow({ where: { tournamentId: ctx.tournamentId } });
@@ -314,7 +319,7 @@ describe("从对阵表到赛程：建议、检查、发布、执裁衔接", () =
       select: { id: true, code: true, scheduledAt: true, courtId: true, officialAssignments: { where: { active: true }, select: { userId: true } } },
     });
     const originalReferee = rubber.officialAssignments[0].userId;
-    const otherReferee = originalReferee === refereeId ? referee2Id : refereeId;
+    const otherReferee = originalReferee === referee2Id ? referee3Id : referee2Id;
     const control = await acquireScoringSession(originalReferee, rubber.code, randomUUID());
     await expect(submitScoringCommand(originalReferee, rubber.code, coinToss(control), control.controlToken)).resolves.toMatchObject({ status: "accepted" });
 
@@ -625,6 +630,26 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
     });
     const result = await suggestDraft(adminId, slug, {});
     expect(result.shortfall).toEqual({ date: "2026-11-02", currentEnd: "19:00", requiredEnd: null });
+  });
+
+  it("逐场指派的自动建议不把平台共用裁判账号当作具名裁判（赛务口径 O-3）", async () => {
+    const { slug, tournamentId } = await singlesRoundRobin("platform-load", async (slug) => {
+      await updateRefereeMode(adminId, slug, { refereeMode: "PER_MATCH" });
+      await addCourts(adminId, slug, { count: 2 });
+      await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "18:00" }] });
+    }, 4);
+    await prisma.roleAssignment.createMany({
+      skipDuplicates: true,
+      data: [refereeId, referee2Id].map((userId) => ({ userId, tournamentId, role: "REFEREE" as const })),
+    });
+    await suggestDraft(adminId, slug, { assignReferees: true });
+    const slots = await prisma.scheduleSlot.findMany({ where: { tournamentId }, select: { refereeUserId: true } });
+    expect(slots).toHaveLength(6);
+    expect(slots.some((slot) => slot.refereeUserId === referee2Id)).toBe(true);
+    expect(slots.some((slot) => slot.refereeUserId === refereeId)).toBe(false);
+    // 手工指派仍可选共用账号，名单里标明。
+    const options = (await loadScheduleFacts(prisma, tournamentId)).referees;
+    expect(options.find((referee) => referee.id === refereeId)).toMatchObject({ platform: true });
   });
 
   it("已设好场地与比赛日时，抽签发布后直接生成全部比赛的草稿安排", async () => {

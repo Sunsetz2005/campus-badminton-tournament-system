@@ -166,15 +166,15 @@
 .tableEntries { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 10px; align-items: center; }
 .tableEntries > span { color: var(--preview-muted); font-size: .72rem; }
 .entryIdentity { display: grid; gap: 2px; overflow-wrap: anywhere; }
-.entryIdentity > span { color: var(--preview-muted); font-size: .67rem; font-weight: 700; }
+.entryIdentity > span { color: var(--preview-muted); font-size: .72rem; font-weight: 700; }
 .entryIdentity > strong { color: var(--preview-blue-strong); font-size: .85rem; line-height: 1.35; }
-.entryIdentity > small { color: #4e6577; font-size: .7rem; line-height: 1.35; }
+.entryIdentity > small { color: #4e6577; font-size: .72rem; line-height: 1.35; }
 
 .scoreSummary { display: grid; gap: 7px; }
 .gamesWon { color: var(--preview-blue-strong); font-size: 1.05rem; }
 .gameCells { display: flex; flex-wrap: wrap; gap: 4px; }
-.gameCells span { display: inline-grid; min-width: 38px; gap: 1px; padding: 4px 5px; color: #36546c; background: #f0f5f8; border-radius: 4px; text-align: center; font-size: .7rem; }
-.gameCells span small { color: inherit; font-size: .56rem; font-weight: 800; }
+.gameCells span { display: inline-grid; min-width: 38px; gap: 1px; padding: 4px 5px; color: #36546c; background: #f0f5f8; border-radius: 4px; text-align: center; font-size: .72rem; }
+.gameCells span small { color: inherit; font-size: .72rem; font-weight: 800; }
 .gameCells span[data-game-status="IN_PROGRESS"] { color: #0b5c46; background: #e2f2ec; font-weight: 800; }
 
 .statusCluster { display: grid; gap: 10px; }
@@ -219,11 +219,11 @@
 .scoreTable { width: 100%; min-width: 620px; border-collapse: collapse; }
 .scoreTable th, .scoreTable td { padding: 14px 12px; border: 1px solid var(--preview-line); text-align: center; }
 .scoreTable thead { color: #36556e; background: #edf4f8; }
-.currentGameLabel { display: block; margin-top: 3px; color: #0b5c46; font-size: .65rem; font-weight: 850; }
-.stoppedGameLabel { display: block; margin-top: 3px; color: #7a2722; font-size: .65rem; font-weight: 850; }
+.currentGameLabel { display: block; margin-top: 3px; color: #0b5c46; font-size: .72rem; font-weight: 850; }
+.stoppedGameLabel { display: block; margin-top: 3px; color: #7a2722; font-size: .72rem; font-weight: 850; }
 .scoreTable tbody th { max-width: 210px; color: var(--preview-blue-strong); text-align: left; overflow-wrap: anywhere; }
 .scoreTable tr[data-winner="true"] { background: #f0f8f5; }
-.winnerLabel { display: inline-block; margin-left: 8px; padding: 2px 5px; color: #0d5b45; background: #dcefe7; border-radius: 4px; font-size: .66rem; font-weight: 800; }
+.winnerLabel { display: inline-block; margin-left: 8px; padding: 2px 5px; color: #0d5b45; background: #dcefe7; border-radius: 4px; font-size: .72rem; font-weight: 800; }
 .unplayed { color: var(--preview-muted); font-size: .78rem; }
 
 .detailAside > section { padding: 20px; }
@@ -374,7 +374,7 @@
   font-size: .79rem;
 }
 
-.scheduleShell .eventFacts dt { font-size: .7rem; }
+.scheduleShell .eventFacts dt { font-size: .72rem; }
 .scheduleShell .eventFacts dd { overflow-wrap: anywhere; }
 
 .scheduleShell .announcement {
@@ -416,7 +416,7 @@
 
 .scheduleShell .filters label {
   gap: 5px;
-  font-size: .7rem;
+  font-size: .72rem;
   font-weight: 700;
 }
 
@@ -499,7 +499,7 @@
 
 .scheduleShell .scheduleTable th {
   padding: 10px 9px;
-  font-size: .7rem;
+  font-size: .72rem;
   letter-spacing: .025em;
 }
 
@@ -522,15 +522,15 @@
 
 .scheduleShell .tableEntries > span {
   justify-self: center;
-  font-size: .64rem;
+  font-size: .72rem;
 }
 
 .scheduleShell .tableEntries .entryIdentity { gap: 2px; }
 .scheduleShell .tableEntries > div:first-child { text-align: right; }
 .scheduleShell .tableEntries > div:last-child { text-align: left; }
-.scheduleShell .tableEntries .entryIdentity > span { font-size: .64rem; }
+.scheduleShell .tableEntries .entryIdentity > span { font-size: .72rem; }
 .scheduleShell .tableEntries .entryIdentity > strong { font-size: .81rem; line-height: 1.3; }
-.scheduleShell .tableEntries .entryIdentity > small { font-size: .66rem; }
+.scheduleShell .tableEntries .entryIdentity > small { font-size: .72rem; }
 
 .scheduleShell .scoreSummary {
   display: flex;
@@ -554,14 +554,14 @@
 .scheduleShell .gameCells span {
   min-width: 0;
   padding: 0;
-  font-size: .65rem;
+  font-size: .72rem;
   line-height: 1.12;
   background: transparent;
   border-radius: 0;
 }
 .scheduleShell .scoreOutcome {
   color: #7a2722;
-  font-size: .64rem;
+  font-size: .72rem;
   font-weight: 800;
 }
 
@@ -578,7 +578,7 @@
 
 .scheduleShell .scheduleTable .statusCluster [class~="status-badge"] {
   padding: 4px 6px;
-  font-size: .65rem;
+  font-size: .72rem;
   letter-spacing: 0;
 }
 
@@ -622,7 +622,7 @@
   display: block;
   margin-top: 2px;
   color: var(--preview-muted);
-  font-size: .67rem;
+  font-size: .72rem;
 }
 
 .cardHeadingActions {
@@ -650,13 +650,13 @@
   clip: auto;
   clip-path: none;
   color: var(--preview-muted);
-  font-size: .58rem;
+  font-size: .72rem;
   white-space: nowrap;
 }
 
 .scheduleShell .cardHeadingActions [class~="status-badge"] {
   padding: 3px 6px;
-  font-size: .64rem;
+  font-size: .72rem;
   letter-spacing: 0;
   white-space: nowrap;
 }
@@ -721,7 +721,7 @@
 .cardScoreLegend {
   padding: 6px 14px 3px;
   color: var(--preview-muted);
-  font-size: .6rem;
+  font-size: .72rem;
 }
 
 .cardScoreLegend span:nth-child(n + 2) { text-align: center; }
@@ -735,11 +735,24 @@
 .cardScoreRow:last-child { border-bottom: 0; }
 .cardScoreRow[data-winner="true"] .entryIdentity > strong,
 .cardScoreRow[data-winner="true"] .cardGamesWon { color: #075f48; }
+/* 胜方除了颜色还要有文字标记（色觉差异与灰度屏也能分辨）。 */
+.cardScoreRow[data-winner="true"] .entryIdentity > strong::after {
+  content: "胜";
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  color: #075f48;
+  background: #e3f4ed;
+  border-radius: 999px;
+  font-size: .72rem;
+  font-weight: 800;
+  vertical-align: 1px;
+}
 
 .scheduleShell .cardScoreRow .entryIdentity { gap: 1px; }
-.scheduleShell .cardScoreRow .entryIdentity > span { font-size: .65rem; }
-.scheduleShell .cardScoreRow .entryIdentity > strong { font-size: .8rem; line-height: 1.28; }
-.scheduleShell .cardScoreRow .entryIdentity > small { font-size: .65rem; }
+.scheduleShell .cardScoreRow .entryIdentity > span { font-size: .72rem; }
+.scheduleShell .cardScoreRow .entryIdentity > strong { font-size: .9rem; line-height: 1.3; }
+.scheduleShell .cardScoreRow .entryIdentity > small { font-size: .72rem; }
 
 .cardGamesWon {
   color: var(--preview-blue-strong);
@@ -763,7 +776,7 @@
   color: #35566f;
   background: transparent;
   border-radius: 0;
-  font-size: .7rem;
+  font-size: .72rem;
   font-weight: 700;
 }
 
@@ -858,17 +871,17 @@
     gap: 1px;
     margin-bottom: 6px;
     padding: 5px 9px;
-    font-size: .66rem;
+    font-size: .72rem;
   }
 
-  .scheduleShell .previewBanner span { font-size: .6rem; line-height: 1.25; white-space: nowrap; }
+  .scheduleShell .previewBanner span { font-size: .72rem; line-height: 1.25; white-space: nowrap; }
 
   .scheduleShell .eventHeader {
     gap: 5px;
     padding: 9px 10px 8px;
   }
 
-  .scheduleShell .kicker { margin-bottom: 4px; font-size: .66rem; }
+  .scheduleShell .kicker { margin-bottom: 4px; font-size: .72rem; }
   .scheduleShell .eventHeader h1 { font-size: 1.85rem; }
 
   .scheduleShell .eventFacts {
@@ -876,22 +889,22 @@
     gap: 0;
   }
   .scheduleShell .eventFacts div:first-child { grid-column: auto; }
-  .scheduleShell .eventFacts div { grid-template-columns: auto minmax(0, 1fr); gap: 6px; padding-bottom: 0; font-size: .68rem; }
+  .scheduleShell .eventFacts div { grid-template-columns: auto minmax(0, 1fr); gap: 6px; padding-bottom: 0; font-size: .72rem; }
   .scheduleShell .eventFacts div:not(:first-child) { display: none; }
-  .scheduleShell .eventFacts dt { font-size: .64rem; }
+  .scheduleShell .eventFacts dt { font-size: .72rem; }
 
-  .scheduleShell .announcement { padding: 6px 9px; font-size: .63rem; line-height: 1.25; }
+  .scheduleShell .announcement { padding: 6px 9px; font-size: .72rem; line-height: 1.25; }
 
   .scheduleShell .dateRail { margin: 7px 0; }
   .scheduleShell .dateRail > div { grid-auto-columns: 20%; }
   .scheduleShell .dateRail a { min-height: 46px; padding: 4px 8px; font-size: .72rem; }
-  .scheduleShell .dateRail a span { font-size: .66rem; }
+  .scheduleShell .dateRail a span { font-size: .72rem; }
 
   .scheduleShell .filters { gap: 7px; padding: 9px; }
   .scheduleShell .filterToolbar { gap: 8px; }
   .scheduleShell .primaryFilters { grid-template-columns: 1fr 1fr; gap: 8px; }
   .scheduleShell .primaryFilters label { gap: 0; font-size: 0; }
-  .scheduleShell .primaryFilters select { font-size: .68rem; }
+  .scheduleShell .primaryFilters select { font-size: .72rem; }
   .scheduleShell .filters select,
   .scheduleShell .filters input,
   .scheduleShell .filters button { min-height: 40px; }
@@ -908,9 +921,9 @@
   .scheduleShell .cardHeading { min-height: 48px; padding: 7px 11px 5px; }
   .scheduleShell .cardHeadingActions { gap: 4px; }
   .scheduleShell .cardHeadingActions .statusCluster > div { gap: 4px; }
-  .scheduleShell .cardHeadingActions .statusClusterCompact > div > span:first-child { font-size: .58rem; }
-  .scheduleShell .cardHeadingActions [class~="status-badge"] { padding: 2px 5px; font-size: .64rem; }
-  .scheduleShell .cardMeta { min-height: 21px; padding: 0 11px 5px; font-size: .67rem; }
+  .scheduleShell .cardHeadingActions .statusClusterCompact > div > span:first-child { font-size: .72rem; }
+  .scheduleShell .cardHeadingActions [class~="status-badge"] { padding: 2px 5px; font-size: .72rem; }
+  .scheduleShell .cardMeta { min-height: 21px; padding: 0 11px 5px; font-size: .72rem; }
 
   .scheduleShell .cardScoreLegend { display: none; }
 
@@ -923,7 +936,7 @@
   .scheduleShell .cardScoreRow { min-height: 48px; margin: 0 11px; padding: 6px 0; }
   .scheduleShell .cardScoreRow .entryIdentity > strong { font-size: .77rem; }
   .scheduleShell .cardGameScores { grid-auto-columns: minmax(22px, 1fr); gap: 3px; }
-  .scheduleShell .cardGameScores > span { min-height: 25px; font-size: .66rem; }
+  .scheduleShell .cardGameScores > span { min-height: 25px; font-size: .72rem; }
 
   .scheduleShell .cardDetailLink { width: 40px; min-width: 40px; min-height: 40px; }
 }
@@ -1049,3 +1062,8 @@
 .shareBox button { justify-self: start; min-height: 40px; padding: 8px 14px; color: white; background: var(--preview-blue-strong); border: 0; border-radius: 8px; font: inherit; font-weight: 800; cursor: pointer; }
 .shareBox p { margin: 0; color: #4c667a; font-size: .82rem; }
 @media (prefers-reduced-motion: reduce) { .nature[data-nature="LIVE"]::before { animation: none; } }
+
+/* 手机上表单控件不小于 16px，iOS Safari 聚焦时才不会自动放大页面。 */
+@media (max-width: 800px) {
+  .shell select, .shell input[type="search"], .shell input[type="text"] { font-size: 16px; }
+}
