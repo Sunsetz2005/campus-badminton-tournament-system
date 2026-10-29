@@ -16,6 +16,8 @@ export interface CallResult<T = unknown> {
   message: string | null;
   ms: number;
   headers: Headers;
+  /** 原始响应正文；非 JSON（如公开页面 HTML）时用于检查是否泄露。 */
+  text?: string;
 }
 
 export interface CallOptions {
@@ -168,7 +170,7 @@ export class Client {
     const code = response.ok ? null : (error?.code ?? (json as { code?: string } | null)?.code ?? null);
     const message = response.ok ? null : (error?.message ?? (json as { message?: string } | null)?.message ?? (text.slice(0, 200) || null));
     this.metrics.record({ at: Date.now(), actor: this.actor, method, route: options.route ?? path, status: response.status, code, ms, note: options.note });
-    return { status: response.status, ok: response.ok, json: json as T, code, message, ms, headers: response.headers };
+    return { status: response.status, ok: response.ok, json: json as T, code, message, ms, headers: response.headers, text };
   }
 
   /** 失败即抛 HttpError：用于「这一步不该失败」的流程调用。 */

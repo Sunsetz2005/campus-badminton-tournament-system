@@ -88,6 +88,10 @@ export function applyOracle(state: OracleState, rule: OracleRule, type: string, 
       return { ok: true };
     case "INVALIDATE_SPECIAL_OUTCOME":
       return { ok: false, reason: "unsupported", detail: "作废特殊结果尚未建模" };
+    case "VOID_MATCH_SCORING":
+      // 赛务口径 S-7：第一局结束前作废本场计分，回到抛币前的初始状态。
+      Object.assign(state, initialOracleState());
+      return { ok: true };
     case "RALLY_WON": {
       if (state.over) return { ok: false, reason: "invalid", detail: "比赛已结束仍记分" };
       const side = payload.side === "A" ? "A" : "B";

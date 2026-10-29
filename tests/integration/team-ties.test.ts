@@ -683,3 +683,35 @@ describe("对抗胜负与晋级回填", () => {
     await expect(prisma.auditLog.count({ where: { tournamentId, action: "GROUP_RANKING_REVOKED" } })).resolves.toBe(1);
   });
 });
+
+describe("S-4 团体小场的「在场上」只看出场名单", () => {
+  it("同一对抗的另一小场换了人可以同时开打；与进行中小场共用队员的小场被拒绝", async () => {
+    const { slug, competitionId } = await publishedTournament("s4-rubbers", 3, { format: "ROUND_ROBIN" });
+    const fixture = await prisma.fixture.findFirstOrThrow({ where: { competitionId }, include: { matches: { orderBy: { rubberOrder: "asc" } } } });
+    await adminLineups(slug, fixture.id);
+    // 自动名单：男单取第 1 名男队员，女单取第 1 名女队员，男双取第 1、2 名男队员。
+    const [singles, womenSingles, doubles] = fixture.matches;
+    const start = async (match: { id: string; code: string }) => {
+      await prisma.officialAssignment.upsert({
+        where: { matchId_userId_role: { matchId: match.id, userId: refereeId, role: "MAIN_REFEREE" } },
+        create: { matchId: match.id, userId: refereeId },
+        update: {},
+      });
+      const control = await acquireScoringSession(refereeId, match.code, randomUUID());
+      const toss = (await accepted(
+        submitScoringCommand(refereeId, match.code, command(control, 0, "RECORD_COIN_TOSS", {
+          valid: true,
+          winnerSide: "A",
+          winnerChoice: { kind: "SERVICE", decision: "SERVE" },
+          loserChoice: { kind: "END", end: "END_2" },
+        } as MatchCommand["payload"]), control.controlToken),
+      )) as Accepted;
+      return submitScoringCommand(refereeId, match.code, command(control, toss.version, "CONFIRM_OPENING_SETUP", setupPayload(toss.state, "A")), control.controlToken);
+    };
+
+    await expect(start(singles)).resolves.toMatchObject({ status: "accepted" });
+    // 两队的其余队员（整份队伍名单）不算在场上：女单照常开始。
+    await expect(start(womenSingles)).resolves.toMatchObject({ status: "accepted" });
+    await expect(start(doubles)).rejects.toMatchObject({ status: 409, code: "player_on_other_court", details: { busyMatchCode: singles.code } });
+  });
+});

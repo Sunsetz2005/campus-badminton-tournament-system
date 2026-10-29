@@ -38,15 +38,19 @@ export class OfficiatingCache {
     this.loadedAt = 0;
   }
 
-  /** 上场人员（参赛者编号）。团体小场在出场名单公开前为空。缓存非空结果。 */
+  /**
+   * 上场人员（参赛者编号）。只返回双方人员都已确定的场次，名单未交齐的团体小场返回空（调度器因此不选它）。
+   * 半份名单不能用：选中后对方名单才公开，另一半选手就没被占住，别的场地会把他们叫走，本场一直等（L3 复测 B 的 15 场中止）。
+   * 团体小场不缓存：开赛前负责人可以重交名单、裁判长可以换人（都会重写 MatchPlayer），缓存的旧名单会漏掉新上场的人。
+   */
   async playersOf(codes: string[]) {
     const missing = codes.filter((code) => !this.players.has(code));
     const fresh = new Map<string, string[]>();
     if (missing.length) {
-      // 只缓存双方人员都已确定的场次；名单未交齐的团体小场每次重查。
       for (const [code, item] of await playerListsOfMatches(missing)) {
-        fresh.set(code, item.ids);
-        if (item.complete) this.players.set(code, item.ids);
+        if (!item.complete) continue;
+        if (item.rubber) fresh.set(code, item.ids);
+        else this.players.set(code, item.ids);
       }
     }
     return new Map(codes.map((code) => [code, this.players.get(code) ?? fresh.get(code) ?? []]));

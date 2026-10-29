@@ -39,6 +39,7 @@ pnpm run stress -- --level L0 --clock C32 --seed 1 --max-minutes 15   # 开发�
 | `--scenarios ties,delays,inject,ops` | 强制同分 / 延误七情形 / 异常注入（M4）/ 赛务异常（M5） |
 | `--device-mode court\|personal` | 主赛事 M 的设备：场地平板或个人手机（§13.9）；缺省共用账号用平板、逐场指派用手机 |
 | `--spectators <人数>` | 覆盖规模档观众数（§13.2 同出口场景用 300） |
+| `--spectator-pages <0—1>` | 这一比例的观众打开 `/public/*` 页面（赛程、看板、比赛详情），其余调 `/api/public/*`；缺省 0 |
 | `--only <组,…>` | 只跑指定注入组，见下 |
 
 被测服务以生产模式 `next start` 起在 `BETTER_AUTH_URL` 的端口（默认 3200）。端口上已有服务（例如上一轮被强杀后遗留）时

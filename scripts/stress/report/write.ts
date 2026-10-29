@@ -132,9 +132,9 @@ export function writeReport(runDir: string, run: Record<string, unknown>, verifi
     for (const item of auth.groups) push(`| ${item.key} | ${item.count} | ${item.limitedRequests} | ${item.rateLimited} | ${(item.medianMs / 1000).toFixed(1)} / ${(item.maxMs / 1000).toFixed(1)} | ${(item.spanMs / 1000).toFixed(0)} |`);
     push("");
   }
-  const publicRoutes = metrics.routes.filter((item) => item.route.includes("/api/public/"));
-  if (publicRoutes.some((item) => Object.keys(item.statuses).some((key) => key.startsWith("429")))) {
-    push("## 公开接口限流（§13.2）", "", "| 接口 | 次数 | 状态分布 |", "|---|---|---|");
+  const publicRoutes = metrics.routes.filter((item) => item.route.startsWith("/api/public/") || item.route.startsWith("/public/"));
+  if (publicRoutes.length) {
+    push("## 公开接口与页面（§13.2）", "", "| 接口 / 页面 | 次数 | 状态分布 |", "|---|---|---|");
     for (const item of publicRoutes) push(`| ${item.route} | ${item.count} | ${Object.entries(item.statuses).map(([key, count]) => `${key}×${count}`).join("、")} |`);
     const writes429 = metrics.routes.filter((item) => item.route.includes("/api/matches/") && Object.keys(item.statuses).some((key) => key.startsWith("429")));
     push("", `- 裁判写接口（/api/matches/*）出现 429：${writes429.length ? writes429.map((item) => item.route).join("、") : "没有"}`, "");

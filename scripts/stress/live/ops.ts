@@ -24,12 +24,10 @@ import type { Server } from "../core/server";
 import { ceilMinute, localDateTime } from "../core/time";
 import { addFinding, recordProbe, type ProbeVerdict, type RunContext, type TournamentRuntime } from "../scenario/context";
 import { drawCompetition } from "../scenario/draw";
-import { buildLineup } from "../scenario/lineup";
 import type { ReviewRecord } from "./chief";
 import { brief, driver, injectionLoop, toRally, withBorrowed, type Env } from "./injections";
 import type { Control, MatchStateView } from "./referee";
 import type { LiveRegistry } from "./venue";
-import { SIM_OFFICIATING_NAME } from "../officiating-name";
 
 type Side = "A" | "B";
 const other = (side: Side): Side => (side === "A" ? "B" : "A");
@@ -471,33 +469,35 @@ async function abandonProbe(env: OpsEnv) {
   const code = env.plan.abandonKo;
   if (!code) return;
   const title = "淘汰赛双方都弃权";
-  const expected = "只能记中止（无胜方）；下一轮该签位一直为空、没有一方空位自动晋级——预计卡住，处理方式未定义";
+  const expected = "赛务口径 K-1/K-2：记中止（无胜方）后下一轮该侧记为空位；对手产生后以 WO 直接晋级，该场记为未进行";
   const match = await waitUntil(env.registry, async () => {
     const row = await matchByCode(code);
     return row?.verificationStatus === "LOCKED" ? row : null;
   });
   if (!match) {
-    record(env, { id: "6.1-ko-abandon", group: GROUP_61, title, expected, actual: "运行结束前没有锁定", ok: "预计卡住·未证实", match: code });
+    record(env, { id: "6.1-ko-abandon", group: GROUP_61, title, expected, actual: "运行结束前没有锁定", ok: "未触发", match: code });
     return;
   }
   const target = match.fixtureId ? await winnerTarget(match.fixtureId) : null;
   // 等到下一轮的另一侧也有人（另一场打完），再看这一侧是否仍为空。
   const settled = target
     ? await waitUntil(env.registry, async () => {
-        const row = await prisma.fixture.findUnique({ where: { id: target.id }, select: { sideAEntryId: true, sideBEntryId: true, matches: { select: { code: true, lifecycleStatus: true } } } });
+        const row = await prisma.fixture.findUnique({ where: { id: target.id }, select: { sideAEntryId: true, sideBEntryId: true, sideAVacant: true, sideBVacant: true, vacancyDecided: true, winnerEntryId: true, matches: { select: { code: true, lifecycleStatus: true, notPlayedAt: true } } } });
         const otherSide = target.side === "A" ? row?.sideBEntryId : row?.sideAEntryId;
         return otherSide ? row : null;
       }, 3000)
     : null;
   const mine = settled ? (target!.side === "A" ? settled.sideAEntryId : settled.sideBEntryId) : null;
+  const vacant = settled ? (target!.side === "A" ? settled.sideAVacant : settled.sideBVacant) : false;
+  const opponentEntry = settled ? (target!.side === "A" ? settled.sideBEntryId : settled.sideAEntryId) : null;
   const shown = settled?.matches[0] ? await publicMatch(env, settled.matches[0].code) : null;
   record(env, {
     id: "6.1-ko-abandon",
     group: GROUP_61,
     title,
     expected,
-    actual: `结果 ${match.outcomeType}；下一轮 ${target?.code ?? "（无）"} ${target?.side ?? ""} 方 ${settled ? (mine ? "被填入" : "为空") : "（另一侧到结束也未确定）"}，该场 ${settled?.matches[0]?.lifecycleStatus ?? "-"}；公开页 ${shown ? `${shown.json?.match?.lifecycle ?? brief(shown)}` : "-"}`,
-    ok: settled && !mine ? "预计卡住·已证实" : settled ? "不符" : "预计卡住·未证实",
+    actual: `结果 ${match.outcomeType}；下一轮 ${target?.code ?? "（无）"} ${target?.side ?? ""} 方 ${settled ? (mine ? "被填入" : vacant ? "记为空位" : "为空但未标空位") : "（另一侧到结束也未确定）"}，空位决出 ${settled?.vacancyDecided ? "是" : "否"}，胜方${settled?.winnerEntryId && settled.winnerEntryId === opponentEntry ? "＝对手" : "未定"}，该场 ${settled?.matches[0]?.lifecycleStatus ?? "-"}${settled?.matches[0]?.notPlayedAt ? "（未进行）" : ""}；公开页 ${shown ? `${shown.json?.match?.lifecycle ?? brief(shown)}` : "-"}`,
+    ok: settled ? !mine && vacant && settled.vacancyDecided && settled.winnerEntryId === opponentEntry : "未触发",
     match: code,
     detail: { downstream: target?.code ?? null },
   });
@@ -509,23 +509,23 @@ async function shrinkProbe(env: OpsEnv) {
   const plan = env.plan.shrink;
   if (!plan) return;
   const title = "4 人组 3 人退出（剩余人数少于出线名额）";
-  const expected = "退出者的比赛按弃权 / 中止录入；裁判长排除 3 人后可以确认名次；第 2 名签位为空，淘汰对阵缺一方——预计卡住；是否递补未定义";
+  const expected = "赛务口径 R-3/K-1：WO/RET 负方自动删除小组成绩，确认名次只剩 1 人；第 2 名签位记为空位，对手产生后直接晋级（不递补）";
   const group = await waitUntil(env.registry, async () => {
     const row = await prisma.group.findUnique({ where: { id: plan.groupId }, select: { rankingConfirmedAt: true, ranking: true } });
     return row?.rankingConfirmedAt ? row : null;
   }, 3000);
   if (!group) {
-    record(env, { id: "6.1-shrink", group: GROUP_61, title, expected, actual: "运行结束前本组名次没有确认", ok: "预计卡住·未证实", detail: { group: plan.group } });
+    record(env, { id: "6.1-shrink", group: GROUP_61, title, expected, actual: "运行结束前本组名次没有确认", ok: "未触发", detail: { group: plan.group } });
     return;
   }
   const order = ((group.ranking as { order?: string[] } | null)?.order ?? []) as string[];
   const targets = await prisma.fixture.findMany({
     where: { OR: [{ sideAGroupId: plan.groupId }, { sideBGroupId: plan.groupId }] },
-    select: { code: true, sideAGroupId: true, sideARank: true, sideAEntryId: true, sideBGroupId: true, sideBRank: true, sideBEntryId: true },
+    select: { code: true, sideAGroupId: true, sideARank: true, sideAEntryId: true, sideAVacant: true, sideBGroupId: true, sideBRank: true, sideBEntryId: true, sideBVacant: true },
   });
   const slots = targets.flatMap((fixture) => [
-    ...(fixture.sideAGroupId === plan.groupId ? [{ code: fixture.code, rank: fixture.sideARank, entry: fixture.sideAEntryId }] : []),
-    ...(fixture.sideBGroupId === plan.groupId ? [{ code: fixture.code, rank: fixture.sideBRank, entry: fixture.sideBEntryId }] : []),
+    ...(fixture.sideAGroupId === plan.groupId ? [{ code: fixture.code, rank: fixture.sideARank, entry: fixture.sideAEntryId, vacant: fixture.sideAVacant }] : []),
+    ...(fixture.sideBGroupId === plan.groupId ? [{ code: fixture.code, rank: fixture.sideBRank, entry: fixture.sideBEntryId, vacant: fixture.sideBVacant }] : []),
   ]);
   const empty = slots.filter((slot) => !slot.entry);
   const specials = await prisma.match.groupBy({ by: ["outcomeType"], where: { groupId: plan.groupId }, _count: true });
@@ -534,8 +534,8 @@ async function shrinkProbe(env: OpsEnv) {
     group: GROUP_61,
     title,
     expected,
-    actual: `本组结果 ${specials.map((item) => `${item.outcomeType ?? "NORMAL"}×${item._count}`).join("、")}；确认名次 ${order.length} 人（${order[0] === plan.remaining ? "为留下的一人" : "不是留下的人"}）；签位 ${slots.map((slot) => `${slot.code}#${slot.rank}${slot.entry ? "" : "空"}`).join("、")}`,
-    ok: order.length === 1 && empty.length > 0 ? "预计卡住·已证实" : "不符",
+    actual: `本组结果 ${specials.map((item) => `${item.outcomeType ?? "NORMAL"}×${item._count}`).join("、")}；确认名次 ${order.length} 人（${order[0] === plan.remaining ? "为留下的一人" : "不是留下的人"}）；签位 ${slots.map((slot) => `${slot.code}#${slot.rank}${slot.entry ? "" : slot.vacant ? "空位" : "空（未标空位）"}`).join("、")}`,
+    ok: order.length === 1 && order[0] === plan.remaining && empty.length > 0 && empty.every((slot) => slot.vacant),
     detail: { group: plan.group, emptySlots: empty.map((slot) => slot.code) },
   });
 }
@@ -543,8 +543,8 @@ async function shrinkProbe(env: OpsEnv) {
 async function groupWithdrawProbe(env: OpsEnv) {
   const plan = env.plan.groupWithdraw;
   if (!plan) return;
-  const title = "小组赛选手中途退赛（先退赛、后续弃权）→ 排除";
-  const expected = "第一场 RET 保留比分、其余 WO；排除后该单位全部对阵不计、原比分保留；名次与独立重算一致（见判定「小组名次」）";
+  const title = "小组赛选手中途退赛（先退赛、后续弃权）→ 成绩自动删除";
+  const expected = "赛务口径 R-3：第一场 RET 保留比分、其余 WO；该单位没打完本组，全部小组成绩自动删除（不需裁判长手工排除），名次不含该单位；原比分保留；名次与独立重算一致（见判定「小组名次」）";
   const group = await waitUntil(env.registry, async () => {
     const row = await prisma.group.findUnique({ where: { id: plan.groupId }, select: { rankingConfirmedAt: true, ranking: true, exclusions: { select: { entryId: true, reason: true } } } });
     return row?.rankingConfirmedAt ? row : null;
@@ -561,8 +561,8 @@ async function groupWithdrawProbe(env: OpsEnv) {
     group: GROUP_61,
     title,
     expected,
-    actual: `该单位比赛 ${matches.map((match) => `${match.code}:${match.outcomeType ?? "NORMAL"}`).join("、")}；退赛场比分 ${ret ? ret.games.map((game) => `${game.scoreA}:${game.scoreB}`).join(" ") : "-"}；排除 ${group.exclusions.some((item) => item.entryId === plan.entryId) ? "已登记" : "未登记"}；确认名次 ${order.length} 人${order.includes(plan.entryId) ? "（仍含该单位）" : ""}`,
-    ok: Boolean(ret) && group.exclusions.some((item) => item.entryId === plan.entryId) && !order.includes(plan.entryId),
+    actual: `该单位比赛 ${matches.map((match) => `${match.code}:${match.outcomeType ?? "NORMAL"}`).join("、")}；退赛场比分 ${ret ? ret.games.map((game) => `${game.scoreA}:${game.scoreB}`).join(" ") : "-"}；手工排除 ${group.exclusions.some((item) => item.entryId === plan.entryId) ? "已登记" : "未登记（R-3 自动删除）"}；确认名次 ${order.length} 人${order.includes(plan.entryId) ? "（仍含该单位）" : ""}`,
+    ok: Boolean(ret) && !order.includes(plan.entryId),
     detail: { group: plan.group },
   });
 }
@@ -577,7 +577,7 @@ async function dsqProbe(env: OpsEnv) {
   if (!plan) return;
   const key = `${plan.competition}/${plan.group}`;
   const title = "赛后取消资格追溯（已打 3 场）";
-  const expected = "DSQ 只能在提交前录入；已锁定结果重开后回到「待提交」也不能改录 DSQ；没有一次性取消全部成绩的功能，只能排除——跨多场追溯为设计未定义";
+  const expected = "赛务口径 W-4：裁判长登记取消资格（对整个赛事生效），已锁定的结果不改写、未开始的比赛以 WO 判给对手；本组成绩由裁判长排除删除";
   const steps: string[] = [];
   try {
     const codes = await waitUntil(env.registry, async () => {
@@ -589,18 +589,16 @@ async function dsqProbe(env: OpsEnv) {
       return;
     }
     const first = codes[0];
-    const side: Side = first.sideAEntryId === plan.entryId ? "A" : "B";
-    const outcome = await asChief(env, first.code, "仿真：赛后查实冒名顶替，追溯取消资格", async (send, read) => {
-      const reopen = await send("REOPEN_RESULT", { reason: "仿真：赛后查实冒名顶替，重开以改判" });
-      steps.push(`重开 ${first.code} ${brief(reopen)}${reopen.message ? `（${reopen.message}）` : ""}`);
-      if (!reopen.ok) return;
-      const phase = (await read())?.phase;
-      const dsq = await send("RECORD_SPECIAL_OUTCOME", { type: "DSQ", winnerSide: other(side), reason: "仿真：冒名顶替，取消资格" });
-      steps.push(`重开后相位 ${phase}，录 DSQ ${brief(dsq)}${dsq.message ? `（${dsq.message}）` : ""}`);
-    });
-    if (!outcome.takeover.ok) steps.push(`接管 ${first.code} ${brief(outcome.takeover)}`);
-    // 裁判长不能代交结果（main_referee_required）：由裁判（共用账号平板）按原结果重新提交，再由复核协程锁定。
-    steps.push(`裁判按原结果重新提交 ${await refereeResubmit(env, first.code)}`);
+    const before = await prisma.match.findMany({ where: { code: { in: codes.map((row) => row.code) } }, select: { code: true, outcomeType: true, version: true } });
+    const member = await prisma.entryMember.findFirstOrThrow({ where: { entryId: plan.entryId }, orderBy: { slot: "asc" }, select: { participant: { select: { publicCode: true } } } });
+    const dsq = await env.tournament.chiefs[0].client.call<{ walkovers: string[]; untouched: string[] }>("POST", `/api/admin/tournaments/${env.tournament.slug}/participants/${member.participant.publicCode}/withdrawal`, {
+      kind: "DISQUALIFIED",
+      reason: "仿真：赛后查实冒名顶替，取消资格",
+    }, { route: "/api/admin/tournaments/[slug]/participants/[publicCode]/withdrawal" });
+    steps.push(`登记取消资格 ${brief(dsq)}${dsq.message ? `（${dsq.message}）` : ""}，WO ${dsq.json?.walkovers?.join("、") || "无"}，未处理 ${dsq.json?.untouched?.join("、") || "无"}`);
+    const after = await prisma.match.findMany({ where: { code: { in: codes.map((row) => row.code) } }, select: { code: true, outcomeType: true, version: true } });
+    const unchanged = before.every((row) => after.some((item) => item.code === row.code && item.outcomeType === row.outcomeType && item.version === row.version));
+    steps.push(`已锁定的 ${codes.length} 场${unchanged ? "未改写" : "被改写"}`);
     const chief = env.tournament.chiefs[0];
     const exclude = await chief.client.call("POST", `/api/admin/tournaments/${env.tournament.slug}/competitions/${plan.competition}/groups/${plan.group}/exclusions`, { entryId: plan.entryId, action: "ADD", reason: "仿真裁判长：赛后查实冒名顶替，取消资格，本组成绩不计" }, {
       route: "/api/admin/tournaments/[slug]/competitions/[code]/groups/[group]/exclusions",
@@ -614,36 +612,13 @@ async function dsqProbe(env: OpsEnv) {
       title,
       expected,
       actual: `${steps.join("；")}；${first.code} 最终${locked ? "已锁定" : "未锁定"}`,
-      ok: "设计未定义",
+      ok: dsq.ok && unchanged && exclude.ok && Boolean(locked),
       match: first.code,
       detail: { steps },
     });
   } finally {
     env.tournament.rankingHolds.delete(key);
   }
-}
-
-/** 裁判取得控制、按当前结果提交、释放；受理的 commandId 记进 reviews。 */
-async function refereeResubmit(env: OpsEnv, code: string) {
-  const tablet = env.tablets[1];
-  const acquired = await tablet.call<Control>("POST", `/api/matches/${code}/control`, { deviceSessionId: env.rng.uuid(), officiatingName: SIM_OFFICIATING_NAME }, { route: "/api/matches/[code]/control" });
-  if (!acquired.ok) return `取得控制 ${brief(acquired)}`;
-  const control = acquired.json!;
-  const auth = { Authorization: `Bearer ${control.controlToken}` };
-  const state = await tablet.call<{ state: MatchStateView }>("GET", `/api/matches/${code}/state`, undefined, { route: "/api/matches/[code]/state" });
-  const commandId = randomUUID();
-  const submit = await tablet.call("POST", `/api/matches/${code}/commands`, {
-    commandId,
-    occurredAt: new Date().toISOString(),
-    expectedVersion: state.json?.state?.version,
-    scoringSessionId: control.sessionId,
-    takeoverGeneration: control.takeoverGeneration,
-    type: "SUBMIT_RESULT",
-    payload: { reason: "仿真：无法改判，按原结果重新提交" },
-  }, { route: "/api/matches/[code]/commands", headers: auth, note: "SUBMIT_RESULT" });
-  env.reviews.push({ matchCode: code, chief: "（裁判重交）", submittedSeenAt: Date.now(), confirmedAt: null, commandId: submit.ok ? commandId : null, status: submit.status, code: submit.code });
-  await tablet.call("DELETE", `/api/matches/${code}/control`, { scoringSessionId: control.sessionId, takeoverGeneration: control.takeoverGeneration }, { route: "/api/matches/[code]/control", headers: auth });
-  return `${state.json?.state?.phase ?? "?"} → ${brief(submit)}`;
 }
 
 /**
@@ -662,63 +637,35 @@ async function teamWithdrawProbe(env: OpsEnv) {
   }
   tournament.withdrawn.set(plan.entryId, { reason: "团体中途退出", at: Date.now() });
   context.log(`[赛务] 团体 ${plan.teamKey} 打完第一场对抗后退出`);
-  const last = await prisma.fixture.findUniqueOrThrow({ where: { id: plan.last }, select: { id: true, code: true, sideAEntryId: true, sideBEntryId: true, matches: { select: { code: true }, orderBy: { rubberOrder: "asc" } } } });
-  const mySide: Side = last.sideAEntryId === plan.entryId ? "A" : "B";
-  const opponent = tournament.teams.find((team) => team.entryId === (mySide === "A" ? last.sideBEntryId : last.sideAEntryId));
-  const mine = tournament.teams.find((team) => team.entryId === plan.entryId)!;
   const steps: string[] = [];
-  if (opponent) {
-    const rubbers = buildLineup(tournament, opponent, teamPlan.rubbers, env.rng.fork(`ops:lineup:${last.code}`));
-    const submitted = await opponent.manager.call("POST", `/api/team/${tournament.slug}/fixtures/${last.id}/lineup`, { rubbers }, { route: "/api/team/[slug]/fixtures/[fixtureId]/lineup" });
-    steps.push(`对方名单 ${brief(submitted)}`);
-  }
-  const partial = buildLineup(tournament, mine, teamPlan.rubbers, env.rng.fork(`ops:partial:${last.code}`)).slice(0, -1);
-  const short = await mine.manager.call("POST", `/api/team/${tournament.slug}/fixtures/${last.id}/lineup`, { rubbers: partial }, { route: "/api/team/[slug]/fixtures/[fixtureId]/lineup" });
-  steps.push(`本队只交 ${partial.length}/${teamPlan.rubbers.length} 个小场 ${brief(short)}${short.message ? `（${short.message}）` : ""}`);
-  const rubber = last.matches[0]?.code;
-  if (rubber) {
-    const acquired = await env.tablets[1].call<Control>("POST", `/api/matches/${rubber}/control`, { deviceSessionId: env.rng.uuid(), officiatingName: SIM_OFFICIATING_NAME }, { route: "/api/matches/[code]/control" });
-    const state = await env.tablets[1].call("GET", `/api/matches/${rubber}/state`, undefined, { route: "/api/matches/[code]/state" });
-    steps.push(`第 1 小场取得控制 ${brief(acquired)}，读状态 ${brief(state)}`);
-    if (acquired.ok) {
-      const control = acquired.json!;
-      const wo = await env.tablets[1].call("POST", `/api/matches/${rubber}/commands`, {
-        commandId: randomUUID(),
-        occurredAt: new Date().toISOString(),
-        expectedVersion: 0,
-        scoringSessionId: control.sessionId,
-        takeoverGeneration: control.takeoverGeneration,
-        type: "RECORD_SPECIAL_OUTCOME",
-        payload: { type: "WO", winnerSide: other(mySide), reason: "仿真：退出的队不交名单，尝试录弃权" },
-      }, { route: "/api/matches/[code]/commands", headers: { Authorization: `Bearer ${control.controlToken}` }, note: "RECORD_SPECIAL_OUTCOME" });
-      steps.push(`录弃权 ${brief(wo)}`);
-      await env.tablets[1].call("DELETE", `/api/matches/${rubber}/control`, { scoringSessionId: control.sessionId, takeoverGeneration: control.takeoverGeneration }, { route: "/api/matches/[code]/control", headers: { Authorization: `Bearer ${control.controlToken}` } });
-      if (wo.ok) addFinding(context, { kind: "unexpected", area: "团体退出", title: `${rubber} 没有名单却录入了弃权`, detail: { rubber } });
-    }
-    const resultOnly = await context.admin.call("POST", `/api/admin/tournaments/${tournament.slug}/matches/${rubber}/result-only`, { outcome: "WO", winnerSide: other(mySide), games: [], reason: "仿真：尝试仅结果补录" }, {
-      route: "/api/admin/tournaments/[slug]/matches/[code]/result-only",
-    });
-    steps.push(`仅结果补录 ${brief(resultOnly)}`);
-  }
-  // 等本组其他对抗都结束，看积分榜与名次确认。
+  // 赛务口径 W-7（GCR 16.3.7）：裁判长登记整队退出，未开始的对抗按认输结算，积分榜删除该队。
+  const withdraw = await tournament.chiefs[0].client.call<{ concededFixtures: string[]; vacatedFixtures: string[]; untouched: string[] }>("POST", `/api/admin/tournaments/${tournament.slug}/entries/${plan.entryId}/withdrawal`, {
+    reason: "仿真：团体打完第一场对抗后整队退出",
+  }, { route: "/api/admin/tournaments/[slug]/entries/[entryId]/withdrawal" });
+  steps.push(`登记整队退出 ${brief(withdraw)}${withdraw.message ? `（${withdraw.message}）` : ""}，按认输结算 ${withdraw.json?.concededFixtures?.join("、") || "无"}，未处理 ${withdraw.json?.untouched?.join("、") || "无"}`);
+  const last = await prisma.fixture.findUniqueOrThrow({ where: { id: plan.last }, select: { code: true, decidedAt: true, winnerEntryId: true } });
+  steps.push(`最后一场 ${last.code} ${last.decidedAt ? "已决出" : "未决出"}`);
+  // 等本组其他对抗都结束（不只是决出：已决出对抗剩下的小场也要打完，积分榜才算完整），再看积分榜与名次确认。
   const others = await waitUntil(registry, async () => {
-    const fixtures = await prisma.fixture.findMany({ where: { groupId: plan.groupId, id: { not: plan.last } }, select: { decidedAt: true } });
-    return fixtures.every((fixture) => fixture.decidedAt) ? fixtures : null;
+    const loaded = await loadGroupStandings(prisma, plan.groupId);
+    return loaded.standings.complete ? loaded : null;
   }, 5000);
-  const standings = await loadGroupStandings(prisma, plan.groupId);
+  const standings = others ?? (await loadGroupStandings(prisma, plan.groupId));
+  const listed = standings.standings.rows.some((row) => row.entryId === plan.entryId);
   const confirm = await tournament.chiefs[0].client.call("POST", `/api/admin/tournaments/${tournament.slug}/competitions/${teamPlan.code}/groups/${plan.group}/ranking`, {}, {
     route: "/api/admin/tournaments/[slug]/competitions/[code]/groups/[group]/ranking",
   });
-  steps.push(`本组其他对抗${others ? "已全部决出" : "到结束仍未全部决出"}；积分榜 ${standings.standings.complete ? "组内对抗全部结束" : "组内对抗未全部结束"}（${standings.standings.rows.map((row) => `${row.played} 场`).join("/")}）；确认名次 ${brief(confirm)}`);
-  const middle = await prisma.match.findMany({ where: { fixtureId: { in: plan.middle } }, select: { code: true, outcomeType: true, verificationStatus: true } });
-  steps.push(`中间对抗小场 ${middle.map((item) => `${item.code}:${item.outcomeType ?? "-"}/${item.verificationStatus}`).join("、") || "无"}`);
+  const confirmed = Boolean((await prisma.group.findUnique({ where: { id: plan.groupId }, select: { rankingConfirmedAt: true } }))?.rankingConfirmedAt);
+  steps.push(`本组对抗${others ? "已全部打完" : "到结束仍未全部打完"}；积分榜${listed ? "仍列出" : "已删除"}退出队伍（${standings.standings.rows.length} 队）；确认名次 ${brief(confirm)}${confirm.message ? `（${confirm.message}）` : ""}，本组名次${confirmed ? "已确认" : "未确认"}`);
+  const middle = await prisma.match.findMany({ where: { fixtureId: { in: plan.middle } }, select: { code: true, outcomeType: true, verificationStatus: true, notPlayedAt: true } });
+  steps.push(`中间对抗小场 ${middle.map((item) => `${item.code}:${item.notPlayedAt ? "未进行" : `${item.outcomeType ?? "-"}/${item.verificationStatus}`}`).join("、") || "无"}`);
   record(env, {
     id: "6.1-team-withdraw",
     group: GROUP_61,
     title: "团体小组某队中途退出",
-    expected: "名单必须填满全部小场；没有名单的小场不能载入、录不了弃权、不接受仅结果补录；积分榜没有排除功能，本组名次确认不了——预计卡住，处理方式未定义",
+    expected: "赛务口径 W-7：裁判长登记整队退出后，未开始的对抗按认输结算（GCR 16.3.7、16.3.8），积分榜删除该队，本组名次可以确认",
     actual: steps.join("；"),
-    ok: !short.ok && !confirm.ok ? "预计卡住·已证实" : "不符",
+    ok: withdraw.ok && Boolean(last.decidedAt) && !listed && confirmed,
     match: last.code,
     detail: { steps },
   });
@@ -865,12 +812,19 @@ async function registrationProbes(env: OpsEnv) {
       note: "仿真：跨项目同一学号、换单位",
     }, { route: "/api/admin/tournaments/[slug]/registrations" });
     let review: CallResult | null = null;
+    let rejected: CallResult | null = null;
     if (created.ok) {
       const pending = (await pendingRegistrations(tournament.id, ms2.id))[0];
       if (pending) {
         review = await context.admin.call("POST", `/api/admin/tournaments/${tournament.slug}/registrations/${pending.id}/review`, { action: "APPROVE", expectedVersion: pending.version }, {
           route: "/api/admin/tournaments/[slug]/registrations/[registrationId]/review",
         });
+        // 赛务口径 E-1：审核被拒（409 unit_mismatch）后报名仍待审核，管理员按现场做法驳回，免得挡住后面的抽签发布。
+        if (!review.ok) {
+          rejected = await context.admin.call("POST", `/api/admin/tournaments/${tournament.slug}/registrations/${pending.id}/review`, { action: "REJECT", expectedVersion: pending.version, reason: "同一学号已代表其他单位参赛" }, {
+            route: "/api/admin/tournaments/[slug]/registrations/[registrationId]/review",
+          });
+        }
       }
     }
     if (review?.ok) crossApproved = 1;
@@ -879,9 +833,9 @@ async function registrationProbes(env: OpsEnv) {
       id: "6.2-dup-cross-unit",
       group: GROUP_62,
       title: "同一学号跨项目以不同单位报名",
-      expected: "参赛者按（赛事, 学号）唯一，审核时按身份判定处理；单位不一致如何处理未定义",
-      actual: `录入 ${brief(created)}${created.message ? `（${created.message}）` : ""}；审核 ${review ? `${brief(review)}${review.message ? `（${review.message}）` : ""}` : "-"}；参赛者单位 ${cross.teamName} → ${after?.teamName}`,
-      ok: "设计未定义",
+      expected: "赛务口径 E-1：同一学号在一个赛事里只能代表一个单位，审核 409 unit_mismatch，参赛者单位不变；驳回后不挡抽签",
+      actual: `录入 ${brief(created)}${created.message ? `（${created.message}）` : ""}；审核 ${review ? `${brief(review)}${review.message ? `（${review.message}）` : ""}` : "-"}；驳回 ${rejected ? brief(rejected) : "-"}；参赛者单位 ${cross.teamName} → ${after?.teamName}`,
+      ok: review?.status === 409 && review.code === "unit_mismatch" && Boolean(rejected?.ok) && after?.teamName === cross.teamName,
     });
   }
 
@@ -1008,13 +962,17 @@ async function onsiteProbes(env: OpsEnv) {
   record(env, { id: "6.6-cancel", group: GROUP_66, title: "取消比赛", expected: "「取消比赛」流程未实现", actual: "没有对应接口，未测", ok: "不可测" });
 }
 
-/** 场地临时不可用：暂停 → 关闭场地 → 看公开页 → 恢复，比分不丢；系统内无法把比赛转到另一块场地。 */
+/**
+ * 场地临时不可用：暂停 → 关闭场地 → 裁判长转到一块空场地（赛务口径 S-5）→ 看公开页 → 重新开放原场地并转回 → 恢复，比分不丢。
+ * 转回原场地是为了不和仿真在那块空场地上排的比赛撞场（判定按比赛最终所在场地检查不重叠）。
+ */
 async function pauseProbe(env: OpsEnv, id: string) {
   const { context, tournament } = env;
   const steps: string[] = [];
   let kept = false;
   let courtShown: string | null = null;
   let courtName: string | null = null;
+  const transfer: { ok: boolean; back: boolean; target: string | null; upcoming: string[]; attempts: string[] } = { ok: false, back: false, target: null, upcoming: [], attempts: [] };
   await withBorrowed(env, `§6.6 暂停与关闭场地（${id}）`, async (borrowed) => {
     const d = driver(env, borrowed, env.tablets[0]);
     if (!(await d.acquire()).ok) return null;
@@ -1024,15 +982,37 @@ async function pauseProbe(env: OpsEnv, id: string) {
     const court = await prisma.court.findUnique({ where: { id: borrowed.courtId }, select: { code: true, name: true } });
     courtName = court?.name ?? null;
     const closed = court ? await context.admin.call<{ affectedPublishedMatches: number }>("PATCH", `/api/admin/tournaments/${tournament.slug}/schedule/courts/${court.code}`, { active: false }, { route: "/api/admin/tournaments/[slug]/schedule/courts/[courtCode]" }) : null;
+    steps.push(`暂停 ${brief(pause)}；关闭${court?.name ?? "场地"} ${closed ? `${brief(closed)}（受影响的已发布比赛 ${closed.json?.affectedPublishedMatches ?? "?"}）` : "-"}`);
+    const chief = tournament.chiefs[0].client;
+    const transferRoute = { route: "/api/admin/tournaments/[slug]/schedule/matches/[matchCode]/court" };
+    const busy = new Set((await prisma.match.findMany({ where: { courtId: { not: null }, lifecycleStatus: { in: ["IN_PROGRESS", "SUSPENDED"] }, stage: { competition: { tournament: { slug: tournament.slug } } } }, select: { courtId: true } })).map((row) => row.courtId));
+    const free = (await prisma.court.findMany({ where: { tournament: { slug: tournament.slug }, active: true, id: { not: borrowed.courtId } }, select: { id: true, code: true, name: true }, orderBy: { sortOrder: "asc" } })).filter((item) => !busy.has(item.id));
+    for (const target of free) {
+      const moved = await chief.call<{ toCourt: string; upcoming: { code: string }[] }>("POST", `/api/admin/tournaments/${tournament.slug}/schedule/matches/${borrowed.code}/court`, { courtCode: target.code, reason: "仿真：场地灯光故障，转场" }, transferRoute);
+      transfer.attempts.push(`${target.code} ${brief(moved)}`);
+      if (moved.status === 409 && moved.code === "court_busy") continue;
+      transfer.ok = moved.ok;
+      transfer.upcoming = moved.json?.upcoming?.map((item) => item.code) ?? [];
+      transfer.target = target.name;
+      break;
+    }
+    // 公开查询有 2 秒共享缓存（SF-06），等缓存过期再看。
+    await sleep(3000);
     const shown = await publicMatch(env, borrowed.code);
     courtShown = shown.json?.match?.court ?? null;
-    steps.push(`暂停 ${brief(pause)}；关闭${court?.name ?? "场地"} ${closed ? `${brief(closed)}（受影响的已发布比赛 ${closed.json?.affectedPublishedMatches ?? "?"}）` : "-"}；公开页场地「${courtShown ?? "-"}」、状态 ${shown.json?.match?.lifecycle ?? "-"}`);
+    steps.push(`转场 ${transfer.attempts.join(" / ") || "没有空场地"}；公开页场地「${courtShown ?? "-"}」、状态 ${shown.json?.match?.lifecycle ?? "-"}`);
+    if (court && transfer.ok) {
+      const reopened = await context.admin.call("PATCH", `/api/admin/tournaments/${tournament.slug}/schedule/courts/${court.code}`, { active: true }, { route: "/api/admin/tournaments/[slug]/schedule/courts/[courtCode]" });
+      const back = await chief.call("POST", `/api/admin/tournaments/${tournament.slug}/schedule/matches/${borrowed.code}/court`, { courtCode: court.code, reason: "仿真：原场地修复，转回" }, transferRoute);
+      transfer.back = back.ok;
+      steps.push(`重新开放原场地 ${brief(reopened)}，转回 ${brief(back)}${back.message ? `（${back.message}）` : ""}`);
+    }
     await context.clock.wait(10 * 60);
     await d.heartbeatIfDue(true);
     const resume = await d.send("RESUME_MATCH", { reason: "仿真：换到备用场地继续（系统内仍是原场地）" });
     kept = d.state?.score.A === before.A && d.state?.score.B === before.B && d.state?.currentGame === before.game;
     steps.push(`恢复 ${brief(resume)}，比分 ${before.A}:${before.B} → ${d.state?.score.A}:${d.state?.score.B}`);
-    if (court) {
+    if (court && !transfer.ok) {
       const reopened = await context.admin.call("PATCH", `/api/admin/tournaments/${tournament.slug}/schedule/courts/${court.code}`, { active: true }, { route: "/api/admin/tournaments/[slug]/schedule/courts/[courtCode]" });
       steps.push(`重新开放 ${brief(reopened)}`);
     }
@@ -1044,9 +1024,9 @@ async function pauseProbe(env: OpsEnv, id: string) {
     id: `${id}-transfer`,
     group: GROUP_66,
     title: "比赛转到另一块场地继续",
-    expected: "已开始比赛的场地由触发器冻结，系统内无法改场地，公开页仍显示原场地——转场不支持（设计未定义）",
-    actual: `公开页显示「${courtShown ?? "-"}」（原场地 ${courtName ?? "-"}）；系统没有改场地的入口`,
-    ok: "设计未定义",
+    expected: "赛务口径 S-5：暂停中的比赛由裁判长转到启用且空着的场地，公开页显示新场地；比分不变；目标场地后续排定如实列出",
+    actual: `转到 ${transfer.target ?? "-"}（原场地 ${courtName ?? "-"}）${transfer.ok ? "成功" : "失败"}，公开页显示「${courtShown ?? "-"}」，目标场地后续排定 ${transfer.upcoming.join("、") || "无"}；转回原场地${transfer.back ? "成功" : "失败"}`,
+    ok: transfer.ok ? courtShown === transfer.target && transfer.back : "未触发",
   });
 }
 
@@ -1078,30 +1058,32 @@ async function nextDayProbe(env: OpsEnv) {
   record(env, { id: "6.6-next-day", group: GROUP_66, title: "中断后改到次日续赛", expected: "暂停可跨天保持；租约过期后重新取得控制即可接续，比分不丢；计划时间被冻结（跨天赛程显示未定义）", actual: steps.join("；"), ok });
 }
 
-/** 打开错场并记了几分：只能撤销回 0:0，没有作废整场计分；记下撤销后的开始时间、版本与公开状态。 */
+/** 打开错场并记了几分：裁判长作废本场计分（赛务口径 S-7），比赛回到抛币前、开始时间清除；之后照常从抛币打完。 */
 async function wrongMatchProbe(env: OpsEnv) {
   const steps: string[] = [];
+  const voidOutcome = { ok: false };
   await withBorrowed(env, "§6.6 打开错场", async (borrowed) => {
     const d = driver(env, borrowed, env.tablets[0]);
     if (!(await d.acquire()).ok) return null;
     await toRally(d, 0);
     for (let index = 0; index < 3; index += 1) await d.send("RALLY_WON", { side: index % 2 ? "A" : "B" });
     const scored = { ...d.state!.score };
-    const undo: string[] = [];
-    for (let index = 0; index < 4; index += 1) {
-      const result = await d.send("UNDO_LAST_REVERSIBLE", { reason: "仿真：打开错场，撤销" });
-      undo.push(brief(result));
-      if (!result.ok) break;
-    }
-    await d.refresh();
+    const voided = await asChief(env, borrowed.code, "仿真：打开错场，作废本场计分", (send) => send("VOID_MATCH_SCORING", { reason: "仿真：打开错场，作废本场计分" }));
+    const result = voided.value;
+    await sleep(3000);
     const row = await matchByCode(borrowed.code);
     const shown = await publicMatch(env, borrowed.code);
-    steps.push(`记了 ${scored.A}:${scored.B}，撤销 ${undo.join(" / ")}；撤销后 ${d.state?.phase} ${d.state?.score.A}:${d.state?.score.B}，版本 ${row?.version}，开始时间${row?.startedAt ? "已写入" : "为空"}，状态 ${row?.lifecycleStatus}；公开页 ${shown.json?.match?.lifecycle ?? brief(shown)}`);
+    voidOutcome.ok = Boolean(result?.ok) && row?.startedAt === null && (row?.lifecycleStatus === "READY" || row?.lifecycleStatus === "SCHEDULED");
+    steps.push(`记了 ${scored.A}:${scored.B}，裁判长接管 ${brief(voided.takeover)}，作废 ${result ? brief(result) : "-"}${result?.message ? `（${result.message}）` : ""}；之后相位 ${result?.json?.state?.phase ?? "-"}，版本 ${row?.version}，开始时间${row?.startedAt ? "仍在" : "已清除"}，状态 ${row?.lifecycleStatus}；公开页 ${shown.json?.match?.lifecycle ?? brief(shown)}`);
+    // 裁判重新取得控制，从抛币开始打本场。
+    const again = await d.acquire();
+    await d.refresh();
+    steps.push(`裁判重新取得 ${brief(again)}，相位 ${d.state?.phase}`);
     // 现场随后在这块场地上打本该打的比赛；这里把这场接着正常打完，免得场地被一场「进行中」占住。
     return d.play();
   });
   if (!steps.length) return;
-  record(env, { id: "6.6-wrong-match", group: GROUP_66, title: "打开错场并记了几分", expected: "只能撤销回 0:0（第一球后抛币不可作废）；没有作废整场计分，开始时间与版本回不到初始——设计未定义", actual: steps.join("；"), ok: "设计未定义" });
+  record(env, { id: "6.6-wrong-match", group: GROUP_66, title: "打开错场并记了几分", expected: "赛务口径 S-7：第一局结束前裁判长作废本场计分，回到抛币前、开始时间清除、历史事件保留；裁判重新取得控制后照常打完", actual: steps.join("；"), ok: voidOutcome.ok });
 }
 
 /** 提交后复核驳回：裁判长从待复核退回，修订标为退回，裁判重新提交后复核锁定。 */

@@ -153,10 +153,10 @@ export async function playerListsOfMatches(codes: string[]) {
     rows.map((row) => {
       if (row.rubberKind) {
         const sides = new Set(row.players.map((item) => item.side));
-        return [row.code, { ids: row.players.map((item) => item.participantId), complete: sides.has("A") && sides.has("B") }] as const;
+        return [row.code, { ids: row.players.map((item) => item.participantId), complete: sides.has("A") && sides.has("B"), rubber: Boolean(row.rubberKind) }] as const;
       }
       const ids = [...(row.sideAEntry?.members ?? []), ...(row.sideBEntry?.members ?? [])].map((item) => item.participantId);
-      return [row.code, { ids, complete: Boolean(row.sideAEntry && row.sideBEntry) }] as const;
+      return [row.code, { ids, complete: Boolean(row.sideAEntry && row.sideBEntry), rubber: Boolean(row.rubberKind) }] as const;
     }),
   );
 }

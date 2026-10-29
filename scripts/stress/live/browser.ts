@@ -28,7 +28,8 @@ function probe(env: Env, item: { id: string; title: string; expected: string; ac
 export async function browserProbes(env: Env) {
   let browser: Browser;
   try {
-    browser = await chromium.launch({ headless: true });
+    // 服务器镜像不带 Playwright 自带的浏览器，用成绩册 PDF 同一个系统 Chromium（镜像里的 REPORT_PDF_CHROMIUM_PATH）。
+    browser = await chromium.launch({ headless: true, executablePath: process.env.REPORT_PDF_CHROMIUM_PATH || undefined });
   } catch (error) {
     probe(env, { id: "13.3-*", title: "浏览器真实操作", expected: "—", actual: `无法启动 Chromium：${error instanceof Error ? error.message.split("\n")[0] : String(error)}`, ok: "skipped", match: "—" });
     return;
@@ -37,6 +38,7 @@ export async function browserProbes(env: Env) {
   const stopWatch = setInterval(() => {
     if (env.registry.stop) void browser.close().catch(() => undefined);
   }, 1000);
+  let interrupted: unknown = null;
   try {
     await withBorrowed(env, "浏览器真实操作", async (borrowed) => {
       const code = borrowed.code;
@@ -49,7 +51,7 @@ export async function browserProbes(env: Env) {
 
       const commandIds = new Set<string>();
       const context = await browser.newContext({ baseURL: env.context.origin, viewport: { width: 1024, height: 768 }, hasTouch: true });
-      context.setDefaultTimeout(30_000);
+      context.setDefaultTimeout(60_000); // L3 满载下页面渲染要数秒到十几秒
       const watch = (page: Page) => {
         page.on("request", (request) => {
           if (request.method() === "POST" && /\/api\/matches\/[^/]+\/commands$/.test(new URL(request.url()).pathname)) {
@@ -63,14 +65,16 @@ export async function browserProbes(env: Env) {
         });
       };
       context.on("page", watch);
-      const page = await context.newPage();
-      await login(page, env.context.refereeLogin.login, env.context.refereeLogin.password);
-
+      // 浏览器这段出错（如满载下登录超时）也要往下走：收回控制、把借来的比赛打完，否则它会一直停在进行中、占着选手和场地。
       try {
+        const page = await context.newPage();
+        await login(page, env.context.refereeLogin.login, env.context.refereeLogin.password);
         await closeAndReopen(env, context, page, code);
         await duplicateTab(env, context, code);
         await freezeAndCrash(env, context, code);
         await inflightOffline(env, context, code);
+      } catch (error) {
+        interrupted = error;
       } finally {
         await context.close().catch(() => undefined);
       }
@@ -91,6 +95,7 @@ export async function browserProbes(env: Env) {
       await finisher.refresh();
       return finisher.play();
     });
+    if (interrupted) throw interrupted;
   } finally {
     clearInterval(stopWatch);
     await browser.close().catch(() => undefined);
@@ -104,7 +109,9 @@ async function login(page: Page, login: string, password: string) {
     await page.getByLabel("密码").fill(password);
     await page.getByRole("button", { name: "登录" }).click();
     try {
-      await page.waitForURL((url) => url.pathname === "/", { timeout: 10_000 });
+      // L3 同一出口满载时登录接口 + 首页渲染要十几秒（复测 C：5 次登录都 200，10 秒内都没离开登录页），等足 60 秒；
+      // 登录后落到哪一页由 `next` 决定，离开 /login 即算登录成功。
+      await page.waitForURL((url) => url.pathname !== "/login", { timeout: 60_000 });
       return;
     } catch {
       await sleep(4000); // 登录限流（每来源 10 秒 3 次）
@@ -130,8 +137,16 @@ async function openAndScore(page: Page, code: string, options: { goto?: boolean;
   const acquire = acquireButton(page);
   await point.or(acquire).first().waitFor({ timeout: 15_000 }).catch(() => undefined);
   if (options.acquire !== false && (await acquire.isVisible().catch(() => false))) {
+    // 赛务口径 O-2：共用裁判账号要先填执裁人姓名，按钮才可用（本机记住上次填写的值）。
+    const name = page.getByLabel("执裁人姓名");
+    if ((await name.isVisible().catch(() => false)) && !(await name.inputValue()).trim()) await name.fill("仿真浏览器裁判");
     await acquire.click();
-    await sleep(1500);
+    // 满载时取得控制要 6—10 秒：等记分按钮可用（或按钮回到「取得」被拒），而不是固定等 1.5 秒。
+    for (let waited = 0; waited < 30_000; waited += 500) {
+      if (await point.isEnabled().catch(() => false)) break;
+      if (waited >= 1500 && (await acquire.isEnabled().catch(() => false))) break;
+      await sleep(500);
+    }
   }
   if (!(await point.isEnabled().catch(() => false))) return { scored: false, notice: await notice(page) };
   const before = await eventCount(code);

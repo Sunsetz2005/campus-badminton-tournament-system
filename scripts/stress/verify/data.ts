@@ -102,7 +102,7 @@ export async function loadTournamentData(slug: string) {
   });
   const entries = await prisma.entry.findMany({
     where: { competition: { tournamentId: tournament.id } },
-    select: { id: true, competitionId: true, members: { select: { participantId: true } } },
+    select: { id: true, competitionId: true, withdrawnAt: true, members: { select: { participantId: true } } },
   });
   const participants = await prisma.participant.findMany({ where: { tournamentId: tournament.id }, select: { id: true } });
   const revisions = await prisma.resultRevision.findMany({

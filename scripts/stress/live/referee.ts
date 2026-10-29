@@ -289,6 +289,7 @@ export class MatchDriver {
     });
     if (!this.state) await this.refresh();
     let guard = 0;
+    let busyWaits = 0;
     while (this.state && guard < 2000) {
       guard += 1;
       await this.heartbeatIfDue();
@@ -376,6 +377,13 @@ export class MatchDriver {
       }
       if (result && !result.ok) {
         if (result.status === 409 && result.code === "conflict") continue;
+        // 赛务口径 S-4：有选手还在别的场地比赛时不能开局；现场做法是等那场结束再开（每次等 30 秒现实时间，最多 2 小时）。
+        if (result.status === 409 && result.code === "player_on_other_court" && busyWaits < 240) {
+          busyWaits += 1;
+          await this.waitAlive(30);
+          await this.refresh();
+          continue;
+        }
         await this.refresh();
         return finish("stopped", `${result.status} ${result.code} ${result.message ?? ""}`.trim());
       }

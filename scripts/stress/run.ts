@@ -13,6 +13,7 @@
  *       --scenarios ops（§6 赛务异常，M5；--only 同样可选 ko,shrink,group-withdraw,dsq,team,registration,rename,onsite,chaos）
  *       --device-mode court|personal（§13.9 主赛事的设备模式；缺省共用账号用场地平板、逐场指派用个人手机）
  *       --spectators <人数>（覆盖规模档的观众人数，§13.2 同出口场景用 300）
+ *       --spectator-pages <0—1>（这部分观众改为打开 /public/* 页面而不是调接口，覆盖页面额度与 429 表现；缺省 0）
  *
  * 所有写入只经 HTTP 接口；本进程的数据库会话是只读的（readonly-env.ts 必须最先导入）。
  * 产物写到 artifacts/stress/<seed>-<时间>/；运行时生成的口令写到未提交的 .local/stress/。
@@ -68,6 +69,7 @@ const { values: args } = parseArgs({
     inject: { type: "string" },
     "device-mode": { type: "string" },
     spectators: { type: "string" },
+    "spectator-pages": { type: "string" },
     /** 异常注入（--scenarios inject）只跑指定组，逗号分隔：commands、sessions、handover、pending、browser、restart、dbfaults、lineup、confirm、reopen；逐场指派：swap-before、swap-busy、swap-mid、swap-mid-other、overrun。 */
     only: { type: "string" },
   },
@@ -97,6 +99,8 @@ async function main() {
   if (deviceMode && deviceMode !== "court" && deviceMode !== "personal") throw new Error("--device-mode 只能是 court 或 personal");
   if (scenarios.has("ops")) level.tournaments = level.tournaments.map((plan) => (plan.key === "M" ? withOpsEvents(plan) : plan));
   if (args.spectators) level.spectators = Number(args.spectators);
+  spectatorPageShare = args["spectator-pages"] ? Number(args["spectator-pages"]) : 0;
+  if (!(spectatorPageShare >= 0 && spectatorPageShare <= 1)) throw new Error("--spectator-pages 必须在 0 到 1 之间");
 
   const origin = new URL(requireEnv("BETTER_AUTH_URL")).origin;
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
@@ -501,7 +505,12 @@ function summarizeAuth() {
   };
 }
 
-/** 公开观众：未登录，按间隔轮询公开赛程与一场比赛详情（§9：默认 10 秒）。 */
+let spectatorPageShare = 0;
+
+/**
+ * 公开观众：未登录，按间隔轮询公开赛程与一场比赛详情（§9：默认 10 秒）。
+ * `--spectator-pages` 指定的那部分观众打开 `/public/*` 页面（服务端渲染、单独限流），其余调 `/api/public/*`。
+ */
 async function spectator(context: RunContext, registry: LiveRegistry, index: number) {
   const client = new Client(context.origin, `spectator-${index}`, context.metrics, context.nextIp());
   const rng = context.rng.fork(`spectator:${index}`);
@@ -510,14 +519,22 @@ async function spectator(context: RunContext, registry: LiveRegistry, index: num
   // 只匹配完整学号格式：运行标签本身也出现在赛事 slug 里，单看标签会误报。
   const studentTag = context.runId.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 6);
   const studentIdPattern = new RegExp(`${studentTag}(${context.level.tournaments.map((plan) => plan.key).join("|")})\\d{4}`);
-  const inspect = (result: { json: unknown }, where: string) => {
-    if (studentIdPattern.test(JSON.stringify(result.json ?? ""))) {
+  const usesPages = index < Math.round(context.level.spectators * spectatorPageShare);
+  const inspect = (result: { json: unknown; text?: string }, where: string) => {
+    if (studentIdPattern.test(result.json === null ? (result.text ?? "") : JSON.stringify(result.json))) {
       addFinding(context, { kind: "unexpected", area: "公开白名单", title: `${where} 响应中出现学号`, detail: { where } });
     }
   };
   while (!registry.stop) {
     const tournament = context.tournaments.length ? rng.pick(context.tournaments) : null;
-    if (tournament) {
+    if (tournament && usesPages) {
+      inspect(await client.call("GET", `/public/${tournament.slug}/schedule`, undefined, { route: "/public/[slug]/schedule" }), "公开赛程页");
+      inspect(await client.call("GET", `/public/${tournament.slug}/board`, undefined, { route: "/public/[slug]/board" }), "公开看板页");
+      const live = [...registry.active].filter(([, courtId]) => tournament.courts.includes(courtId)).map(([code]) => code);
+      if (live.length) {
+        inspect(await client.call("GET", `/public/${tournament.slug}/matches/${rng.pick(live)}`, undefined, { route: "/public/[slug]/matches/[code]" }), "公开比赛详情页");
+      }
+    } else if (tournament) {
       inspect(await client.call("GET", `/api/public/tournaments/${tournament.slug}/schedule`, undefined, { route: "/api/public/tournaments/[slug]/schedule" }), "公开赛程");
       // 看板：赛事门户概览（§13.2 观众轮询赛程、比赛详情和看板）。
       inspect(await client.call("GET", `/api/public/tournaments/${tournament.slug}`, undefined, { route: "/api/public/tournaments/[slug]" }), "公开看板");

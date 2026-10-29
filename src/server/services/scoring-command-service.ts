@@ -151,27 +151,29 @@ function endedAtProjection(before: MatchState, after: MatchState, now: Date) {
 /**
  * 赛务口径 S-4（2026-10-27，P-08）：本场任一选手正在另一场比赛（已开始未结束）时，本场不能开始。
  * 只在「开局设置 → 进行中」这一步检查；暂停中的比赛不算占用（转场、伤停可能很长）。
- * 个人项目的选手来自报名成员，团体小场来自出场名单（`MatchPlayer`）；团体报名本身没有成员行，两者取并集即可。
+ * 个人项目的选手来自报名成员，团体小场只来自出场名单（`MatchPlayer`）：团体报名的成员行是整份队伍名单，
+ * 不能当作上场人员，否则一个小场会把两队全体队员都算作「在场上」（L3 复测 B 的整队互相阻塞）。
  */
 async function assertPlayersNotOnCourt(transaction: Prisma.TransactionClient, matchId: string) {
   const match = await transaction.match.findUniqueOrThrow({
     where: { id: matchId },
     select: {
+      rubberKind: true,
       players: { select: { participantId: true } },
       sideAEntry: { select: { members: { select: { participantId: true } } } },
       sideBEntry: { select: { members: { select: { participantId: true } } } },
     },
   });
-  const ids = [...match.players, ...(match.sideAEntry?.members ?? []), ...(match.sideBEntry?.members ?? [])].map((person) => person.participantId);
+  const ids = (match.rubberKind ? match.players : [...(match.sideAEntry?.members ?? []), ...(match.sideBEntry?.members ?? [])]).map((person) => person.participantId);
   if (!ids.length) return;
   const busy = await transaction.match.findFirst({
     where: {
       id: { not: matchId },
       lifecycleStatus: "IN_PROGRESS",
       OR: [
-        { players: { some: { participantId: { in: ids } } } },
-        { sideAEntry: { members: { some: { participantId: { in: ids } } } } },
-        { sideBEntry: { members: { some: { participantId: { in: ids } } } } },
+        { rubberKind: { not: null }, players: { some: { participantId: { in: ids } } } },
+        { rubberKind: null, sideAEntry: { members: { some: { participantId: { in: ids } } } } },
+        { rubberKind: null, sideBEntry: { members: { some: { participantId: { in: ids } } } } },
       ],
     },
     select: { code: true, court: { select: { name: true } } },

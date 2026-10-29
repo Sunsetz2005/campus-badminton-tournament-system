@@ -180,6 +180,7 @@ function rankedMatchOf(match: MatchRow): RankedMatch | null {
 export function checkTies(data: TournamentData): CheckResult {
   const check = result("ties", "团体对抗胜负与「未进行」独立推算");
   const team = new Set(data.competitions.filter((item) => item.entryType === "TEAM").map((item) => item.id));
+  const withdrawn = new Set(data.entries.filter((entry) => entry.withdrawnAt).map((entry) => entry.id));
   for (const fixture of data.fixtures.filter((item) => team.has(item.competitionId))) {
     const rubbers = data.matches.filter((match) => match.fixtureId === fixture.id);
     if (!rubbers.length) continue;
@@ -192,11 +193,16 @@ export function checkTies(data: TournamentData): CheckResult {
       started: match.version > 0,
     }));
     const outcome = tieOutcome(facts, fixture.kind !== "GROUP");
-    const expectedWinner = outcome.winner === "A" ? fixture.sideAEntryId : outcome.winner === "B" ? fixture.sideBEntryId : null;
+    // 赛务口径 W-7（GCR 16.3.7）：一队整体退出，按小场还没决出的小组对抗判给对手，剩下的小场记为未进行。
+    const conceded = fixture.kind === "GROUP" && !outcome.winner
+      ? withdrawn.has(fixture.sideAEntryId ?? "") && !withdrawn.has(fixture.sideBEntryId ?? "") ? "B" : withdrawn.has(fixture.sideBEntryId ?? "") && !withdrawn.has(fixture.sideAEntryId ?? "") ? "A" : null
+      : null;
+    const winnerSide = outcome.winner ?? conceded;
+    const expectedWinner = winnerSide === "A" ? fixture.sideAEntryId : winnerSide === "B" ? fixture.sideBEntryId : null;
     if ((fixture.winnerEntryId ?? null) !== (expectedWinner ?? null)) {
       fail(check, fixture.code, `对抗胜方 期望 ${expectedWinner ?? "未决"} 实际 ${fixture.winnerEntryId ?? "未决"}（小场 ${outcome.rubbersA}:${outcome.rubbersB}）`);
     }
-    if (fixture.kind === "GROUP" && rubbers.some((match) => match.notPlayedAt)) fail(check, fixture.code, "小组对抗出现「未进行」的小场（应打满）");
+    if (fixture.kind === "GROUP" && !conceded && rubbers.some((match) => match.notPlayedAt)) fail(check, fixture.code, "小组对抗出现「未进行」的小场（应打满）");
     if (fixture.kind !== "GROUP" && fixture.winnerEntryId) {
       const notPlayed = rubbers.filter((match) => match.notPlayedAt).map((match) => match.rubberOrder).sort().join(",");
       const want = outcome.expectNotPlayed.sort().join(",");
@@ -210,6 +216,16 @@ export async function checkRanking(data: TournamentData): Promise<CheckResult> {
   const check = result("ranking", "小组名次、淘汰签位与最终名次独立重算");
   const excluded = new Map<string, Set<string>>();
   for (const item of data.exclusions) excluded.set(item.groupId, new Set([...(excluded.get(item.groupId) ?? []), item.entryId]));
+  // 赛务口径 R-3（GCR 16.2.5）：小组里以弃权、退赛、取消资格告负的一方没有打完本组，全部小组成绩自动删除。
+  for (const match of data.matches) {
+    // 团体小场不适用：单个小场退赛或认输按 R-4 补完计入，不删除整队。
+    if (!match.groupId || match.rubberKind || match.verificationStatus !== "LOCKED" || !["WO", "RET", "DSQ"].includes(match.outcomeType ?? "")) continue;
+    const side = winnerSideOf(match);
+    const loser = side === "A" ? match.sideBEntryId : side === "B" ? match.sideAEntryId : null;
+    if (loser) excluded.set(match.groupId, new Set([...(excluded.get(match.groupId) ?? []), loser]));
+  }
+  // 赛务口径 R-4 / W-7（GCR 16.3.7）：整体退出的团体打不完全部小组对抗，全部小组成绩删除。
+  const withdrawnEntries = new Set(data.entries.filter((entry) => entry.withdrawnAt).map((entry) => entry.id));
   const confirmedOrder = new Map<string, string[]>();
   for (const competition of data.competitions) {
     const isTeam = competition.entryType === "TEAM";
@@ -220,8 +236,8 @@ export async function checkRanking(data: TournamentData): Promise<CheckResult> {
       let ranked: RankedMatch[];
       if (isTeam) {
         const fixtures = data.fixtures.filter((fixture) => fixture.groupId === group.id);
-        entries = [...new Set(fixtures.flatMap((fixture) => [fixture.sideAEntryId, fixture.sideBEntryId]).filter(Boolean) as string[])];
-        ranked = fixtures.map((fixture) => {
+        entries = [...new Set(fixtures.flatMap((fixture) => [fixture.sideAEntryId, fixture.sideBEntryId]).filter(Boolean) as string[])].filter((id) => !out.has(id) && !withdrawnEntries.has(id));
+        ranked = fixtures.filter((fixture) => entries.includes(fixture.sideAEntryId ?? "") && entries.includes(fixture.sideBEntryId ?? "")).map((fixture) => {
           const rubbers = data.matches.filter((match) => match.fixtureId === fixture.id && match.verificationStatus === "LOCKED");
           let rubbersA = 0;
           let rubbersB = 0;
