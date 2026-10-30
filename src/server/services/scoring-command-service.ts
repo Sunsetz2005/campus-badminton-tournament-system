@@ -187,9 +187,10 @@ async function assertPlayersNotOnCourt(transaction: Prisma.TransactionClient, ma
 }
 
 /**
- * 赛务口径 S-8（2026-10-29，组织方决定）：一块场地同时只进行一场比赛。场地上已有进行中或暂停中的比赛
- * （暂停的比赛仍占着场地，要换场地须走 S-5 转场）时，本场不能抛币、也不能开始；与转场的「空场地」判断一致。
- * 未排定场地的比赛不检查。
+ * 赛务口径 S-8（2026-10-29，组织方决定）：一块场地同时只进行一场比赛。场地上已有进行中（IN_PROGRESS）或
+ * 暂停中（SUSPENDED）的比赛时，本场不能抛币、也不能开始；暂停的比赛仍占着场地，要换场地须走 S-5 转场。
+ * 已结束待提交（ENDED_PENDING_SUBMISSION）、待复核与已锁定（SUBMITTED）的比赛人已离场，不算占用。
+ * 与转场的「空场地」判断一致。未排定场地的比赛不检查。
  */
 async function assertCourtFree(transaction: Prisma.TransactionClient, matchId: string) {
   const match = await transaction.match.findUniqueOrThrow({ where: { id: matchId }, select: { courtId: true } });
@@ -200,10 +201,21 @@ async function assertCourtFree(transaction: Prisma.TransactionClient, matchId: s
     orderBy: { code: "asc" },
   });
   if (busy) {
-    const state = busy.lifecycleStatus === "SUSPENDED" ? "暂停在场上" : "正在进行";
-    throw new AppError(409, "court_occupied", `${busy.court?.name ?? "本场地"}上 ${busy.code} ${state}，等那场结束或转场后再开始本场。`, {
-      busyMatchCode: busy.code,
-    });
+    const state = busy.lifecycleStatus === "SUSPENDED" ? "暂停中" : "进行中";
+    throw new AppError(
+      409,
+      "court_occupied",
+      `${busy.court?.name ?? "本场地"}被比赛 ${busy.code}（${state}）占用，本场暂不能开始。等那场结束或转到其他场地后再开始；如果那场实际已经结束或设备失联，请联系裁判长处理。`,
+      { busyMatchCode: busy.code, busyMatchStatus: busy.lifecycleStatus },
+    );
+  }
+}
+
+/** 赛务口径 S-9：离场待续的比赛没有场地，恢复前必须先由裁判长转到一块空场地（S-5）。 */
+async function assertHasCourtToResume(transaction: Prisma.TransactionClient, matchId: string) {
+  const match = await transaction.match.findUniqueOrThrow({ where: { id: matchId }, select: { awaitingCourtSince: true } });
+  if (match.awaitingCourtSince) {
+    throw new AppError(409, "match_awaiting_court", "本场已离场待续，还没有分配场地。请联系裁判长先把比赛转到一块空场地，再恢复比赛。");
   }
 }
 
@@ -375,6 +387,7 @@ export async function submitScoringCommand(
     }
     const command = commandFromEnvelope(envelope);
     assertNewCommandPolicy(aggregate.state, command);
+    if (command.type === "RESUME_MATCH") await assertHasCourtToResume(transaction, access.id);
     assertMatchesCoinTossDraw(match, command);
     const result = applyCommand(aggregate, command);
     if (result.status === "rejected") throw new AppError(422, result.error.code, result.error.message);

@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 
 import { ISSUE_TITLE, type ScheduleIssueCode } from "@/domain/schedule/check";
-import { DiscardSlotButton, ReplaceRefereeForm, SlotEditor, TransferCourtForm } from "@/features/schedule/schedule-draft";
+import { DiscardSlotButton, ReleaseCourtForm, ReplaceRefereeForm, SlotEditor, TransferCourtForm } from "@/features/schedule/schedule-draft";
 import local from "@/features/schedule/schedule.module.css";
 import type { ScheduleRowView, SlotView } from "@/server/services/schedule-service";
 import { StatusBadge, type StatusTone } from "@/ui/status-badge";
@@ -97,7 +97,7 @@ export function ScheduleRows({
             >
               <div className={local.time}>
                 <strong>{time ? `${slot.estimated ? "约 " : ""}${time}` : "时间待定"}</strong>
-                <span>{slot.courtName ?? "场地待定"}</span>
+                <span>{slot.courtName ?? (row.lifecycleStatus === "SUSPENDED" ? "离场待续 · 待分配场地" : "场地待定")}</span>
                 {time ? <span>至 {endClock(slot, timeZone)}（预计）</span> : null}
                 {mode === "published" && row.delay && row.status === "NOT_STARTED" ? (
                   <span>预计 {new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(row.delay.projectedStart))}</span>
@@ -160,6 +160,9 @@ export function ScheduleRows({
               ) : null}
               {mode === "published" && canReplaceReferee && row.lifecycleStatus === "SUSPENDED" ? (
                 <TransferCourtForm courts={courts} currentCourtCode={slot.courtCode} matchCode={row.code} slug={slug} />
+              ) : null}
+              {mode === "published" && canReplaceReferee && row.lifecycleStatus === "SUSPENDED" && slot.courtCode ? (
+                <ReleaseCourtForm matchCode={row.code} slug={slug} />
               ) : null}
             </li>
           </Fragment>

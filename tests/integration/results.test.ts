@@ -20,7 +20,17 @@ import {
 } from "@/server/services/results-service";
 import { submitScoringCommand, type ScoringCommandEnvelope } from "@/server/services/scoring-command-service";
 import { acquireScoringSession, releaseScoringSession, takeoverScoringSession } from "@/server/services/scoring-session-service";
+import { checkDraft, hashWarnings, publishSchedule } from "@/server/services/schedule-service";
+import { loadScheduleFacts } from "@/server/services/schedule-facts";
 import { createTournament, transitionTournamentPhase } from "@/server/services/tournament-admin-service";
+
+
+/** 补发赛程：没排程就补录了结果的比赛随赛程发布一并公开（赛务口径 P-13 的补救路径）。 */
+async function republishSchedule(slug: string) {
+  const tournament = await prisma.tournament.findUniqueOrThrow({ where: { slug }, select: { id: true } });
+  const facts = await loadScheduleFacts(prisma, tournament.id);
+  return publishSchedule(adminId, slug, { warningDigest: hashWarnings(checkDraft(facts)) });
+}
 
 const RUN = randomBytes(3).toString("hex");
 const createdSlugs: string[] = [];
@@ -333,7 +343,12 @@ describe("晋级、重复确认与结果更正", () => {
 
     // P-13：已有结果的比赛未公开时不能发布名次。
     await expect(publishStandings(adminId, slug, "MS", {})).rejects.toMatchObject({ status: 409, code: "matches_not_public" });
-    await prisma.match.updateMany({ where: { stage: { competitionId } }, data: { publishedAt: new Date() } });
+    // 这些比赛从没排进赛程（仅结果补录）；补发一次赛程就随之公开，之后名次可以发布。
+    await expect(prisma.match.count({ where: { stage: { competitionId }, scheduledAt: { not: null } } })).resolves.toBe(0);
+    await republishSchedule(slug);
+    await expect(prisma.match.count({ where: { stage: { competitionId }, outcomeType: { not: null }, publishedAt: null } })).resolves.toBe(0);
+    // 还没打的淘汰赛不随之公开。
+    await expect(prisma.match.count({ where: { stage: { competitionId }, outcomeType: null, publishedAt: { not: null } } })).resolves.toBe(0);
     const v1 = await publishStandings(adminId, slug, "MS", { note: "小组赛名次" });
     expect(v1.version).toBe(1);
     await expect(publishStandings(adminId, slug, "MS", {})).rejects.toMatchObject({ code: "standings_unchanged" });
@@ -436,6 +451,8 @@ describe("晋级、重复确认与结果更正", () => {
       [a2, "第 4 名"],
     ]);
     expect(loaded.placementsComplete).toBe(true);
+    await expect(publishStandings(chiefId, slug, "MS", { note: "最终名次" })).rejects.toMatchObject({ code: "matches_not_public" });
+    await republishSchedule(slug);
     await publishStandings(chiefId, slug, "MS", { note: "最终名次" });
 
     // 决赛结果更正（没有后续比赛）：撤回冠亚军，榜单再次标记需重发，历史版本保留。

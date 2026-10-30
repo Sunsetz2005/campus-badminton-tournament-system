@@ -516,11 +516,32 @@ export async function suggestDraft(actorUserId: string, slug: string, rawInput: 
         placed: result.placements.length,
         unplaced: [...reasons.entries()].map(([reason, count]) => ({ reason, text: UNPLACED_TEXT[reason], count })),
         shortfall,
+        refereeNotes: refereeNotes(input.assignReferees && facts.refereeMode === "PER_MATCH", suggestInput.refereeIds.length, result),
       };
     },
     { timeout: 60_000 },
   );
   return { ...outcome, ...(await checkResponse(tournament.id)) };
+}
+
+/**
+ * 自动建议里裁判分配不满足规则的情况，逐条写成给编排员看的话（不能悄悄留空）。
+ * 只在逐场指派且勾选了「同时建议主裁判」时产生。
+ */
+function refereeNotes(requested: boolean, namedReferees: number, result: ReturnType<typeof suggestSchedule>) {
+  if (!requested || !result.placements.length) return [];
+  if (!namedReferees) {
+    return [`没有可分配的具名裁判：${result.placements.length} 场都未指派主裁判（平台共用裁判账号不参与自动分配）。请先开通具名裁判账号，或改为共用账号执裁。`];
+  }
+  const notes: string[] = [];
+  const { overConsecutive, unassigned } = result.refereeShortage;
+  if (overConsecutive.length) {
+    notes.push(`裁判人数不够轮换：${overConsecutive.length} 场只能让裁判连续执裁第 3 场或更多（超出「最多连续 2 场」），请增加裁判或手工调整。`);
+  }
+  if (unassigned.length) {
+    notes.push(`同一时段裁判不够：${unassigned.length} 场没有空闲裁判，未指派主裁判，请手工指派或增加裁判。`);
+  }
+  return notes;
 }
 
 /**
@@ -686,8 +707,19 @@ export async function publishSchedule(actorUserId: string, slug: string, rawInpu
       }
 
       // 已排定时间的比赛一并进入公开赛程（2026-09-25 用户决定）；公开内容仍受姓名公开策略约束。
+      // 没排程就已经开打或已有结果的比赛（当天增补、空场先打、仅结果补录）也一并公开：它们的时间与场地已被冻结、
+      // 永远排不进赛程，不在这里补发就永远不能公开，项目名次也就永远发布不了（赛务口径 P-13）。
       const madePublic = await transaction.match.updateMany({
-        where: { stage: { competition: { tournamentId: tournament.id } }, scheduledAt: { not: null }, publishedAt: null },
+        where: {
+          stage: { competition: { tournamentId: tournament.id } },
+          publishedAt: null,
+          OR: [
+            { scheduledAt: { not: null } },
+            { version: { gt: 0 } },
+            { lifecycleStatus: { notIn: ["SCHEDULED", "READY"] } },
+            { outcomeType: { not: null } },
+          ],
+        },
         data: { publishedAt: now },
       });
 
@@ -823,7 +855,8 @@ export async function transferSuspendedMatch(actorUserId: string, slug: string, 
       orderBy: { scheduledAt: "asc" },
     });
     await transaction.$executeRaw`SELECT set_config('badminton.court_transfer', 'on', true)`;
-    await transaction.match.update({ where: { id: match.id }, data: { courtId: court.id } });
+    // 离场待续的比赛（S-9）转入场地后即结束待分配状态。
+    await transaction.match.update({ where: { id: match.id }, data: { courtId: court.id, awaitingCourtSince: null } });
     await transaction.$executeRaw`SELECT set_config('badminton.court_transfer', 'off', true)`;
     await audit(transaction, tournament.id, actorUserId, "MATCH_COURT_TRANSFERRED", "Match", match.id, {
       matchCode: match.code,
@@ -838,6 +871,46 @@ export async function transferSuspendedMatch(actorUserId: string, slug: string, 
       toCourt: court.name,
       upcoming: upcoming.map((item) => ({ code: item.code, scheduledAt: item.scheduledAt?.toISOString() ?? null })),
     };
+  });
+}
+
+const releaseSchema = z.object({ reason: z.string().max(400) });
+
+/**
+ * 赛务口径 S-9（2026-10-30，方案 A2「暂停离场待续」）：场地全满、暂停的比赛无处可转时，裁判长让它离开场地。
+ * 比赛保持暂停，比分与发接发不变，场地改为「待分配」，原场地立即腾出；恢复前必须先用 S-5 转到一块空场地。
+ * 只有暂停中的比赛可以离场；数据库触发器只在本事务声明 `badminton.court_release` 时放行。
+ */
+export async function releaseSuspendedMatchCourt(actorUserId: string, slug: string, matchCode: string, rawInput: unknown) {
+  const { tournament } = await requireManagedTournament(actorUserId, slug, ["CHIEF_REFEREE"]);
+  const parsed = releaseSchema.safeParse(rawInput);
+  if (!parsed.success) throw new AppError(400, "invalid_input", "离场请求无效。");
+  const reason = normalizeReason(parsed.data.reason);
+  if (!reason) throw new AppError(400, "reason_required", "离场待续必须写明原因（例如选手伤停待医疗处理、场地全满）。");
+
+  return runTransaction(async (transaction) => {
+    await lockTournamentRow(transaction, tournament.id);
+    const match = await transaction.match.findFirst({
+      where: { code: matchCode, stage: { competition: { tournamentId: tournament.id } } },
+      select: { id: true, code: true, court: { select: { code: true, name: true } } },
+    });
+    if (!match) throw new AppError(404, "match_not_found", "比赛不存在。");
+    await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${match.id}::uuid FOR UPDATE`;
+    const current = await transaction.match.findUniqueOrThrow({ where: { id: match.id }, select: { lifecycleStatus: true, courtId: true } });
+    if (current.lifecycleStatus !== "SUSPENDED") {
+      throw new AppError(409, "match_not_suspended", "只有暂停中的比赛可以离场待续：请裁判先在工作台暂停比赛。");
+    }
+    if (!current.courtId) throw new AppError(409, "match_has_no_court", "这场比赛没有占用场地，不需要离场。");
+    const now = new Date();
+    await transaction.$executeRaw`SELECT set_config('badminton.court_release', 'on', true)`;
+    await transaction.match.update({ where: { id: match.id }, data: { courtId: null, awaitingCourtSince: now } });
+    await transaction.$executeRaw`SELECT set_config('badminton.court_release', 'off', true)`;
+    await audit(transaction, tournament.id, actorUserId, "MATCH_COURT_RELEASED", "Match", match.id, {
+      matchCode: match.code,
+      fromCourt: match.court?.code ?? null,
+      reason,
+    });
+    return { matchCode: match.code, fromCourt: match.court?.name ?? null };
   });
 }
 

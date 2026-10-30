@@ -709,6 +709,8 @@ model Match {
   scheduleEstimated   Boolean              @default(false)
   startedAt           DateTime?
   endedAt             DateTime?
+  // 赛务口径 S-9：暂停中的比赛离场待续的时刻；非空时没有场地，恢复前必须先转场。
+  awaitingCourtSince  DateTime?
   publishedAt         DateTime?
   version             Int                  @default(0)
   controlGeneration   Int                  @default(1)

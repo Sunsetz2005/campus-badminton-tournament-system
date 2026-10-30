@@ -57,6 +57,9 @@ type SnapshotResponse = {
   serverTime: string;
   version: number;
   access: { assignedReferee: boolean; chiefReferee: boolean; officiatingNameRequired?: boolean };
+  /** 赛务口径 S-9：暂停中的比赛已离场待续，恢复前须由裁判长转到空场地。 */
+  awaitingCourt?: boolean;
+  currentCourtName?: string | null;
   control: { active: boolean; sessionId?: string; ownedByCurrentUser?: boolean; actingRole?: string; expiresAt?: string; officiatingName?: string | null };
   match?: MatchView;
   state?: MatchState;
@@ -1178,7 +1181,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     <>
     <section className="scoring-shell" inert={actionSheet ? true : undefined}>
       <header className={`scoring-statusbar ${canWrite ? "is-writable" : "is-readonly"}`}>
-        <div className="scoring-title"><span className="eyebrow">{match.competitionName} · {match.courtName ?? "场地待定"}</span><h1>{match.code}</h1></div>
+        <div className="scoring-title"><span className="eyebrow">{match.competitionName} · {snapshot.awaitingCourt ? "待分配场地" : (snapshot.currentCourtName !== undefined ? snapshot.currentCourtName : match.courtName) ?? "场地待定"}</span><h1>{match.code}</h1></div>
         <div className="status-facts">
           <span className={`status-chip ${online ? "is-ok" : "is-bad"}`}><i className={`sync-dot ${online ? "online" : "offline"}`} />网络<strong>{online ? "在线" : "离线"}</strong></span>
           <span className={`status-chip ${canWrite ? "is-ok" : "is-muted"}`}>控制<strong>{canWrite ? "本机可写" : "只读"}</strong></span>
@@ -1196,6 +1199,11 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
 
       {!commandIdCapability.available ? (
         <p className="scoring-alert" role="alert">{commandIdCapability.reason}</p>
+      ) : null}
+      {snapshot.awaitingCourt && state.phase === "PAUSED" ? (
+        <p className="scoring-alert is-status" data-testid="awaiting-court" role="status">
+          本场已离场待续：比分与发接发保持不变，暂时没有场地。等裁判长把比赛转到一块空场地后再恢复比赛。
+        </p>
       ) : null}
       {insecureContextAdvisory ? (
         <p className="scoring-alert is-status" role="status">{insecureContextAdvisory}</p>

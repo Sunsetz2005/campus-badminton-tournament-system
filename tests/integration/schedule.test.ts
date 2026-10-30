@@ -638,11 +638,16 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
       await addCourts(adminId, slug, { count: 2 });
       await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "18:00" }] });
     }, 4);
+    // 只有平台共用账号：明确说明没有可分配的具名裁判。
+    const onlyShared = await suggestDraft(adminId, slug, { assignReferees: true });
+    expect(onlyShared.refereeNotes).toEqual([expect.stringContaining("没有可分配的具名裁判：6 场都未指派主裁判")]);
     await prisma.roleAssignment.createMany({
       skipDuplicates: true,
       data: [refereeId, referee2Id].map((userId) => ({ userId, tournamentId, role: "REFEREE" as const })),
     });
-    await suggestDraft(adminId, slug, { assignReferees: true });
+    // 只有一名具名裁判、两块场地同时开打：建议结果明确说明有比赛没有空闲裁判，不悄悄留空。
+    const suggestion = await suggestDraft(adminId, slug, { assignReferees: true });
+    expect(suggestion.refereeNotes.join("\n")).toMatch(/没有空闲裁判，未指派主裁判/);
     const slots = await prisma.scheduleSlot.findMany({ where: { tournamentId }, select: { refereeUserId: true } });
     expect(slots).toHaveLength(6);
     expect(slots.some((slot) => slot.refereeUserId === referee2Id)).toBe(true);
@@ -775,7 +780,7 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
     await updateRefereeMode(adminId, slug, { refereeMode: "SHARED_ACCOUNT" });
     // 排程不指派主裁判，也不提示「尚未指派裁判」。
     const suggestion = await suggestDraft(adminId, slug, { assignReferees: true });
-    expect(suggestion).toMatchObject({ placed: 15, hardCount: 0 });
+    expect(suggestion).toMatchObject({ placed: 15, hardCount: 0, refereeNotes: [] });
     await expect(prisma.scheduleSlot.count({ where: { tournamentId, refereeUserId: { not: null } } })).resolves.toBe(0);
     const facts = await loadScheduleFacts(prisma, tournamentId);
     expect(checkDraft(facts).issues.map((issue) => issue.code)).not.toContain("NO_REFEREE");

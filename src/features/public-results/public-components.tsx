@@ -5,6 +5,7 @@ import { StatusBadge, type StatusTone } from "@/ui/status-badge";
 
 import { formatPreviewTime } from "./format";
 import {
+  courtLabel,
   correctionLabels,
   lifecycleLabels,
   outcomeLabels,
@@ -248,7 +249,7 @@ export function ScheduleMatch({ detailHref, match, presentation, timeZone }: Sch
     return (
       <tr>
         <td><strong className={styles.timePrimary}>{time.primary}</strong><small>{time.secondary}</small></td>
-        <td>{match.court ?? "场地待定"}</td>
+        <td>{courtLabel(match)}</td>
         <td><strong>{match.code}</strong><small>{match.competitionName} · {match.stageName}</small></td>
         <td><div className={styles.tableEntries}><EntryIdentity entry={match.sideA} side="A" /><span aria-hidden="true">对</span><EntryIdentity entry={match.sideB} side="B" /></div></td>
         <td>
@@ -271,7 +272,7 @@ export function ScheduleMatch({ detailHref, match, presentation, timeZone }: Sch
     <article aria-labelledby={`match-${match.code}`} className={styles.matchCard}>
       <header className={styles.cardHeading}>
         <div className={styles.cardTime}>
-          <div><strong className={styles.timePrimary}>{time.primary}</strong><span>{match.court ?? "场地待定"}</span></div>
+          <div><strong className={styles.timePrimary}>{time.primary}</strong><span>{courtLabel(match)}</span></div>
           {time.secondary === "计划时间" ? null : <small>{time.secondary}</small>}
         </div>
         <div className={styles.cardHeadingActions}>

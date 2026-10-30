@@ -287,13 +287,23 @@ describe("草稿与正式版、更正后替代、历史文件不可改写", () =
     expect(ms.rankings).toHaveLength(0);
     expect(ms.placementsNote).toContain("尚未全部公开");
     await expect(generateReportExport(adminId, slug, { kind: "DATA_WORKBOOK", edition: "OFFICIAL" })).rejects.toMatchObject({ code: "matches_not_public" });
+    // 组织方内部草稿照常生成：含这场未公开的比赛，列暂定名次并注明非正式、仅内部可见。
+    const internal = await prisma.$transaction((tx) => buildReportSnapshot(tx, tournamentId, "DRAFT", { strictStandings: false }));
+    expect(internal.matches.map((match) => match.code)).toContain(matchCodes[1]);
+    const internalMs = internal.competitions.find((item) => item.code === "MS")!;
+    expect(internalMs.placements.length).toBeGreaterThan(0);
+    expect(internalMs.placementsNote).toContain("仅内部草稿可见");
+    const draftExport = await generateReportExport(adminId, slug, { kind: "DATA_WORKBOOK", edition: "DRAFT" });
+    const draftSheets = readXlsx(Buffer.from((await fileOf(draftExport.id)).content));
+    expect(tableRows(sheet(draftSheets, "说明"), "项目").rows.find((row) => row[0] === "版本")?.[1]).toContain("不作为正式成绩");
+    expect(tableRows(sheet(draftSheets, "逐场成绩"), "比赛编号").rows.map((row) => row[0])).toContain(matchCodes[1]);
     await prisma.match.update({ where: { code: matchCodes[1] }, data: { publishedAt: hiddenAt } });
 
     // 更正一场已确认结果：名次撤回、榜单需重发 → 拒绝生成正式版；草稿仍可生成。
     const lockedRevision = (await prisma.resultRevision.findFirstOrThrow({ where: { match: { code: matchCodes[0] }, status: "LOCKED" } })).revision;
     await reviewResultOnly(chiefId, slug, matchCodes[0], { action: "REOPEN", expectedRevision: lockedRevision, reason: "记分表抄错" });
     await expect(generateReportExport(adminId, slug, { kind: "DATA_WORKBOOK", edition: "OFFICIAL" })).rejects.toMatchObject({ code: "standings_need_republish" });
-    await expect(generateReportExport(adminId, slug, { kind: "DATA_WORKBOOK", edition: "DRAFT" })).resolves.toMatchObject({ version: 4 });
+    await expect(generateReportExport(adminId, slug, { kind: "DATA_WORKBOOK", edition: "DRAFT" })).resolves.toMatchObject({ version: 5 });
 
     // 数据库兜底：已生成文件不可改写，已被替代的不能再改替代关系，同时最多一份当前正式版。
     await expect(prisma.reportExport.update({ where: { id: v2.id }, data: { content: new Uint8Array([1, 2, 3]), byteSize: 3 } })).rejects.toThrow();

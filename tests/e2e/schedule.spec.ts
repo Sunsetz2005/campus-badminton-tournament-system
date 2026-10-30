@@ -334,6 +334,22 @@ test.describe.serial("阶段 4-C 赛程与裁判排班：从对阵表到赛程�
     expect(after.court?.name).toBe(target);
     expect(after.court?.id).not.toBe(assignment.match.courtId);
     expect(after).toMatchObject({ lifecycleStatus: "SUSPENDED", version: before.version });
+
+    // 赛务口径 S-9：场地全满时让暂停的比赛离场待续，原场地腾出；看板显示「待分配场地」。
+    await page.reload();
+    const releaseRow = page.getByTestId("schedule-row").filter({ has: page.locator(`[data-testid="release-court-${code}"]`) });
+    await releaseRow.getByText("离场待续（腾出场地）").click();
+    const releaseForm = page.getByTestId(`release-court-${code}`);
+    await releaseForm.getByLabel("离场原因").fill("选手伤停待医疗处理");
+    await releaseForm.getByRole("button", { name: "确认离场" }).click();
+    // 离场后比赛没有场地，「离场待续」表单随之收起；看板行改为「待分配场地」就是确认。
+    await expect(page.getByTestId("schedule-row").filter({ hasText: code })).toContainText("离场待续 · 待分配场地");
+    await expect(prisma.match.findUniqueOrThrow({ where: { code }, select: { courtId: true, lifecycleStatus: true, version: true } })).resolves.toEqual({
+      courtId: null,
+      lifecycleStatus: "SUSPENDED",
+      version: before.version,
+    });
+    await shot(page, "09-court-release");
     await context.close();
   });
 });

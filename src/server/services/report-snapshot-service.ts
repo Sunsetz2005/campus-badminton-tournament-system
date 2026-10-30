@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { Prisma, type NamePublicationPolicy } from "@/generated/prisma/client";
+import { Prisma, type MatchLifecycleStatus, type NamePublicationPolicy } from "@/generated/prisma/client";
 import { runTransaction } from "@/server/services/transaction";
 import { DRAW_FORMAT_LABEL } from "@/domain/draw/format";
 import { COMPETITION_KIND_LABEL } from "@/domain/registration/registration-rules";
@@ -213,7 +213,16 @@ export async function buildReportSnapshot(
   const timeZone = assertIanaTimeZone(tournament.timezone);
   const policy = tournament.namePolicy;
 
-  const matchCount = await tx.match.count({ where: { ...publishedMatchWhere, stage: { competition: { tournamentId } } } });
+  // 正式版只含已公开的比赛；内部草稿另含已开打或已有结果、但赛程还没发布的比赛（赛务口径 P-13：
+  // 草稿要能核对名次所依据的每一场）。
+  const matchFilter =
+    edition === "OFFICIAL"
+      ? publishedMatchWhere
+      : {
+          notPlayedAt: null,
+          OR: [{ publishedAt: { not: null } }, { outcomeType: { not: null } }, { lifecycleStatus: { notIn: ["SCHEDULED", "READY"] as MatchLifecycleStatus[] } }],
+        };
+  const matchCount = await tx.match.count({ where: { ...matchFilter, stage: { competition: { tournamentId } } } });
   if (matchCount > REPORT_MAX_MATCHES) {
     throw new AppError(413, "report_too_large", `本赛事已公开 ${matchCount} 场比赛，超过单份报告 ${REPORT_MAX_MATCHES} 场的上限，请联系系统维护人员分项目导出。`);
   }
@@ -250,7 +259,7 @@ export async function buildReportSnapshot(
   });
 
   const matchRows = await tx.match.findMany({
-    where: { ...publishedMatchWhere, stage: { competition: { tournamentId } } },
+    where: { ...matchFilter, stage: { competition: { tournamentId } } },
     select: reportMatchSelect,
   });
   // 权威赛程顺序：计划时间 → 场地 → 编号；未排期的放在最后。
@@ -473,7 +482,11 @@ export async function buildReportSnapshot(
       placementsNote = computed.complete ? "由已确认的小组名次与已锁定的对抗胜负得出。" : "尚有名次未决出；只列出已由已确认结果决出的名次。";
     }
 
-    // 赛务口径 P-13：名次以公开的比赛为依据，有结果的比赛未公开时，对外不列本项目名次。
+    // 赛务口径 P-13：名次以公开的比赛为依据，有结果的比赛未公开时，对外不列本项目名次；内部草稿照列并注明。
+    if (edition === "DRAFT" && draw) {
+      const hidden = await countUnpublishedDecidedMatches(tx, competition.id);
+      if (hidden) placementsNote = `${placementsNote}（含 ${hidden} 场尚未公开的比赛，仅内部草稿可见；发布赛程后才能发布名次。）`;
+    }
     if (edition === "OFFICIAL" && draw && (rankings.length || placements.length)) {
       const hidden = await countUnpublishedDecidedMatches(tx, competition.id);
       if (hidden && strictStandings) {

@@ -8,8 +8,8 @@ import type { MatchCommand } from "@/domain/rules/match-engine";
 import { generateDrawDraft, publishDraw } from "@/server/services/draw-service";
 import { createManualRegistration, reviewRegistration } from "@/server/services/registration-service";
 import { submitScoringCommand, type ScoringCommandEnvelope } from "@/server/services/scoring-command-service";
-import { transferSuspendedMatch } from "@/server/services/schedule-service";
-import { acquireScoringSession } from "@/server/services/scoring-session-service";
+import { releaseSuspendedMatchCourt, transferSuspendedMatch } from "@/server/services/schedule-service";
+import { acquireScoringSession, takeoverScoringSession } from "@/server/services/scoring-session-service";
 import { createTournament, transitionTournamentPhase } from "@/server/services/tournament-admin-service";
 
 /**
@@ -90,12 +90,12 @@ function command(
 }
 
 /** 抛币后确认开局设置：这一步让比赛进入「进行中」。 */
-async function startMatch(matchCode: string) {
-  return (await startMatchWithControl(matchCode)).result;
+async function startMatch(matchCode: string, deviceId = randomUUID()) {
+  return (await startMatchWithControl(matchCode, deviceId)).result;
 }
 
-async function startMatchWithControl(matchCode: string) {
-  const control = await acquireScoringSession(refereeId, matchCode, randomUUID());
+async function startMatchWithControl(matchCode: string, deviceId = randomUUID()) {
+  const control = await acquireScoringSession(refereeId, matchCode, deviceId);
   const toss = await submitScoringCommand(
     refereeId,
     matchCode,
@@ -199,6 +199,129 @@ describe("S-8 一块场地同时只进行一场（2026-10-29 组织方决定）"
         second.controlToken,
       ),
     ).resolves.toMatchObject({ status: "accepted" });
+  });
+});
+
+describe("S-8 占用判定与提示", () => {
+  it("进行中、暂停中算占用；已结束待提交、待复核不算；提示写明占用比赛、状态与联系裁判长", async () => {
+    const { tournamentId, matches } = await roundRobin("court-states", 4);
+    const court = await prisma.court.create({ data: { tournamentId, code: "C1", name: "场地 1", active: true, sortOrder: 0 } });
+    const [occupier, ...rest] = matches;
+    const waiting = rest.find((match) => ![match.sideAEntryId, match.sideBEntryId].some((id) => id === occupier.sideAEntryId || id === occupier.sideBEntryId))!;
+    await prisma.match.updateMany({ where: { id: { in: [occupier.id, waiting.id] } }, data: { courtId: court.id } });
+    const control = await acquireScoringSession(refereeId, waiting.code, randomUUID());
+    const toss = () =>
+      submitScoringCommand(
+        refereeId,
+        waiting.code,
+        command(control, 0, "RECORD_COIN_TOSS", { valid: true, winnerSide: "A", winnerChoice: { kind: "SERVICE", decision: "SERVE" }, loserChoice: { kind: "END", end: "END_2" } }),
+        control.controlToken,
+      );
+    // 只改占用方的生命周期投影来逐个检查判定条件（占用方没有真实事件，不对它下命令）。
+    for (const [status, label] of [["IN_PROGRESS", "进行中"], ["SUSPENDED", "暂停中"]] as const) {
+      await prisma.match.update({ where: { id: occupier.id }, data: { lifecycleStatus: status } });
+      const rejected = toss();
+      await expect(rejected).rejects.toMatchObject({ status: 409, code: "court_occupied", details: { busyMatchCode: occupier.code, busyMatchStatus: status } });
+      await expect(rejected).rejects.toThrow(new RegExp(`场地 1被比赛 ${occupier.code}（${label}）占用.*请联系裁判长处理`));
+    }
+    for (const status of ["ENDED_PENDING_SUBMISSION", "SUBMITTED"] as const) {
+      await prisma.match.update({ where: { id: occupier.id }, data: { lifecycleStatus: status } });
+      const check = await prisma.$transaction(async (tx) =>
+        tx.match.count({ where: { id: { not: waiting.id }, courtId: court.id, lifecycleStatus: { in: ["IN_PROGRESS", "SUSPENDED"] } } }),
+      );
+      expect(check).toBe(0);
+    }
+    // 占用方已结束待提交时，本场照常抛币。
+    await expect(toss()).resolves.toMatchObject({ status: "accepted" });
+  });
+});
+
+describe("S-8 裁判长解除假占用", () => {
+  async function abandonedOnCourt(name: string) {
+    const { slug, tournamentId, matches } = await roundRobin(name, 4);
+    const [c1, c2] = await Promise.all(
+      ["C1", "C2"].map((code, index) => prisma.court.create({ data: { tournamentId, code, name: `场地 ${index + 1}`, active: true, sortOrder: index } })),
+    );
+    const [stuck, ...rest] = matches;
+    const waiting = rest.find((match) => ![match.sideAEntryId, match.sideBEntryId].some((id) => id === stuck.sideAEntryId || id === stuck.sideBEntryId))!;
+    await prisma.match.updateMany({ where: { id: { in: [stuck.id, waiting.id] } }, data: { courtId: c1.id } });
+    // 主裁判开局后设备失联：比赛停在进行中，控制会话还在。
+    const { result } = await startMatchWithControl(stuck.code);
+    if (result.status !== "accepted") throw new Error("开局不应命中幂等分支。");
+    const waitingDevice = randomUUID();
+    await expect(startMatch(waiting.code, waitingDevice)).rejects.toMatchObject({ code: "court_occupied" });
+    return { slug, c2, stuck, waiting, waitingDevice, version: result.version };
+  }
+
+  it("裁判长接管 → 暂停 → 转到空场地：原场地腾出，等候的比赛可以开始，比分不丢", async () => {
+    const { slug, c2, stuck, waiting, waitingDevice, version } = await abandonedOnCourt("false-busy-transfer");
+    const chief = await takeoverScoringSession(adminId, stuck.code, randomUUID(), "主裁判设备失联");
+    const paused = await submitScoringCommand(adminId, stuck.code, command(chief, version, "PAUSE_MATCH", { reason: "设备失联，转场续打" }), chief.controlToken);
+    expect(paused.status).toBe("accepted");
+    await transferSuspendedMatch(adminId, slug, stuck.code, { courtCode: c2.code, reason: "原场地设备失联" });
+    await expect(prisma.match.findUniqueOrThrow({ where: { id: stuck.id }, select: { courtId: true, lifecycleStatus: true } })).resolves.toEqual({ courtId: c2.id, lifecycleStatus: "SUSPENDED" });
+    await expect(startMatch(waiting.code, waitingDevice)).resolves.toMatchObject({ status: "accepted" });
+    await expect(prisma.auditLog.count({ where: { targetId: stuck.id, action: { contains: "TAKEOVER" } } })).resolves.toBeGreaterThan(0);
+  });
+
+  it("裁判长接管 → 登记特殊结果（比赛实际已结束）：比赛转为结束待提交，原场地腾出", async () => {
+    const { stuck, waiting, waitingDevice, version } = await abandonedOnCourt("false-busy-end");
+    const chief = await takeoverScoringSession(adminId, stuck.code, randomUUID(), "比赛已结束但设备未提交");
+    const ended = await submitScoringCommand(
+      adminId,
+      stuck.code,
+      command(chief, version, "RECORD_SPECIAL_OUTCOME", { type: "RET", winnerSide: "A", reason: "B 方伤退，主裁判设备失联未录入" }),
+      chief.controlToken,
+    );
+    expect(ended.status).toBe("accepted");
+    await expect(prisma.match.findUniqueOrThrow({ where: { id: stuck.id }, select: { lifecycleStatus: true } })).resolves.toEqual({ lifecycleStatus: "ENDED_PENDING_SUBMISSION" });
+    await expect(startMatch(waiting.code, waitingDevice)).resolves.toMatchObject({ status: "accepted" });
+  });
+});
+
+describe("S-9 暂停离场待续（场地全满时腾出场地）", () => {
+  it("只有暂停中的比赛能离场；离场后原场地腾出、比分不变；恢复前必须先转场；绕过接口改场地仍被数据库拒绝", async () => {
+    const { slug, tournamentId, matches } = await roundRobin("release", 4);
+    const court = await prisma.court.create({ data: { tournamentId, code: "C1", name: "场地 1", active: true, sortOrder: 0 } });
+    const [stuck, ...rest] = matches;
+    const waiting = rest.find((match) => ![match.sideAEntryId, match.sideBEntryId].some((id) => id === stuck.sideAEntryId || id === stuck.sideBEntryId))!;
+    await prisma.match.updateMany({ where: { id: { in: [stuck.id, waiting.id] } }, data: { courtId: court.id } });
+    const { control, result } = await startMatchWithControl(stuck.code);
+    if (result.status !== "accepted") throw new Error("开局不应命中幂等分支。");
+    const point = await submitScoringCommand(refereeId, stuck.code, command(control, result.version, "RALLY_WON", { side: "A" }), control.controlToken);
+    if (point.status !== "accepted") throw new Error("得分不应命中幂等分支。");
+
+    // 进行中的比赛不能离场；必须写原因；只有裁判长能操作。
+    await expect(releaseSuspendedMatchCourt(adminId, slug, stuck.code, { reason: "场地全满" })).rejects.toMatchObject({ code: "match_not_suspended" });
+    const paused = await submitScoringCommand(refereeId, stuck.code, command(control, point.version, "PAUSE_MATCH", { reason: "选手伤停" }), control.controlToken);
+    if (paused.status !== "accepted") throw new Error("暂停不应命中幂等分支。");
+    await expect(releaseSuspendedMatchCourt(adminId, slug, stuck.code, { reason: " " })).rejects.toMatchObject({ code: "reason_required" });
+    await expect(releaseSuspendedMatchCourt(refereeId, slug, stuck.code, { reason: "场地全满" })).rejects.toMatchObject({ status: 403 });
+    const waitingDevice = randomUUID();
+    await expect(startMatch(waiting.code, waitingDevice)).rejects.toMatchObject({ code: "court_occupied", details: { busyMatchStatus: "SUSPENDED" } });
+
+    await expect(releaseSuspendedMatchCourt(adminId, slug, stuck.code, { reason: "选手伤停待医疗处理，场地全满" })).resolves.toMatchObject({ fromCourt: "场地 1" });
+    const released = await prisma.match.findUniqueOrThrow({ where: { id: stuck.id }, select: { courtId: true, lifecycleStatus: true, awaitingCourtSince: true } });
+    expect(released).toMatchObject({ courtId: null, lifecycleStatus: "SUSPENDED", awaitingCourtSince: expect.any(Date) });
+    await expect(prisma.auditLog.count({ where: { targetId: stuck.id, action: "MATCH_COURT_RELEASED" } })).resolves.toBe(1);
+    await expect(releaseSuspendedMatchCourt(adminId, slug, stuck.code, { reason: "再来一次" })).rejects.toMatchObject({ code: "match_has_no_court" });
+
+    // 原场地腾出：等候的比赛可以开始。
+    await expect(startMatch(waiting.code, waitingDevice)).resolves.toMatchObject({ status: "accepted" });
+
+    // 恢复前必须先转场；比分保持暂停前的 1:0。
+    const resume = () => submitScoringCommand(refereeId, stuck.code, command(control, paused.version, "RESUME_MATCH", { reason: "医疗处理完毕" }), control.controlToken);
+    await expect(resume()).rejects.toMatchObject({ status: 409, code: "match_awaiting_court" });
+    const c2 = await prisma.court.create({ data: { tournamentId, code: "C2", name: "场地 2", active: true, sortOrder: 1 } });
+    await transferSuspendedMatch(adminId, slug, stuck.code, { courtCode: c2.code, reason: "场地 2 空出" });
+    await expect(prisma.match.findUniqueOrThrow({ where: { id: stuck.id }, select: { courtId: true, awaitingCourtSince: true } })).resolves.toEqual({ courtId: c2.id, awaitingCourtSince: null });
+    const resumed = await resume();
+    expect(resumed).toMatchObject({ status: "accepted" });
+    expect((resumed as { state: { score: { A: number; B: number } } }).state.score).toEqual({ A: 1, B: 0 });
+
+    // 数据库兜底：不声明离场就把已开始比赛的场地改为空，被触发器拒绝；离场待续时不能同时有场地。
+    await expect(prisma.match.update({ where: { id: stuck.id }, data: { courtId: null } })).rejects.toThrow();
+    await expect(prisma.match.update({ where: { id: waiting.id }, data: { awaitingCourtSince: new Date() } })).rejects.toThrow();
   });
 });
 

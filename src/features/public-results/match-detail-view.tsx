@@ -4,6 +4,7 @@ import { ResourceState } from "@/components/ui/resource-state";
 
 import { formatPreviewDateTime, formatPreviewSyncTime, formatPreviewTime } from "./format";
 import {
+  courtLabel,
   correctionLabels,
   outcomeLabels,
   type PreviewScenario,
@@ -133,7 +134,7 @@ export function MatchDetailView({
                   <div><dt>比赛编号</dt><dd>{match.code}</dd></div>
                   <div><dt>项目</dt><dd>{match.competitionName}</dd></div>
                   <div><dt>阶段</dt><dd>{match.stageName}</dd></div>
-                  <div><dt>场地</dt><dd>{match.court ?? "场地待定"}</dd></div>
+                  <div><dt>场地</dt><dd>{courtLabel(match)}</dd></div>
                   <div><dt>时间</dt><dd>{time.primary}<small>{time.secondary}</small></dd></div>
                   <div><dt>实际开始</dt><dd>{formatPreviewDateTime(match.startedAt, timeZone)}</dd></div>
                   <div><dt>实际结束</dt><dd>{formatPreviewDateTime(match.endedAt, timeZone)}</dd></div>

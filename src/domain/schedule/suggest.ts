@@ -62,6 +62,12 @@ export const UNPLACED_TEXT: Record<UnplacedReason, string> = {
 export interface SuggestResult {
   placements: Placement[];
   unplaced: { matchId: string; reason: UnplacedReason }[];
+  /**
+   * 裁判分配不完全满足规则的比赛（只在给了可指派裁判时统计）：
+   * `overConsecutive` 是空闲裁判都已连续执裁 2 场、只能让其中一人连续第 3 场的比赛；
+   * `unassigned` 是同一时段没有空闲裁判、留空待手工指派的比赛。
+   */
+  refereeShortage: { overConsecutive: string[]; unassigned: string[] };
 }
 
 interface Unit {
@@ -378,6 +384,7 @@ export function suggestSchedule(input: SuggestInput): SuggestResult {
     return streak;
   };
   const MAX_CONSECUTIVE = 2;
+  const refereeShortage: SuggestResult["refereeShortage"] = { overConsecutive: [], unassigned: [] };
   const chronological = [...placements.values()].sort(
     (left, right) => (left.start as number) - (right.start as number) || left.matchId.localeCompare(right.matchId),
   );
@@ -393,7 +400,12 @@ export function suggestSchedule(input: SuggestInput): SuggestResult {
         input.refereeIds.indexOf(left) - input.refereeIds.indexOf(right),
     );
     const chosen = candidates[0];
-    if (!chosen) continue;
+    if (!chosen) {
+      if (input.refereeIds.length) refereeShortage.unassigned.push(placement.matchId);
+      continue;
+    }
+    // 裁判不够轮换时仍然排上（比留空好），但如实报告超出「最多连续 2 场」的比赛。
+    if (!rested.length) refereeShortage.overConsecutive.push(placement.matchId);
     placement.refereeId = chosen;
     load.set(chosen, (load.get(chosen) ?? 0) + 1);
     duties.get(chosen)?.push(interval);
@@ -423,5 +435,6 @@ export function suggestSchedule(input: SuggestInput): SuggestResult {
   return {
     placements: [...placements.values()].sort((left, right) => left.matchId.localeCompare(right.matchId)),
     unplaced,
+    refereeShortage,
   };
 }

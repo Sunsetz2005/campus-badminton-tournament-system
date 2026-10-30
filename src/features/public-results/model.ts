@@ -102,6 +102,11 @@ export interface PublicTournamentCard {
   venue: string | null;
 }
 
+/** 场地显示：暂停中又没有场地，是裁判长让它离场待续（赛务口径 S-9）。 */
+export function courtLabel(match: { court: string | null; lifecycle: MatchLifecycle }) {
+  return match.court ?? (match.lifecycle === "SUSPENDED" ? "待分配场地" : "场地待定");
+}
+
 export const lifecycleLabels: Record<MatchLifecycle, string> = {
   SCHEDULED: "已排期",
   READY: "待开赛",

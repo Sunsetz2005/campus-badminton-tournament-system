@@ -311,6 +311,22 @@ describe("自动排程建议", () => {
     expect(balanced.placements.map((placement) => placement.refereeId).sort()).toEqual(["r2", "r3"]);
   });
 
+  it("裁判不够时如实报告：超出「最多连续 2 场」的比赛与同一时段没有空闲裁判而留空的比赛", () => {
+    const matches = Array.from({ length: 4 }, (_, index) => match(`S-${index + 1}`, { confirmedPersons: [`s${index}a`, `s${index}b`], fixtureSequence: index + 1 }));
+    // 1 块场地、1 名裁判：第 3、4 场只能让他连续执裁。
+    const serial = run(matches, { courtIds: ["c1"], refereeIds: ["r1"] });
+    const ordered = [...serial.placements].sort((left, right) => left.start! - right.start!);
+    expect(ordered.every((placement) => placement.refereeId === "r1")).toBe(true);
+    expect(serial.refereeShortage).toEqual({ overConsecutive: [ordered[2].matchId, ordered[3].matchId], unassigned: [] });
+    // 2 块场地同时开打、1 名裁判：每个时段有一场没人执裁。
+    const parallel = run(matches, { courtIds: ["c1", "c2"], refereeIds: ["r1"] });
+    expect(parallel.refereeShortage.unassigned).toHaveLength(2);
+    expect(parallel.placements.filter((placement) => placement.refereeId === null).map((placement) => placement.matchId).sort()).toEqual([...parallel.refereeShortage.unassigned].sort());
+    // 裁判足够时没有任何报告；不指派裁判时也不报告。
+    expect(run(matches, { courtIds: ["c1"] }).refereeShortage).toEqual({ overConsecutive: [], unassigned: [] });
+    expect(run(matches, { courtIds: ["c1", "c2"], refereeIds: [] }).refereeShortage).toEqual({ overConsecutive: [], unassigned: [] });
+  });
+
   it("排程无解：没有场地、没有比赛日或时段内排不下时如实列出原因，不硬塞", () => {
     const ms = match("MS-1");
     expect(run([ms], { courtIds: [] }).unplaced).toEqual([{ matchId: "MS-1", reason: "NO_COURT" }]);

@@ -63,6 +63,7 @@ async function loadMatchFacts(transaction: Transaction, matchId: string) {
       rubberKind: true,
       rubberOrder: true,
       notPlayedAt: true,
+      awaitingCourtSince: true,
       coinTossDrawSide: true,
       coinTossDrawVersion: true,
       coinTossDrawnAt: true,
@@ -245,6 +246,10 @@ export async function getAuthoritativeMatchState(userId: string, matchCode: stri
         // 共用裁判账号模式下，主裁判取得控制前须填写本人姓名（赛务口径 O-2）。
         officiatingNameRequired: tournament.refereeMode === "SHARED_ACCOUNT",
       },
+      // 离场待续（S-9）不改比赛版本，放在每次轮询都返回的部分。
+      awaitingCourt: Boolean(match.awaitingCourtSince),
+      // 转场与离场也不改版本：当前场地随每次轮询返回，工作台标题不会停在旧场地。
+      currentCourtName: match.court?.name ?? null,
     };
     if (!aggregate) return { status: "unchanged" as const, ...common };
     if (afterVersion === aggregate.state.version) return { status: "unchanged" as const, ...common };

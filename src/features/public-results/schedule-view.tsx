@@ -352,8 +352,8 @@ export function PublicScheduleView({
 
       {showResolvedData && unscheduled.length ? (
         <section aria-labelledby="unscheduled-heading" className={styles.unscheduled}>
-          <h2 id="unscheduled-heading">待排期（{unscheduled.length} 场）</h2>
-          <p>以下比赛已公开但尚未确定日期，不归入任何一天。</p>
+          <h2 id="unscheduled-heading">未排入赛程（{unscheduled.length} 场）</h2>
+          <p>以下比赛已公开但没有计划时间（尚未排期，或未排程就已进行），不归入任何一天。</p>
           <div className={styles.scheduleCards}>
             {unscheduled.map((match) => (
               <ScheduleMatch

@@ -43,6 +43,8 @@ interface SuggestResponse {
   hardCount: number;
   warningCount: number;
   shortfall: ScheduleShortfallValue | null;
+  /** 裁判分配不满足「最多连续 2 场」或留空的说明。 */
+  refereeNotes: string[];
 }
 
 function dayLabel(date: string) {
@@ -197,7 +199,7 @@ export function SuggestPanel({
     setMessage({
       tone: "ok",
       text: `已为 ${data.scope} 场比赛生成草稿：排入 ${data.placed} 场${data.unplaced.length ? `，${data.scope - data.placed} 场排不下` : ""}。当前草稿硬冲突 ${data.hardCount} 个、警告 ${data.warningCount} 个。草稿未发布前，裁判和公众都看不到。`,
-      details: data.unplaced.map((item) => `${item.count} 场：${item.text}`),
+      details: [...data.unplaced.map((item) => `${item.count} 场：${item.text}`), ...data.refereeNotes],
     });
     router.refresh();
     return result;
@@ -647,6 +649,41 @@ export function TransferCourtForm({ slug, matchCode, courts, currentCourtCode }:
         ) : null}
         <div className={styles.actions}>
           <ActionButton disabled={!courtCode || !reason.trim()} loading={pending} size="sm" type="submit">确认转场</ActionButton>
+        </div>
+      </form>
+    </details>
+  );
+}
+
+/**
+ * 赛务口径 S-9：场地全满、暂停的比赛无处可转时，裁判长让它离场待续，原场地立即腾出。
+ * 比赛保持暂停、比分不变；恢复前要先「转到其他场地」。
+ */
+export function ReleaseCourtForm({ slug, matchCode }: { slug: string; matchCode: string }) {
+  const { pending, run, feedback } = useAction();
+  const [reason, setReason] = useState("");
+  return (
+    <details className={local.editor}>
+      <summary>离场待续（腾出场地）</summary>
+      <form
+        className={local.editorBody}
+        data-testid={`release-court-${matchCode}`}
+        onSubmit={async (event) => {
+          event.preventDefault();
+          await run(
+            () => sendJson(`/api/admin/tournaments/${slug}/schedule/matches/${matchCode}/court/release`, "POST", { reason }),
+            "已离场待续。比赛保持暂停、比分不变，原场地已腾出；恢复前请先把它转到一块空场地。",
+          );
+        }}
+      >
+        <p className={styles.hint}>适用于场地全满、这场暂停时间较长（如伤停待医疗处理）的情况。离场后比赛没有场地，裁判不能直接恢复。</p>
+        <label className={styles.field}>
+          <span>原因</span>
+          <input aria-label="离场原因" maxLength={400} onChange={(event) => setReason(event.target.value)} placeholder="例如：选手伤停待医疗处理，场地全满" required value={reason} />
+        </label>
+        {feedback}
+        <div className={styles.actions}>
+          <ActionButton disabled={!reason.trim()} loading={pending} size="sm" type="submit">确认离场</ActionButton>
         </div>
       </form>
     </details>
