@@ -8,7 +8,7 @@ import type { MatchCommand } from "@/domain/rules/match-engine";
 import { generateDrawDraft, publishDraw } from "@/server/services/draw-service";
 import { createManualRegistration, reviewRegistration } from "@/server/services/registration-service";
 import { submitScoringCommand, type ScoringCommandEnvelope } from "@/server/services/scoring-command-service";
-import { releaseSuspendedMatchCourt, transferSuspendedMatch } from "@/server/services/schedule-service";
+import { releaseSuspendedMatchCourt } from "@/server/services/schedule-service";
 import { acquireScoringSession, takeoverScoringSession } from "@/server/services/scoring-session-service";
 import { loadOfficiatingRecords } from "@/server/services/officiating-record";
 import { createTournament, transitionTournamentPhase } from "@/server/services/tournament-admin-service";

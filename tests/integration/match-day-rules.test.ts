@@ -632,6 +632,10 @@ describe("独立复判第二轮 RV2-01 / RV2-02 / RV2-03 修复", () => {
       details: { busyMatchCode: n.code, busyMatchStatus: "IN_PROGRESS" },
       message: expect.stringContaining("本场暂不能继续"),
     });
+    // 复判第三轮 RV3-02：提示只给可走的路径（逐分记分的比赛没有「按结果更正」可走）。
+    const error = await submitScoringCommand(refereeId, m.code, command(control, ret.version, "INVALIDATE_SPECIAL_OUTCOME", { reason: "误记" }), control.controlToken).catch((caught: unknown) => caught);
+    expect((error as Error).message).toContain("先让那场暂停并转到其他空场地");
+    expect((error as Error).message).not.toContain("按结果更正");
   });
 
   it("RV2-03 未登记姓名的旧会话补填姓名：时间线保留「未登记姓名」一段，再列交接后的人", async () => {

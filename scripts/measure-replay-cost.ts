@@ -44,7 +44,7 @@ async function main() {
     data: { version: 0, controlGeneration: 1, lifecycleStatus: "READY", outcomeType: null, verificationStatus: "UNVERIFIED", startedAt: null, endedAt: null },
   });
 
-  const control = await acquireScoringSession(referee.id, MATCH_CODE, "99999999-9999-4999-8999-999999999999");
+  const control = await acquireScoringSession(referee.id, MATCH_CODE, "99999999-9999-4999-8999-999999999999", "示例裁判");
   let result = await submitScoringCommand(referee.id, MATCH_CODE, envelope(control, 0, "RECORD_COIN_TOSS", {
     valid: true, winnerSide: "A", winnerChoice: { kind: "SERVICE", decision: "SERVE" }, loserChoice: { kind: "END", end: "END_2" },
   }), control.controlToken);

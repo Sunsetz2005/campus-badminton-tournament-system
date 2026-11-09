@@ -209,7 +209,7 @@ async function assertCourtFree(transaction: Prisma.TransactionClient, matchId: s
     const advice =
       action === "开始"
         ? "等那场结束或转到其他场地后再开始；如果那场实际已经结束或设备失联，请联系裁判长处理。"
-        : "本场已结束、场地已交给下一场：请等那场结束后再撤销或更正，或由裁判长按结果更正处理。";
+        : "本场已结束、场地已交给下一场：请等那场结束后再撤销或更正；急需更正时，请联系裁判长先让那场暂停并转到其他空场地。";
     throw new AppError(
       409,
       "court_occupied",

@@ -1184,7 +1184,7 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
     <>
     <section className="scoring-shell" inert={actionSheet ? true : undefined}>
       <header className={`scoring-statusbar ${canWrite ? "is-writable" : "is-readonly"}`}>
-        <div className="scoring-title"><span className="eyebrow">{match.competitionName} · {snapshot.awaitingCourt ? "待分配场地" : (snapshot.currentCourtName !== undefined ? snapshot.currentCourtName : match.courtName) ?? "场地待定"}</span><h1>{match.code}</h1></div>
+        <div className="scoring-title"><span className="eyebrow">{match.competitionName} · {snapshot.awaitingCourt && state.phase === "PAUSED" ? "待分配场地" : (snapshot.currentCourtName !== undefined ? snapshot.currentCourtName : match.courtName) ?? "场地待定"}</span><h1>{match.code}</h1></div>
         <div className="status-facts">
           <span className={`status-chip ${online ? "is-ok" : "is-bad"}`}><i className={`sync-dot ${online ? "online" : "offline"}`} />网络<strong>{online ? "在线" : "离线"}</strong></span>
           <span className={`status-chip ${canWrite ? "is-ok" : "is-muted"}`}>控制<strong>{canWrite ? "本机可写" : "只读"}</strong></span>

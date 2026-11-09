@@ -168,10 +168,13 @@ async function seedCommand(
   return result;
 }
 
+/** 示例裁判是平台共用账号，取得控制前必须登记姓名（赛务口径 O-4；复判第三轮 RV3-01）。 */
+const SEED_OFFICIATING_NAME = "示例裁判";
+
 async function seedNormalResult(input: SeedResultInput) {
   if (await resultAlreadySeeded(input.matchCode)) return;
   const logicalCourts = logicalCourtsFor(input.players, input.format);
-  const refereeControl = await acquireScoringSession(input.refereeId, input.matchCode, randomUUID());
+  const refereeControl = await acquireScoringSession(input.refereeId, input.matchCode, randomUUID(), SEED_OFFICIATING_NAME);
   let control: ControlLease = refereeControl;
   let actorUserId = input.refereeId;
   let sequence = 0;
@@ -254,7 +257,7 @@ async function seedNormalResult(input: SeedResultInput) {
 
 async function seedSpecialResult(input: SeedSpecialResultInput) {
   if (await resultAlreadySeeded(input.matchCode)) return;
-  const refereeControl = await acquireScoringSession(input.refereeId, input.matchCode, randomUUID());
+  const refereeControl = await acquireScoringSession(input.refereeId, input.matchCode, randomUUID(), SEED_OFFICIATING_NAME);
   let version = refereeControl.matchVersion;
   let sequence = 0;
   const send = async (
