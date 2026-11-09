@@ -26,6 +26,18 @@ export class AppError extends Error {
   }
 }
 
+/**
+ * 复判 RV-01：数据库触发器 `guard_court_single_occupancy` 是 S-8 的最后一道兜底。应用层检查在正常与重试路径上
+ * 先给出带比赛编号的提示；只有极端并发漏过应用层时才会走到这里，同样回答 409 而不是 500。
+ */
+export function rethrowCourtOccupied(error: unknown): never {
+  const text = error instanceof Error ? `${error.message} ${String((error as { meta?: unknown }).meta ?? "")}` : String(error);
+  if (/court_occupied: /.test(text)) {
+    throw new AppError(409, "court_occupied", "这块场地刚被另一场比赛占用，本次没有保存。请刷新后查看场地状态；如有疑问请联系裁判长。");
+  }
+  throw error;
+}
+
 export function errorResponse(error: unknown, fields: Record<string, unknown> = {}) {
   if (error instanceof AppError) {
     logServerEvent("request_failed", {

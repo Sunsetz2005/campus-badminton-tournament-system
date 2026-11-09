@@ -12,7 +12,7 @@ import {
 } from "@/domain/rules/match-engine";
 import { validateRefereeSpecialOutcome } from "@/domain/rules/special-outcome";
 import { getMatchAccess } from "@/server/auth/authorization";
-import { AppError } from "@/server/services/errors";
+import { AppError, rethrowCourtOccupied } from "@/server/services/errors";
 import {
   asInputJson,
   hashMatchValue,
@@ -193,7 +193,11 @@ async function assertPlayersNotOnCourt(transaction: Prisma.TransactionClient, ma
  * 与转场的「空场地」判断一致。未排定场地的比赛不检查。
  */
 async function assertCourtFree(transaction: Prisma.TransactionClient, matchId: string) {
-  const match = await transaction.match.findUniqueOrThrow({ where: { id: matchId }, select: { courtId: true } });
+  const match = await transaction.match.findUniqueOrThrow({ where: { id: matchId }, select: { courtId: true, awaitingCourtSince: true } });
+  // 复判 RV-02：离场待续的比赛没有场地，不能借「未排场地不检查」直接开打。
+  if (match.awaitingCourtSince) {
+    throw new AppError(409, "match_awaiting_court", "本场已离场待续，还没有分配场地。请联系裁判长先把比赛转到一块空场地。");
+  }
   if (!match.courtId) return;
   const busy = await transaction.match.findFirst({
     where: { id: { not: matchId }, courtId: match.courtId, lifecycleStatus: { in: ["IN_PROGRESS", "SUSPENDED"] } },
@@ -388,6 +392,13 @@ export async function submitScoringCommand(
     const command = commandFromEnvelope(envelope);
     assertNewCommandPolicy(aggregate.state, command);
     if (command.type === "RESUME_MATCH") await assertHasCourtToResume(transaction, access.id);
+    // 复判 RV-02：作废计分会让比赛回到抛币前；离场待续时作废，比赛就成了既转不了场、也排不了场地的无场地比赛。
+    if (command.type === "VOID_MATCH_SCORING") {
+      const current = await transaction.match.findUniqueOrThrow({ where: { id: access.id }, select: { awaitingCourtSince: true } });
+      if (current.awaitingCourtSince) {
+        throw new AppError(409, "match_awaiting_court", "本场已离场待续，请先由裁判长把比赛转到一块空场地，再作废计分。");
+      }
+    }
     assertMatchesCoinTossDraw(match, command);
     const result = applyCommand(aggregate, command);
     if (result.status === "rejected") throw new AppError(422, result.error.code, result.error.message);
@@ -462,7 +473,7 @@ export async function submitScoringCommand(
       },
     });
     return response;
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).catch(rethrowCourtOccupied);
 }
 
 export async function getScoringCommandResult(actorUserId: string, matchCode: string, commandId: string) {

@@ -95,7 +95,7 @@ async function startMatch(matchCode: string, deviceId = randomUUID()) {
 }
 
 async function startMatchWithControl(matchCode: string, deviceId = randomUUID()) {
-  const control = await acquireScoringSession(refereeId, matchCode, deviceId);
+  const control = await acquireScoringSession(refereeId, matchCode, deviceId, "演示裁判");
   const toss = await submitScoringCommand(
     refereeId,
     matchCode,
@@ -185,7 +185,7 @@ describe("复判 RV-S8-D 转场与开局并发进入同一块场地", () => {
       const { control, result } = await startMatchWithControl(m.code);
       if (result.status !== "accepted") throw new Error("x");
       await submitScoringCommand(refereeId, m.code, command(control, result.version, "PAUSE_MATCH", { reason: "探针" }), control.controlToken);
-      const cn = await acquireScoringSession(refereeId, n.code, randomUUID());
+      const cn = await acquireScoringSession(refereeId, n.code, randomUUID(), "演示裁判");
       const toss = await submitScoringCommand(refereeId, n.code, command(cn, 0, "RECORD_COIN_TOSS", { valid: true, winnerSide: "A", winnerChoice: { kind: "SERVICE", decision: "SERVE" }, loserChoice: { kind: "END", end: "END_2" } } as MatchCommand["payload"]), cn.controlToken);
       if (toss.status !== "accepted") throw new Error("x");
       const players = (toss.state as { players: { A: string[]; B: string[] } }).players;

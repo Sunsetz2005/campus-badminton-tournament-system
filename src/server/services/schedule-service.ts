@@ -13,7 +13,7 @@ import { MINUTE, isMovable, type Placement } from "@/domain/schedule/model";
 import { suggestSchedule, UNPLACED_TEXT, type UnplacedReason } from "@/domain/schedule/suggest";
 import { isCalendarDate, isValidTimeZone, utcToZonedLocal, zonedLocalToUtc } from "@/domain/time/zoned-time";
 import { requireManagedTournament, TOURNAMENT_MANAGER_ROLES } from "@/server/auth/authorization";
-import { AppError } from "@/server/services/errors";
+import { AppError, rethrowCourtOccupied } from "@/server/services/errors";
 import { actualText, loadOfficiatingRecords, scheduledText, type OfficiatingRecord } from "@/server/services/officiating-record";
 import { lockTournamentRow } from "@/server/services/registration-service";
 import {
@@ -872,7 +872,9 @@ export async function transferSuspendedMatch(actorUserId: string, slug: string, 
       toCourt: court.name,
       upcoming: upcoming.map((item) => ({ code: item.code, scheduledAt: item.scheduledAt?.toISOString() ?? null })),
     };
-  });
+    // 复判 RV-01：与开局命令同为可串行化，两边并发判断「场地空闲」时其中一个以 40001 回滚并重试，
+    // 重试后看到对方已提交的比赛，回答 court_busy；数据库触发器再兜一层。
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).catch(rethrowCourtOccupied);
 }
 
 const releaseSchema = z.object({ reason: z.string().max(400) });

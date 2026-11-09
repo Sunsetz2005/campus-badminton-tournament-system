@@ -464,3 +464,86 @@ describe("方案 B2 执裁记录：排班与实际执裁人并列；用共用账
     for (const secret of ["李四", `具名裁判${RUN}`]) expect(workbookXml).not.toContain(secret);
   });
 });
+
+describe("独立复判 2026-11-09 RV-01 / RV-02 修复", () => {
+  async function pausedAndWaiting(name: string) {
+    const ctx = await roundRobin(name, 4);
+    const [c1, c2] = await Promise.all(
+      ["C1", "C2"].map((code, index) => prisma.court.create({ data: { tournamentId: ctx.tournamentId, code, name: `场地 ${index + 1}`, active: true, sortOrder: index } })),
+    );
+    const [m, ...rest] = ctx.matches;
+    const n = rest.find((match) => ![match.sideAEntryId, match.sideBEntryId].some((id) => id === m.sideAEntryId || id === m.sideBEntryId))!;
+    await prisma.match.update({ where: { id: m.id }, data: { courtId: c1.id } });
+    await prisma.match.update({ where: { id: n.id }, data: { courtId: c2.id } });
+    const { control, result } = await startMatchWithControl(m.code);
+    if (result.status !== "accepted") throw new Error("开局不应命中幂等分支。");
+    const paused = await submitScoringCommand(refereeId, m.code, command(control, result.version, "PAUSE_MATCH", { reason: "伤停" }), control.controlToken);
+    if (paused.status !== "accepted") throw new Error("暂停不应命中幂等分支。");
+    return { ...ctx, c1, c2, m, n, control, paused };
+  }
+
+  it("RV-01 转场与开局并发进入同一块场地：每一轮都只有一场成功，场地上从不出现两场", async () => {
+    for (let round = 0; round < 6; round += 1) {
+      const { slug, c2, m, n } = await pausedAndWaiting(`rv01-${round}`);
+      const nControl = await acquireScoringSession(refereeId, n.code, randomUUID(), "演示裁判");
+      const toss = await submitScoringCommand(
+        refereeId,
+        n.code,
+        command(nControl, 0, "RECORD_COIN_TOSS", { valid: true, winnerSide: "A", winnerChoice: { kind: "SERVICE", decision: "SERVE" }, loserChoice: { kind: "END", end: "END_2" } }),
+        nControl.controlToken,
+      );
+      if (toss.status !== "accepted") throw new Error("抛币不应命中幂等分支。");
+      const players = (toss.state as { players: { A: string[]; B: string[] } }).players;
+      const settled = await Promise.allSettled([
+        transferSuspendedMatch(adminId, slug, m.code, { courtCode: "C2", reason: "并发转场" }),
+        submitScoringCommand(
+          refereeId,
+          n.code,
+          command(nControl, toss.version, "CONFIRM_OPENING_SETUP", { serverPlayerId: players.A[0], receiverPlayerId: players.B[0], logicalCourts: null } as MatchCommand["payload"]),
+          nControl.controlToken,
+        ),
+      ]);
+      expect(settled.filter((item) => item.status === "fulfilled")).toHaveLength(1);
+      const rejected = settled.find((item) => item.status === "rejected") as PromiseRejectedResult;
+      expect(["court_busy", "court_occupied"]).toContain((rejected.reason as { code?: string }).code);
+      await expect(prisma.match.count({ where: { courtId: c2.id, lifecycleStatus: { in: ["IN_PROGRESS", "SUSPENDED"] } } })).resolves.toBe(1);
+    }
+  });
+
+  it("RV-01 数据库兜底：绕过应用检查把暂停的比赛转进有人的场地被触发器拒绝；场地上原有的两场照常续打", async () => {
+    const { c2, m, n } = await pausedAndWaiting("rv01-db");
+    await startMatch(n.code);
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config('badminton.court_transfer', 'on', true)`;
+        await tx.match.update({ where: { id: m.id }, data: { courtId: c2.id } });
+      }),
+    ).rejects.toThrow(/court_occupied/);
+    // 只检查「新进入占用」：已在场上的比赛改状态（暂停 ↔ 进行中）不受影响。
+    await expect(prisma.match.update({ where: { id: n.id }, data: { lifecycleStatus: "SUSPENDED" } })).resolves.toBeTruthy();
+    await expect(prisma.match.update({ where: { id: n.id }, data: { lifecycleStatus: "IN_PROGRESS" } })).resolves.toBeTruthy();
+  });
+
+  it("RV-02 离场待续时不能作废计分、不能开局；先转场再作废照常；数据库不允许离场待续的比赛离开暂停中，也不允许离场时不记标记", async () => {
+    const { slug, m, paused } = await pausedAndWaiting("rv02");
+    await releaseSuspendedMatchCourt(adminId, slug, m.code, { reason: "场地全满" });
+    const chief = await takeoverScoringSession(adminId, m.code, randomUUID(), "复核作废");
+    await expect(
+      submitScoringCommand(adminId, m.code, command(chief, paused.version, "VOID_MATCH_SCORING", { reason: "开错场次" }), chief.controlToken),
+    ).rejects.toMatchObject({ status: 409, code: "match_awaiting_court" });
+    await expect(prisma.match.update({ where: { id: m.id }, data: { lifecycleStatus: "READY" } })).rejects.toThrow();
+    await transferSuspendedMatch(adminId, slug, m.code, { courtCode: "C1", reason: "场地 1 空出" });
+    await expect(
+      submitScoringCommand(adminId, m.code, command(chief, paused.version, "VOID_MATCH_SCORING", { reason: "开错场次" }), chief.controlToken),
+    ).resolves.toMatchObject({ status: "accepted" });
+
+    // 离场声明下只改场地、不记离场待续：触发器拒绝。
+    const other = await pausedAndWaiting("rv02-flag");
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config('badminton.court_release', 'on', true)`;
+        await tx.match.update({ where: { id: other.m.id }, data: { courtId: null } });
+      }),
+    ).rejects.toThrow(/cannot change/);
+  });
+});
