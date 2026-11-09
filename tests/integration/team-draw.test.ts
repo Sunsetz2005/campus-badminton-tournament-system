@@ -583,7 +583,7 @@ describe("个人项目抽签与执裁衔接", () => {
     await prisma.officialAssignment.create({ data: { matchId: target.id, userId: refereeId } });
     const state = await getAuthoritativeMatchState(refereeId, target.code);
     expect(state).toMatchObject({ status: "snapshot", version: 0, state: { phase: "AWAITING_COIN_TOSS" } });
-    const control = await acquireScoringSession(refereeId, target.code, "41111111-1111-4111-8111-111111111111");
+    const control = await acquireScoringSession(refereeId, target.code, "41111111-1111-4111-8111-111111111111", "演示裁判");
     const envelope = {
       commandId: "41000000-0000-4000-8000-000000000001",
       occurredAt: "2026-11-01T02:00:00.000Z",

@@ -50,10 +50,10 @@ describe("真实数据库权限边界", () => {
   });
 
   it("同场只建立一个有效控制会话", async () => {
-    const first = await acquireScoringSession(refereeId, "MS-DEMO-001", "11111111-1111-4111-8111-111111111111");
+    const first = await acquireScoringSession(refereeId, "MS-DEMO-001", "11111111-1111-4111-8111-111111111111", "演示裁判");
     expect(first.status).toBe("acquired");
     await expect(
-      acquireScoringSession(refereeId, "MS-DEMO-001", "22222222-2222-4222-8222-222222222222"),
+      acquireScoringSession(refereeId, "MS-DEMO-001", "22222222-2222-4222-8222-222222222222", "演示裁判"),
     ).rejects.toMatchObject({ status: 409, code: "controller_exists" } satisfies Partial<AppError>);
   });
 
@@ -65,7 +65,7 @@ describe("真实数据库权限边界", () => {
     const beforeSessions = await prisma.scoringSession.count({ where: { matchId: match.id } });
 
     await expect(
-      acquireScoringSession(refereeId, "MD-DEMO-001", "77777777-7777-4777-8777-777777777777"),
+      acquireScoringSession(refereeId, "MD-DEMO-001", "77777777-7777-4777-8777-777777777777", "演示裁判"),
     ).rejects.toMatchObject({ status: 403, code: "not_assigned" } satisfies Partial<AppError>);
 
     await expect(prisma.scoringSession.count({ where: { matchId: match.id } })).resolves.toBe(beforeSessions);

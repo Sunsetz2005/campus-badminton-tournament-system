@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { prisma } from "../../src/db/client";
+import { E2E_OFFICIATING_NAME } from "../support/officiating-control";
 
 async function login(page: import("@playwright/test").Page, email: string, password: string) {
   await page.goto("/login");
@@ -234,7 +235,7 @@ test.describe.serial("阶段 1 浏览器权限链", () => {
     await expect(prisma.scoringSession.count()).resolves.toBe(before);
 
     const assignedMatch = await page.context().request.post("/api/matches/MS-DEMO-001/control", {
-      data: { deviceSessionId: "66666666-6666-4666-8666-666666666666" },
+      data: { deviceSessionId: "66666666-6666-4666-8666-666666666666", officiatingName: E2E_OFFICIATING_NAME },
     });
     expect(assignedMatch.status()).toBe(201);
     await expect(assignedMatch.json()).resolves.toMatchObject({ status: "acquired", takeoverGeneration: 1 });

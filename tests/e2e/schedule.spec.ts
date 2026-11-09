@@ -6,6 +6,7 @@ import { expect, test, type APIRequestContext, type Browser, type Page } from "@
 
 import { prisma } from "../../src/db/client";
 import { assertTestDatabaseUrl } from "../../src/db/database-safety";
+import { E2E_OFFICIATING_NAME } from "../support/officiating-control";
 
 /**
  * 阶段 4-C：用模拟赛事演示从对阵表到赛程、再到裁判端开赛。
@@ -69,7 +70,7 @@ type PlayState = { format: string; players: { A: string[]; B: string[] } };
 
 /** 通过真实计分接口开局并暂停一场比赛（主裁判本人操作）。 */
 async function startAndPause(referee: APIRequestContext, matchCode: string) {
-  const control = await ok<ControlGrant>(await referee.post(`/api/matches/${matchCode}/control`, { data: { deviceSessionId: randomUUID() } }));
+  const control = await ok<ControlGrant>(await referee.post(`/api/matches/${matchCode}/control`, { data: { deviceSessionId: randomUUID(), officiatingName: E2E_OFFICIATING_NAME } }));
   let seq = 0;
   const send = (version: number, type: string, payload: unknown) =>
     referee.post(`/api/matches/${matchCode}/commands`, {
@@ -320,6 +321,8 @@ test.describe.serial("阶段 4-C 赛程与裁判排班：从对阵表到赛程�
 
     const { context, page } = await loggedIn(browser, process.env.DEMO_ADMIN_EMAIL!, process.env.DEMO_ADMIN_PASSWORD!);
     await page.goto(`/officiating/board/${slug}`);
+    // 方案 B2：已开打的比赛并列显示排班与实际执裁人（共用账号显示登记的姓名）。
+    await expect(page.getByTestId(`officiating-record-${code}`)).toContainText(/执裁记录：排班 共用账号 · 实际 演示裁判 \d\d:\d\d/);
     const row = page.getByTestId("schedule-row").filter({ has: page.locator(`[data-testid="transfer-court-${code}"]`) });
     await row.getByText("转到其他场地").click();
     const form = page.getByTestId(`transfer-court-${code}`);

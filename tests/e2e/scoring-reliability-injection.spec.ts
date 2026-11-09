@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { prisma } from "../../src/db/client";
 import { clearedCoinTossDraw, presetCoinTossWinner } from "../support/coin-toss";
+import { acquireControl } from "../support/officiating-control";
 
 /**
  * R3-002 / R3-003 的浏览器注入回归。
@@ -71,7 +72,7 @@ async function resetMatch() {
 /** 打开工作台、取得控制权并开赛，返回时比分为 0:0。 */
 async function openAndStart(page: Page) {
   await page.goto(`/officiating/${MATCH_CODE}`);
-  await page.getByRole("button", { name: "取得本机控制权" }).click();
+  await acquireControl(page);
   await recordCoinToss(page);
   await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
   // 等到开赛命令的回执真正落地（加分按钮可用），否则后续注入会被这条命令的收尾覆盖。

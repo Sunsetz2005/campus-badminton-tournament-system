@@ -6,6 +6,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 import { prisma } from "../../src/db/client";
 import type { MatchState } from "../../src/domain/rules/match-engine";
 import { clearedCoinTossDraw, presetCoinTossWinner } from "../support/coin-toss";
+import { acquireControl } from "../support/officiating-control";
 
 /**
  * 裁判工作台场地化改造的前后截图证据。
@@ -196,9 +197,8 @@ async function shoot(page: Page, scenario: string, viewportKeys: readonly string
 
 async function openWorkbenchWithControl(page: Page, matchCode: string) {
   await page.goto(`/officiating/${matchCode}`);
-  const acquire = page.getByRole("button", { name: "取得本机控制权" });
-  await expect(acquire).toBeEnabled();
-  await acquire.click();
+  // 示例裁判是共用账号：先登记姓名按钮才可用（acquireControl 内处理）。
+  await acquireControl(page);
   await expect(page.getByTestId("badminton-court")).toBeVisible();
   return readBrowserControl(page, matchCode);
 }

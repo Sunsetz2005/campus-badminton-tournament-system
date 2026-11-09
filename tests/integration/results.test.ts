@@ -150,7 +150,7 @@ async function liveWalkover(matchId: string, winnerSide: "A" | "B") {
     create: { matchId, userId: refereeId },
     update: {},
   });
-  const control = await acquireScoringSession(refereeId, match.code, randomUUID());
+  const control = await acquireScoringSession(refereeId, match.code, randomUUID(), "演示裁判");
   let version = (await accepted(
     submitScoringCommand(refereeId, match.code, command(control, (await prisma.match.findUniqueOrThrow({ where: { id: matchId } })).version, "RECORD_SPECIAL_OUTCOME", { type: "WO", winnerSide, reason: "对方未到" }), control.controlToken),
   )).version;
@@ -217,7 +217,7 @@ describe("仅结果记录", () => {
       prisma.matchEvent.create({ data: { matchId: match.id, version: 1, type: "COIN_TOSS", payload: {} } }),
     ).rejects.toThrow();
     await prisma.officialAssignment.create({ data: { matchId: match.id, userId: refereeId } });
-    await expect(acquireScoringSession(refereeId, matchCode, randomUUID())).rejects.toMatchObject({ code: "result_only_match" });
+    await expect(acquireScoringSession(refereeId, matchCode, randomUUID(), "演示裁判")).rejects.toMatchObject({ code: "result_only_match" });
 
     await expect(reviewResultOnly(adminId, slug, matchCode, { action: "CONFIRM", expectedRevision: 1, reason: "自己复核" }))
       .rejects.toMatchObject({ code: "independent_review_required" });
@@ -401,7 +401,7 @@ describe("晋级、重复确认与结果更正", () => {
 
     // 裁判长释放控制，主裁判重新提交，裁判长再次复核锁定。
     await releaseScoringSession(adminId, live.code, live.chief.sessionId, live.chief.takeoverGeneration, live.chief.controlToken);
-    const control = await acquireScoringSession(refereeId, live.code, randomUUID());
+    const control = await acquireScoringSession(refereeId, live.code, randomUUID(), "演示裁判");
     let version = (await accepted(submitScoringCommand(refereeId, live.code, command(control, reopened.version, "SUBMIT_RESULT", { reason: "重新提交" }), control.controlToken))).version;
     const chief = await takeoverScoringSession(adminId, live.code, randomUUID(), "复核");
     version = (await accepted(submitScoringCommand(adminId, live.code, command(chief, version, "CONFIRM_RESULT", { reason: "复核通过" }), chief.controlToken))).version;

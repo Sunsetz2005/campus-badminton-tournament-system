@@ -10,6 +10,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 import { prisma } from "../../src/db/client";
 import type { MatchState } from "../../src/domain/rules/match-engine";
 import { clearedCoinTossDraw, presetCoinTossWinner } from "../support/coin-toss";
+import { acquireControl } from "../support/officiating-control";
 
 type ScoringControl = { controlToken: string; sessionId: string; takeoverGeneration: number };
 
@@ -72,7 +73,7 @@ async function sendCommand(
 async function openWithControl(page: Page, matchCode: string) {
   await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
   await page.goto(`/officiating/${matchCode}`);
-  await page.getByRole("button", { name: "取得本机控制权" }).click();
+  await acquireControl(page);
 }
 
 test.describe.serial("RV3-002 / RV3-004 裁判页边界交互", () => {

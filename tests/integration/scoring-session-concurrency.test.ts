@@ -89,7 +89,7 @@ describe("控制会话的并发获取与接管", () => {
     const devices = new Map(acquireTargets.map((match) => [match.code, randomUUID()]));
 
     const firstWave = await Promise.allSettled([
-      ...acquireTargets.map((match) => acquireScoringSession(refereeId, match.code, devices.get(match.code)!)),
+      ...acquireTargets.map((match) => acquireScoringSession(refereeId, match.code, devices.get(match.code)!, "演示裁判")),
       ...takeoverTargets.map((match) => takeoverScoringSession(adminId, match.code, randomUUID(), "并发接管测试")),
     ]);
     expect(leaked(firstWave)).toEqual([]);
@@ -98,8 +98,8 @@ describe("控制会话的并发获取与接管", () => {
     const granted = firstWave.map((result) => (result as PromiseFulfilledResult<Awaited<ReturnType<typeof acquireScoringSession>>>).value);
     // 第二波：同一设备重复获取（续用）、另一设备抢占（controller_exists）、已取得控制的设备心跳，全部同时进行。
     const secondWave = await Promise.allSettled([
-      ...acquireTargets.map((match) => acquireScoringSession(refereeId, match.code, devices.get(match.code)!)),
-      ...acquireTargets.map((match) => acquireScoringSession(refereeId, match.code, randomUUID())),
+      ...acquireTargets.map((match) => acquireScoringSession(refereeId, match.code, devices.get(match.code)!, "演示裁判")),
+      ...acquireTargets.map((match) => acquireScoringSession(refereeId, match.code, randomUUID(), "演示裁判")),
       ...acquireTargets.map((match, index) =>
         heartbeatScoringSession(refereeId, match.code, granted[index].sessionId, granted[index].takeoverGeneration, granted[index].controlToken),
       ),

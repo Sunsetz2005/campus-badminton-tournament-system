@@ -119,6 +119,11 @@ export function ScheduleRows({
                   </span>
                 ) : null}
                 {mode === "published" && row.delay?.cause && row.status === "NOT_STARTED" ? <span className={local.meta}>原因：{row.delay.cause}</span> : null}
+                {mode === "published" && row.officiating ? (
+                  <span className={local.meta} data-testid={`officiating-record-${row.code}`}>
+                    执裁记录：排班 {row.officiating.scheduled} · 实际 {row.officiating.actual}
+                  </span>
+                ) : null}
               </div>
               <div className={local.badges}>
                 {mode === "published" || row.status !== "NOT_STARTED" ? <StatusBadge tone={status.tone}>{status.label}</StatusBadge> : null}

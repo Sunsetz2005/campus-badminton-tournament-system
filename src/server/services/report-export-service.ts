@@ -16,6 +16,7 @@ import { requireManagedTournament } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
 import { inspectPdf, renderPdf } from "@/server/services/pdf-renderer";
 import { captureReportSnapshot, hashReportSnapshot } from "@/server/services/report-snapshot-service";
+import { actualText, loadOfficiatingRecords, scheduledText } from "@/server/services/officiating-record";
 
 type Tx = Prisma.TransactionClient;
 
@@ -109,6 +110,12 @@ const registrationSelect = {
 
 type RegistrationRow = Prisma.RegistrationGetPayload<{ select: typeof registrationSelect }>;
 
+const LIFECYCLE_LABEL: Record<string, string> = {
+  IN_PROGRESS: "进行中",
+  SUSPENDED: "暂停中",
+  ENDED_PENDING_SUBMISSION: "结束待提交",
+  SUBMITTED: "已提交",
+};
 const STATUS_LABEL = { PENDING: "待审核", APPROVED: "已通过", REJECTED: "已驳回", WITHDRAWN: "已撤回" } as const;
 const SOURCE_LABEL = { MANUAL: "后台录入", IMPORT: "CSV 导入", INVITE: "邀请链接", TEAM_MANAGER: "队伍负责人" } as const;
 
@@ -132,7 +139,33 @@ async function loadInternalRegistrations(tx: Tx, tournamentId: string) {
       },
     },
   });
-  return { registrations, entries };
+  // 方案 B2：执裁记录只进内部文件（含裁判姓名，不进对外成绩册）。
+  const [tournament, matches] = await Promise.all([
+    tx.tournament.findUniqueOrThrow({ where: { id: tournamentId }, select: { refereeMode: true } }),
+    tx.match.findMany({
+      where: { stage: { competition: { tournamentId } }, lifecycleStatus: { notIn: ["SCHEDULED", "READY"] } },
+      orderBy: [{ scheduledAt: "asc" }, { code: "asc" }],
+      select: {
+        id: true,
+        code: true,
+        lifecycleStatus: true,
+        court: { select: { name: true } },
+        stage: { select: { competition: { select: { name: true } } } },
+        sideAEntry: { select: { displayName: true } },
+        sideBEntry: { select: { displayName: true } },
+      },
+    }),
+  ]);
+  const records = await loadOfficiatingRecords(tx, matches.map((match) => match.id));
+  const officiating = matches.map((match) => ({
+    code: match.code,
+    competition: match.stage.competition.name,
+    sides: `${match.sideAEntry?.displayName ?? "待定"} vs ${match.sideBEntry?.displayName ?? "待定"}`,
+    court: match.court?.name ?? "",
+    lifecycleStatus: match.lifecycleStatus,
+    record: records.get(match.id) ?? null,
+  }));
+  return { registrations, entries, refereeMode: tournament.refereeMode, officiating };
 }
 
 function renderInternalRegistrations(
@@ -178,6 +211,15 @@ function renderInternalRegistrations(
       member.participant.teamName ?? "",
     ]),
   );
+  const officiatingRows = captured.extra.officiating.map((item) => [
+    item.code,
+    item.competition,
+    item.sides,
+    item.court,
+    LIFECYCLE_LABEL[item.lifecycleStatus] ?? item.lifecycleStatus,
+    scheduledText(item.record ?? undefined, captured.extra.refereeMode),
+    actualText(item.record ?? undefined, timeZone) ?? "尚无人取得控制",
+  ]);
   const name = captured.snapshot.tournament.name;
   const sheets: XlsxSheet[] = [
     {
@@ -224,6 +266,25 @@ function renderInternalRegistrations(
       ],
       rows: entryRows.length ? entryRows : [["没有。"]],
       notes: ["由模拟种子等途径直接建立、没有报名申请记录的报名单位。"],
+    },
+    {
+      name: "执裁记录",
+      title: `${name} · 执裁记录（内部）`,
+      subtitle,
+      columns: [
+        { header: "比赛编号", width: 14 },
+        { header: "项目", width: 14 },
+        { header: "对阵", width: 30 },
+        { header: "场地", width: 10 },
+        { header: "状态", width: 10 },
+        { header: "排班裁判", width: 18 },
+        { header: "实际执裁（按时间）", width: 40 },
+      ],
+      rows: officiatingRows.length ? officiatingRows : [["还没有开始的比赛。"]],
+      notes: [
+        "排班 = 当前有效的主裁判指派；实际执裁 = 每次取得控制与换人交接，共用裁判账号显示登记的本人姓名。",
+        `时间为赛事时区 ${timeZone}。裁判姓名不进入对外成绩册与公开页。`,
+      ],
     },
   ];
   return buildXlsx({ title: `${name} 内部报名名单`, createdAt: captured.capturedAt, sheets });

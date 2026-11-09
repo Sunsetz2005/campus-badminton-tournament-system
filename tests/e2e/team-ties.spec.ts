@@ -6,6 +6,7 @@ import { expect, test, type APIRequestContext, type Browser, type Page } from "@
 
 import { prisma } from "../../src/db/client";
 import { assertTestDatabaseUrl } from "../../src/db/database-safety";
+import { E2E_OFFICIATING_NAME } from "../support/officiating-control";
 
 /**
  * 阶段 4-D：团体赛报项、出场名单盲交、对抗胜负、积分榜与名次确认，在浏览器里走完整链路。
@@ -118,7 +119,7 @@ function setup(state: PlayState, servingSide: "A" | "B") {
  * 不用弃权收尾：小场弃权会让负方队员本场对抗的后续小场按认输计（赛务口径 W-3，GCR 13.6.2）。
  */
 async function finishRubber(referee: APIRequestContext, chief: APIRequestContext, matchCode: string, winnerSide: "A" | "B") {
-  const control = await ok<ControlGrant>(await referee.post(`/api/matches/${matchCode}/control`, { data: { deviceSessionId: randomUUID() } }));
+  const control = await ok<ControlGrant>(await referee.post(`/api/matches/${matchCode}/control`, { data: { deviceSessionId: randomUUID(), officiatingName: E2E_OFFICIATING_NAME } }));
   const send = async (request: APIRequestContext, session: ControlGrant, version: number, type: string, payload: unknown) =>
     ok<{ version: number; state: PlayState }>(
       await request.post(`/api/matches/${matchCode}/commands`, {

@@ -5,6 +5,7 @@ import { prisma } from "@/db/client";
 import { runTransaction } from "@/server/services/transaction";
 import { requireAssignedReferee, requireChiefReferee } from "@/server/auth/authorization";
 import { logServerEvent } from "@/server/logging";
+import { officiatingNameRequired } from "@/server/services/officiating-record";
 import { AppError } from "@/server/services/errors";
 
 export const SESSION_LIFETIME_MS = 2 * 60 * 1000;
@@ -76,7 +77,8 @@ function sessionResponse(session: { id: string; takeoverGeneration: number; expi
 }
 
 /**
- * 共用裁判账号模式（赛务口径 O-2）：取得控制前必须填写本人姓名，姓名记在控制会话与审计里。
+ * 共用裁判账号模式，或实际操作的是平台共用裁判账号（赛务口径 O-2 及方案 B2 扩展）：
+ * 取得控制前必须填写本人姓名，姓名记在控制会话与审计里。
  * 同一设备续用时换了姓名视为换人交接，更新会话上的姓名并单独记一条审计。
  */
 function normalizeOfficiatingName(value: string | null | undefined) {
@@ -92,9 +94,14 @@ export async function acquireScoringSession(userId: string, matchCode: string, d
     if (error instanceof AppError && error.status === 403) await recordDeniedAcquire(userId, matchCode, error);
     throw error;
   }
-  const tournament = await prisma.tournament.findUniqueOrThrow({ where: { id: match.tournamentId }, select: { refereeMode: true } });
-  const officiatingName = tournament.refereeMode === "SHARED_ACCOUNT" ? normalizeOfficiatingName(rawOfficiatingName) : null;
-  if (tournament.refereeMode === "SHARED_ACCOUNT" && !officiatingName) {
+  const [tournament, actor] = await Promise.all([
+    prisma.tournament.findUniqueOrThrow({ where: { id: match.tournamentId }, select: { refereeMode: true } }),
+    prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { platformReferee: true } }),
+  ]);
+  // O-2 扩展（方案 B2）：逐场指派模式下手工指派给共用账号的比赛，同样要登记实际执裁人。
+  const nameRequired = officiatingNameRequired(tournament.refereeMode, actor.platformReferee);
+  const officiatingName = nameRequired ? normalizeOfficiatingName(rawOfficiatingName) : null;
+  if (nameRequired && !officiatingName) {
     throw new AppError(400, "officiating_name_required", "共用裁判账号请先填写本人姓名，再取得控制开始执裁。");
   }
   const now = new Date();

@@ -1,5 +1,6 @@
 import type { Prisma, RefereeMode, TournamentPhase } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
+import { loadOfficiatingRecords, officiatingSummary } from "@/server/services/officiating-record";
 import { AppError } from "@/server/services/errors";
 import type { MatchScheduleStatus } from "@/domain/schedule/model";
 import { loadPublishedDelays, matchStatusOf } from "@/server/services/schedule-facts";
@@ -141,6 +142,8 @@ export interface OfficiatingReviewMatch {
   sideA: string;
   sideB: string;
   courtName: string | null;
+  /** 方案 B2：「排班：×× · 实际执裁：××」，裁判长复核时核对执裁人。 */
+  officiatingRecord: string;
 }
 
 export async function loadOfficiatingTournament(userId: string, slug: string, now = new Date()) {
@@ -176,10 +179,11 @@ export async function loadOfficiatingTournament(userId: string, slug: string, no
     };
   });
 
-  const reviewMatches: OfficiatingReviewMatch[] = role.chief
-    ? (await prisma.match.findMany({
+  const reviewRows = role.chief
+    ? await prisma.match.findMany({
         where: { stage: { competition: { tournamentId: tournament.id } }, lifecycleStatus: "SUBMITTED" },
         select: {
+          id: true,
           code: true,
           verificationStatus: true,
           sideAEntry: { select: { displayName: true } },
@@ -187,14 +191,17 @@ export async function loadOfficiatingTournament(userId: string, slug: string, no
           court: { select: { name: true } },
         },
         orderBy: { updatedAt: "desc" },
-      })).map((match) => ({
-        code: match.code,
-        verificationStatus: match.verificationStatus,
-        sideA: match.sideAEntry?.displayName ?? "待定",
-        sideB: match.sideBEntry?.displayName ?? "待定",
-        courtName: match.court?.name ?? null,
-      }))
+      })
     : [];
+  const records = await loadOfficiatingRecords(prisma, reviewRows.map((match) => match.id));
+  const reviewMatches: OfficiatingReviewMatch[] = reviewRows.map((match) => ({
+    code: match.code,
+    verificationStatus: match.verificationStatus,
+    sideA: match.sideAEntry?.displayName ?? "待定",
+    sideB: match.sideBEntry?.displayName ?? "待定",
+    courtName: match.court?.name ?? null,
+    officiatingRecord: officiatingSummary(records.get(match.id), tournament.refereeMode, tournament.timezone),
+  }));
 
   return { tournament, role, matches, reviewMatches };
 }

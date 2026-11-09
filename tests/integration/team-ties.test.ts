@@ -190,7 +190,7 @@ async function finishRubber(matchId: string, winnerSide: "A" | "B") {
     create: { matchId, userId: refereeId },
     update: {},
   });
-  const control = await acquireScoringSession(refereeId, match.code, randomUUID());
+  const control = await acquireScoringSession(refereeId, match.code, randomUUID(), "演示裁判");
   const send = async (version: number, type: MatchCommand["type"], payload: MatchCommand["payload"]) =>
     (await accepted(submitScoringCommand(refereeId, match.code, command(control, version, type, payload), control.controlToken))) as Accepted;
   let result = await send(0, "RECORD_COIN_TOSS", {
@@ -225,7 +225,7 @@ async function walkoverRubber(matchId: string, winnerSide: "A" | "B") {
     create: { matchId, userId: refereeId },
     update: {},
   });
-  const control = await acquireScoringSession(refereeId, match.code, randomUUID());
+  const control = await acquireScoringSession(refereeId, match.code, randomUUID(), "演示裁判");
   let result = await accepted(
     submitScoringCommand(refereeId, match.code, command(control, 0, "RECORD_SPECIAL_OUTCOME", { type: "WO", winnerSide, reason: "对方未到" }), control.controlToken),
   );
@@ -390,7 +390,7 @@ describe("出场名单盲交", () => {
     await expect(prisma.auditLog.count({ where: { tournamentId, action: "LINEUP_AMENDED" } })).resolves.toBe(1);
 
     // 小场开始后名单不能再改（服务与数据库两层）。
-    const control = await acquireScoringSession(refereeId, rubber.code, randomUUID());
+    const control = await acquireScoringSession(refereeId, rubber.code, randomUUID(), "演示裁判");
     await accepted(
       submitScoringCommand(refereeId, rubber.code, command(control, 0, "RECORD_COIN_TOSS", { valid: false, reason: "硬币落地不清" }), control.controlToken),
     );
@@ -523,7 +523,7 @@ describe("对抗胜负与晋级回填", () => {
 
     // 重新提交并复核锁定后再次回填。
     await releaseScoringSession(adminId, decisive.code, decisive.chief.sessionId, decisive.chief.takeoverGeneration, decisive.chief.controlToken);
-    const control = await acquireScoringSession(refereeId, decisive.code, randomUUID());
+    const control = await acquireScoringSession(refereeId, decisive.code, randomUUID(), "演示裁判");
     const state = await getAuthoritativeMatchState(refereeId, decisive.code);
     let result = await accepted(submitScoringCommand(refereeId, decisive.code, command(control, state.version, "SUBMIT_RESULT", { reason: "核对后重新提交" }), control.controlToken));
     const chief = await takeoverScoringSession(adminId, decisive.code, randomUUID(), "复核");
@@ -545,7 +545,7 @@ describe("对抗胜负与晋级回填", () => {
     expect(bronze.sideBEntryId).toBe(other.sideBEntryId);
     await adminLineups(slug, final.id);
     await prisma.officialAssignment.create({ data: { matchId: final.matches[0].id, userId: refereeId } });
-    const finalControl = await acquireScoringSession(refereeId, final.matches[0].code, randomUUID());
+    const finalControl = await acquireScoringSession(refereeId, final.matches[0].code, randomUUID(), "演示裁判");
     await accepted(
       submitScoringCommand(refereeId, final.matches[0].code, command(finalControl, 0, "RECORD_COIN_TOSS", { valid: false, reason: "重抛" }), finalControl.controlToken),
     );
@@ -697,7 +697,7 @@ describe("S-4 团体小场的「在场上」只看出场名单", () => {
         create: { matchId: match.id, userId: refereeId },
         update: {},
       });
-      const control = await acquireScoringSession(refereeId, match.code, randomUUID());
+      const control = await acquireScoringSession(refereeId, match.code, randomUUID(), "演示裁判");
       const toss = (await accepted(
         submitScoringCommand(refereeId, match.code, command(control, 0, "RECORD_COIN_TOSS", {
           valid: true,

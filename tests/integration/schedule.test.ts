@@ -42,6 +42,11 @@ import { createTournament, publishTournament, transitionTournamentPhase } from "
 
 const RUN = randomBytes(3).toString("hex");
 const TZ = "Asia/Shanghai";
+/**
+ * 比赛日取运行时刻之后 30 天：自动建议默认只排「现在之后」的时段，写死的日期一过就会让建议排不下任何比赛。
+ */
+const DAY1 = utcToZonedLocal(new Date(Date.now() + 30 * 86_400_000), TZ).slice(0, 10);
+const DAY2 = utcToZonedLocal(new Date(Date.parse(`${DAY1}T12:00:00Z`) + 86_400_000), TZ).slice(0, 10);
 const createdSlugs: string[] = [];
 const createdEmails: string[] = [];
 let adminId = "";
@@ -83,8 +88,8 @@ async function teamTournament(name: string, teamCount: number, settings: Record<
   await createTournament(adminId, {
     slug,
     name: `赛程测试 ${name}`,
-    startDate: "2026-11-02",
-    endDate: "2026-11-03",
+    startDate: DAY1,
+    endDate: DAY2,
     timezone: TZ,
     namePolicy: "DISPLAY_NAMES",
     rulePreset: "traditional-21",
@@ -188,8 +193,8 @@ describe("从对阵表到赛程：建议、检查、发布、执裁衔接", () =
     await addCourts(adminId, ctx.slug, { count: 3 });
     await replaceScheduleDays(adminId, ctx.slug, {
       days: [
-        { date: "2026-11-02", start: "09:00", end: "18:00" },
-        { date: "2026-11-03", start: "09:00", end: "18:00" },
+        { date: DAY1, start: "09:00", end: "18:00" },
+        { date: DAY2, start: "09:00", end: "18:00" },
       ],
     });
   });
@@ -326,7 +331,7 @@ describe("从对阵表到赛程：建议、检查、发布、执裁衔接", () =
     await expect(
       saveDraftSlot(adminId, ctx.slug, rubber.code, { courtCode: null, start: null, durationMinutes: 25, refereeUserId: null }),
     ).rejects.toMatchObject({ code: "match_started" });
-    await expect(prisma.match.update({ where: { id: rubber.id }, data: { scheduledAt: new Date("2026-11-05T01:00:00Z") } })).rejects.toThrow();
+    await expect(prisma.match.update({ where: { id: rubber.id }, data: { scheduledAt: new Date(Date.parse(`${DAY1}T01:00:00Z`) + 3 * 86_400_000) } })).rejects.toThrow();
     await suggestDraft(adminId, ctx.slug, { stage: "ALL" });
     const facts = await loadScheduleFacts(prisma, ctx.tournamentId);
     expect(facts.draft.get(rubber.id)!.start).toBe(rubber.scheduledAt!.getTime());
@@ -511,8 +516,8 @@ describe("个人项目：同一人同时报单打和双打", () => {
     await createTournament(adminId, {
       slug,
       name: "赛程测试 个人项目",
-      startDate: "2026-11-02",
-      endDate: "2026-11-03",
+      startDate: DAY1,
+      endDate: DAY2,
       timezone: TZ,
       namePolicy: "CODES_ONLY",
       rulePreset: "traditional-21",
@@ -547,12 +552,12 @@ describe("个人项目：同一人同时报单打和双打", () => {
     await addCourts(adminId, slug, { count: 2 });
     const ms = await prisma.match.findFirstOrThrow({ where: { stage: { competitionId: competitions.MS } } });
     const md = await prisma.match.findFirstOrThrow({ where: { stage: { competitionId: competitions.MD } } });
-    await saveDraftSlot(adminId, slug, ms.code, { courtCode: "C1", start: "2026-11-02T09:00", durationMinutes: 30, refereeUserId: null });
-    const response = await saveDraftSlot(adminId, slug, md.code, { courtCode: "C2", start: "2026-11-02T09:20", durationMinutes: 30, refereeUserId: null });
+    await saveDraftSlot(adminId, slug, ms.code, { courtCode: "C1", start: `${DAY1}T09:00`, durationMinutes: 30, refereeUserId: null });
+    const response = await saveDraftSlot(adminId, slug, md.code, { courtCode: "C2", start: `${DAY1}T09:20`, durationMinutes: 30, refereeUserId: null });
     const overlap = response.focusIssues.find((issue) => issue.code === "PERSON_OVERLAP");
     expect(overlap?.severity).toBe("HARD");
     expect(overlap?.message).toContain("兼项甲");
-    const moved = await saveDraftSlot(adminId, slug, md.code, { courtCode: "C2", start: "2026-11-02T09:30", durationMinutes: 30, refereeUserId: null });
+    const moved = await saveDraftSlot(adminId, slug, md.code, { courtCode: "C2", start: `${DAY1}T09:30`, durationMinutes: 30, refereeUserId: null });
     expect(moved.focusIssues.filter((issue) => issue.severity === "HARD")).toEqual([]);
   });
 });
@@ -570,8 +575,8 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
     await createTournament(adminId, {
       slug,
       name: `一键排程 ${name}`,
-      startDate: "2026-11-02",
-      endDate: "2026-11-02",
+      startDate: DAY1,
+      endDate: DAY1,
       timezone: TZ,
       namePolicy: "DISPLAY_NAMES",
       rulePreset: "traditional-21",
@@ -604,19 +609,19 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
     await expect(prisma.scheduleSlot.count({ where: { tournamentId, startsAt: { not: null } } })).resolves.toBe(0);
 
     // 默认每场 30 分钟、换场 5 分钟：5 轮需要 09:00 到 11:50。
-    await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "10:00" }] });
+    await replaceScheduleDays(adminId, slug, { days: [{ date: DAY1, start: "09:00", end: "10:00" }] });
     const short = await suggestDraft(adminId, slug, {});
     expect(short.scope).toBe(15);
     expect(short.placed).toBeLessThan(15);
-    expect(short.shortfall).toEqual({ date: "2026-11-02", currentEnd: "10:00", requiredEnd: "11:50" });
+    expect(short.shortfall).toEqual({ date: DAY1, currentEnd: "10:00", requiredEnd: "11:50" });
 
-    await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "11:50" }] });
+    await replaceScheduleDays(adminId, slug, { days: [{ date: DAY1, start: "09:00", end: "11:50" }] });
     const full = await suggestDraft(adminId, slug, {});
     expect(full).toMatchObject({ scope: 15, placed: 15, shortfall: null, unplaced: [], hardCount: 0 });
     const slots = await prisma.scheduleSlot.findMany({ where: { tournamentId }, select: { startsAt: true, courtId: true } });
     expect(slots.every((slot) => slot.startsAt && slot.courtId)).toBe(true);
     expect(new Set(slots.map((slot) => local(slot.startsAt as Date)))).toEqual(
-      new Set(["2026-11-02T09:00", "2026-11-02T09:35", "2026-11-02T10:10", "2026-11-02T10:45", "2026-11-02T11:20"]),
+      new Set([`${DAY1}T09:00`, `${DAY1}T09:35`, `${DAY1}T10:10`, `${DAY1}T10:45`, `${DAY1}T11:20`]),
     );
 
     // 已有安排时，抽签后的自动排程不覆盖。
@@ -626,17 +631,17 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
   it("放宽到当天 24:00 也排不下时提示增加比赛日", async () => {
     const { slug } = await singlesRoundRobin("more-days", async (slug) => {
       await addCourts(adminId, slug, { count: 1 });
-      await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "18:00", end: "19:00" }] });
+      await replaceScheduleDays(adminId, slug, { days: [{ date: DAY1, start: "18:00", end: "19:00" }] });
     });
     const result = await suggestDraft(adminId, slug, {});
-    expect(result.shortfall).toEqual({ date: "2026-11-02", currentEnd: "19:00", requiredEnd: null });
+    expect(result.shortfall).toEqual({ date: DAY1, currentEnd: "19:00", requiredEnd: null });
   });
 
   it("逐场指派的自动建议不把平台共用裁判账号当作具名裁判（赛务口径 O-3）", async () => {
     const { slug, tournamentId } = await singlesRoundRobin("platform-load", async (slug) => {
       await updateRefereeMode(adminId, slug, { refereeMode: "PER_MATCH" });
       await addCourts(adminId, slug, { count: 2 });
-      await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "18:00" }] });
+      await replaceScheduleDays(adminId, slug, { days: [{ date: DAY1, start: "09:00", end: "18:00" }] });
     }, 4);
     // 只有平台共用账号：明确说明没有可分配的具名裁判。
     const onlyShared = await suggestDraft(adminId, slug, { assignReferees: true });
@@ -660,7 +665,7 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
   it("已设好场地与比赛日时，抽签发布后直接生成全部比赛的草稿安排", async () => {
     const { slug, tournamentId } = await singlesRoundRobin("auto", async (slug) => {
       await addCourts(adminId, slug, { count: 3 });
-      await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "18:00" }] });
+      await replaceScheduleDays(adminId, slug, { days: [{ date: DAY1, start: "09:00", end: "18:00" }] });
     });
     const result = await autoScheduleAfterDraw(adminId, slug, "MS");
     expect(result).toMatchObject({ status: "GENERATED", scope: 15, placed: 15, shortfall: null });
@@ -703,7 +708,7 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
       "ko-only",
       async (slug) => {
         await addCourts(adminId, slug, { count: 4 });
-        await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "18:00" }] });
+        await replaceScheduleDays(adminId, slug, { days: [{ date: DAY1, start: "09:00", end: "18:00" }] });
       },
       8,
       { format: "KNOCKOUT" },
@@ -721,7 +726,7 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
       "ko-parallel",
       async (slug) => {
         await addCourts(adminId, slug, { count: 8 });
-        await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "18:00" }] });
+        await replaceScheduleDays(adminId, slug, { days: [{ date: DAY1, start: "09:00", end: "18:00" }] });
       },
       10,
       { format: "GROUPS_KNOCKOUT", groupCount: 2, qualifiersPerGroup: 2, thirdPlaceMatch: true },
@@ -753,7 +758,7 @@ describe("一键排程：抽签后自动排出场地与时间", () => {
   it("共用裁判账号：不逐场指派也能执裁任意一场；同一场只能由一台设备控制；切回逐场指派或停用后失去权限", async () => {
     const { slug, tournamentId } = await singlesRoundRobin("shared-ref", async (slug) => {
       await addCourts(adminId, slug, { count: 3 });
-      await replaceScheduleDays(adminId, slug, { days: [{ date: "2026-11-02", start: "09:00", end: "18:00" }] });
+      await replaceScheduleDays(adminId, slug, { days: [{ date: DAY1, start: "09:00", end: "18:00" }] });
     });
     const username = `Ref_${RUN}`;
     const created = await createRefereeAccount(adminId, slug, { username, name: "现场裁判" });

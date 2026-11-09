@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-import { Prisma } from "@/generated/prisma/client";
+import { Prisma, type RefereeMode } from "@/generated/prisma/client";
 import { prisma } from "@/db/client";
 import { runTransaction } from "@/server/services/transaction";
 import { normalizeReason } from "@/domain/registration/registration-rules";
@@ -14,6 +14,7 @@ import { suggestSchedule, UNPLACED_TEXT, type UnplacedReason } from "@/domain/sc
 import { isCalendarDate, isValidTimeZone, utcToZonedLocal, zonedLocalToUtc } from "@/domain/time/zoned-time";
 import { requireManagedTournament, TOURNAMENT_MANAGER_ROLES } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
+import { actualText, loadOfficiatingRecords, scheduledText, type OfficiatingRecord } from "@/server/services/officiating-record";
 import { lockTournamentRow } from "@/server/services/registration-service";
 import {
   dayWindow,
@@ -1053,6 +1054,13 @@ export interface ScheduleRowView {
   published: SlotView;
   issueCodes: { code: string; severity: "HARD" | "WARNING" }[];
   delay: { minutes: number; projectedStart: string; cause: string | null; overrun: boolean } | null;
+  /** 执裁记录（方案 B2）：有人取得过控制后才有。 */
+  officiating: { scheduled: string; actual: string } | null;
+}
+
+function officiatingView(record: OfficiatingRecord | undefined, refereeMode: RefereeMode, timeZone: string) {
+  const actual = actualText(record, timeZone);
+  return actual ? { scheduled: scheduledText(record, refereeMode), actual } : null;
 }
 
 export interface ScheduleWorkspaceFilters {
@@ -1112,6 +1120,11 @@ export async function loadScheduleWorkspace(tournamentId: string, now: Date, fil
   }
   const tentative = new Set(draftCheck.tentativeMatchIds);
   const changed = new Set(draftChanges(facts));
+  // 方案 B2：已开打的比赛并列「排班 · 实际执裁」，只给后台与裁判长看板。
+  const officiating = await loadOfficiatingRecords(
+    prisma,
+    facts.rows.filter((row) => row.lifecycleStatus !== "SCHEDULED" && row.lifecycleStatus !== "READY").map((row) => row.id),
+  );
 
   const rows: ScheduleRowView[] = facts.rows.map((row) => {
     const fact = facts.factById.get(row.id)!;
@@ -1138,6 +1151,7 @@ export async function loadScheduleWorkspace(tournamentId: string, now: Date, fil
       draft: slotView(facts.draft.get(row.id)!, facts, courtIndex, refereeIndex),
       published: slotView(facts.published.get(row.id)!, facts, courtIndex, refereeIndex),
       issueCodes: issuesByMatch.get(row.id) ?? [],
+      officiating: officiatingView(officiating.get(row.id), facts.refereeMode, facts.timeZone),
       delay:
         delay && (delay.delayed || delay.overrun)
           ? { minutes: delay.delayMinutes, projectedStart: new Date(delay.projectedStart).toISOString(), cause: delayCauseText(delay), overrun: delay.overrun }

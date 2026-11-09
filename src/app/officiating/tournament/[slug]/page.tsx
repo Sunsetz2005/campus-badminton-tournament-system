@@ -210,6 +210,7 @@ export default async function OfficiatingTournamentPage({
                     <strong>{match.sideB}</strong>
                   </p>
                   <p className="assignment-meta"><span>{match.courtName ?? "场地待定"}</span></p>
+                  <p className="assignment-meta" data-testid={`review-officiating-${match.code}`}><span>{match.officiatingRecord}</span></p>
                   <Link className="button secondary assignment-go" href={`/officiating/${match.code}`}>进入复核 / 接管</Link>
                 </article>
               ))}

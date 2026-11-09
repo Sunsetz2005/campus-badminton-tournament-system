@@ -6,6 +6,7 @@ import { expect, test, type Browser, type BrowserContextOptions, type Page } fro
 import { prisma } from "../../src/db/client";
 import { assertTestDatabaseUrl } from "../../src/db/database-safety";
 import { clearedCoinTossDraw, presetCoinTossWinner } from "../support/coin-toss";
+import { acquireControl } from "../support/officiating-control";
 
 /**
  * 阶段 8：手机、平板、桌面五个视口的响应式与跨设备可靠性验收。
@@ -324,7 +325,7 @@ test.describe.serial("阶段 8：裁判工作台五视口、长姓名与两设�
     );
     const page = controller.page;
     await page.goto(`/officiating/${SINGLES}`);
-    await page.getByRole("button", { name: "取得本机控制权" }).click();
+    await acquireControl(page);
     await recordDefaultCoinToss(page);
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     const plusA = page.getByRole("button", { name: `${LONG_NAME} 赢得一分` });
@@ -396,8 +397,7 @@ test.describe.serial("阶段 8：裁判工作台五视口、长姓名与两设�
     const page = controller.page;
     await page.goto(`/officiating/${SINGLES}`);
     // 上一条用例的控制会话随上下文关闭仍在租期内；这里由同一裁判在新设备上重新取得。
-    const acquire = page.getByRole("button", { name: "取得本机控制权" });
-    await acquire.click();
+    await acquireControl(page);
     const plusA = page.getByRole("button", { name: `${LONG_NAME} 赢得一分` });
     const coinToss = page.getByRole("button", { name: "开始抛币" }).or(page.getByTestId("coin-toss-winner"));
     await expect(plusA.or(coinToss).first()).toBeVisible();

@@ -16,6 +16,7 @@ import { COMPETITION_KIND_ENTRY_TYPE, type RegistrationCompetitionKind } from "@
 import { RUBBER_LABEL, type RubberKind } from "@/domain/registration/team-roster";
 import { validateRuleConfig } from "@/domain/rules/rule-profile";
 import { getMatchAccess } from "@/server/auth/authorization";
+import { officiatingNameRequired } from "@/server/services/officiating-record";
 import { AppError } from "@/server/services/errors";
 
 /**
@@ -225,6 +226,7 @@ export async function getAuthoritativeMatchState(userId: string, matchCode: stri
       select: { id: true, userId: true, deviceSessionId: true, actingRole: true, expiresAt: true, takeoverGeneration: true, officiatingName: true },
     });
     const tournament = await transaction.tournament.findUniqueOrThrow({ where: { id: access.tournamentId }, select: { refereeMode: true } });
+    const viewer = await transaction.user.findUniqueOrThrow({ where: { id: userId }, select: { platformReferee: true } });
     const common = {
       serverTime: new Date().toISOString(),
       version: aggregate ? aggregate.state.version : match.version,
@@ -243,8 +245,8 @@ export async function getAuthoritativeMatchState(userId: string, matchCode: stri
       access: {
         assignedReferee: access.assignedReferee,
         chiefReferee: access.chiefReferee,
-        // 共用裁判账号模式下，主裁判取得控制前须填写本人姓名（赛务口径 O-2）。
-        officiatingNameRequired: tournament.refereeMode === "SHARED_ACCOUNT",
+        // 共用裁判账号模式，或当前登录的是平台共用裁判账号：取得控制前须填写本人姓名（O-2 / 方案 B2）。
+        officiatingNameRequired: officiatingNameRequired(tournament.refereeMode, viewer.platformReferee),
       },
       // 离场待续（S-9）不改比赛版本，放在每次轮询都返回的部分。
       awaitingCourt: Boolean(match.awaitingCourtSince),

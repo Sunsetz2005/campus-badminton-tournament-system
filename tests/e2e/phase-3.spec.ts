@@ -6,6 +6,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 import { prisma } from "../../src/db/client";
 import type { MatchState } from "../../src/domain/rules/match-engine";
 import { clearedCoinTossDraw, presetCoinTossWinner } from "../support/coin-toss";
+import { acquireControl, E2E_OFFICIATING_NAME } from "../support/officiating-control";
 
 type ScoringControl = {
   controlToken: string;
@@ -126,7 +127,7 @@ function courtCell(page: Page, physicalEnd: "END_1" | "END_2", row: "TOP" | "BOT
 
 async function runFullMatch(request: APIRequestContext, matchCode: string, deviceSessionId: string) {
   let view = await (await request.get(`/api/matches/${matchCode}/state`)).json();
-  const controlResponse = await request.post(`/api/matches/${matchCode}/control`, { data: { deviceSessionId } });
+  const controlResponse = await request.post(`/api/matches/${matchCode}/control`, { data: { deviceSessionId, officiatingName: E2E_OFFICIATING_NAME } });
   expect(controlResponse.status()).toBe(201);
   const control = await controlResponse.json();
   let state = view.state as MatchState;
@@ -261,7 +262,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     const pendingKey = `badminton-pending:${matchCode}`;
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     await page.goto(`/officiating/${matchCode}`);
-    await page.getByRole("button", { name: "取得本机控制权" }).click();
+    await acquireControl(page);
     await recordCoinToss(page);
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     await expect(page.locator('[data-scoreboard-side="A"] .court-score-number')).toHaveText("0");
@@ -332,7 +333,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     const matchCode = "MS-DEMO-001";
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     await page.goto(`/officiating/${matchCode}`);
-    await page.getByRole("button", { name: "取得本机控制权" }).click();
+    await acquireControl(page);
 
     // 未开赛时入口直接露出，不藏在次要操作抽屉里。
     const entry = page.locator(".phase-actions-urgent").getByTestId("special-outcome-entry");
@@ -364,7 +365,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     const request = page.context().request;
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     await page.goto(`/officiating/${matchCode}`);
-    await page.getByRole("button", { name: "取得本机控制权" }).click();
+    await acquireControl(page);
     await recordCoinToss(page);
     await expect(page.getByRole("button", { name: "确认首局设置并开赛" })).toBeVisible();
 
@@ -442,7 +443,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     const request = page.context().request;
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     await page.goto(`/officiating/${matchCode}`);
-    await page.getByRole("button", { name: "取得本机控制权" }).click();
+    await acquireControl(page);
     await recordCoinToss(page);
     await expect(page.getByRole("button", { name: "确认首局设置并开赛" })).toBeVisible();
 
@@ -559,7 +560,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
     await page.setViewportSize({ width: 1024, height: 768 });
     await login(page, process.env.DEMO_REFEREE_EMAIL!, process.env.DEMO_REFEREE_PASSWORD!);
     await page.goto("/officiating/MS-DEMO-001");
-    await page.getByRole("button", { name: "取得本机控制权" }).click();
+    await acquireControl(page);
     await recordCoinToss(page);
     await page.getByRole("button", { name: "确认首局设置并开赛" }).click();
     await page.getByRole("button", { name: "模拟选手 01 赢得一分" }).click();
@@ -602,7 +603,7 @@ test.describe.serial("阶段 3 真实 HTTP 与裁判工作台", () => {
 
     await page.setViewportSize({ width: 1024, height: 768 });
     await page.goto("/officiating/MD-DEMO-002");
-    await page.getByRole("button", { name: "取得本机控制权" }).click();
+    await acquireControl(page);
     await recordCoinToss(page);
     await page.getByLabel("首发球员（A 方）").selectOption({ index: 1 });
     await page.getByLabel("首接球员（B 方）").selectOption({ index: 1 });

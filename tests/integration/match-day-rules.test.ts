@@ -8,9 +8,14 @@ import type { MatchCommand } from "@/domain/rules/match-engine";
 import { generateDrawDraft, publishDraw } from "@/server/services/draw-service";
 import { createManualRegistration, reviewRegistration } from "@/server/services/registration-service";
 import { submitScoringCommand, type ScoringCommandEnvelope } from "@/server/services/scoring-command-service";
-import { releaseSuspendedMatchCourt, transferSuspendedMatch } from "@/server/services/schedule-service";
+import { getAuthoritativeMatchState } from "@/server/services/match-state-service";
+import { loadOfficiatingTournament } from "@/server/services/officiating-service";
+import { loadOfficiatingRecords } from "@/server/services/officiating-record";
+import { generateReportExport } from "@/server/services/report-export-service";
+import { loadScheduleWorkspace, releaseSuspendedMatchCourt, transferSuspendedMatch } from "@/server/services/schedule-service";
 import { acquireScoringSession, takeoverScoringSession } from "@/server/services/scoring-session-service";
 import { createTournament, transitionTournamentPhase } from "@/server/services/tournament-admin-service";
+import { readXlsx, tableRows } from "../support/xlsx-reader";
 
 /**
  * 赛务口径决定（2026-10-27）的比赛日规则：见 `docs/knowledge-base/03-竞赛规则/赛务口径决定-2026-10-27.md`。
@@ -18,6 +23,7 @@ import { createTournament, transitionTournamentPhase } from "@/server/services/t
 
 const RUN = randomBytes(3).toString("hex");
 const createdSlugs: string[] = [];
+const createdEmails: string[] = [];
 let adminId = "";
 let refereeId = "";
 let commandSeq = 0;
@@ -95,7 +101,7 @@ async function startMatch(matchCode: string, deviceId = randomUUID()) {
 }
 
 async function startMatchWithControl(matchCode: string, deviceId = randomUUID()) {
-  const control = await acquireScoringSession(refereeId, matchCode, deviceId);
+  const control = await acquireScoringSession(refereeId, matchCode, deviceId, "演示裁判");
   const toss = await submitScoringCommand(
     refereeId,
     matchCode,
@@ -142,6 +148,7 @@ afterAll(async () => {
     await prisma.ruleProfileRevision.deleteMany({ where: { ruleProfile: { tournamentId: tournament.id } } });
     await prisma.tournament.delete({ where: { id: tournament.id } });
   }
+  await prisma.user.deleteMany({ where: { email: { in: createdEmails } } });
 });
 
 describe("S-4 选手正在别场比赛时不能开赛（P-08）", () => {
@@ -170,7 +177,7 @@ describe("S-8 一块场地同时只进行一场（2026-10-29 组织方决定）"
     const { control, result } = await startMatchWithControl(first.code);
     if (result.status !== "accepted") throw new Error("开局不应命中幂等分支。");
     // 场地被占：第二场连抛币都不能记录（抛币后时间与场地即冻结）。
-    const second = await acquireScoringSession(refereeId, disjoint.code, randomUUID());
+    const second = await acquireScoringSession(refereeId, disjoint.code, randomUUID(), "演示裁判");
     const tossCommand = () =>
       command(second, 0, "RECORD_COIN_TOSS", { valid: true, winnerSide: "A", winnerChoice: { kind: "SERVICE", decision: "SERVE" }, loserChoice: { kind: "END", end: "END_2" } });
     await expect(submitScoringCommand(refereeId, disjoint.code, tossCommand(), second.controlToken)).rejects.toMatchObject({
@@ -209,7 +216,7 @@ describe("S-8 占用判定与提示", () => {
     const [occupier, ...rest] = matches;
     const waiting = rest.find((match) => ![match.sideAEntryId, match.sideBEntryId].some((id) => id === occupier.sideAEntryId || id === occupier.sideBEntryId))!;
     await prisma.match.updateMany({ where: { id: { in: [occupier.id, waiting.id] } }, data: { courtId: court.id } });
-    const control = await acquireScoringSession(refereeId, waiting.code, randomUUID());
+    const control = await acquireScoringSession(refereeId, waiting.code, randomUUID(), "演示裁判");
     const toss = () =>
       submitScoringCommand(
         refereeId,
@@ -385,5 +392,75 @@ describe("S-7 开错比赛：作废本场计分", () => {
     await expect(prisma.matchEvent.count({ where: { matchId: matches[0].id } })).resolves.toBe(rally.version + 1);
     // 权威状态按全部事件重放后与作废后的状态一致。
     await expect(getAuthoritativeMatchState(adminId, matches[0].code)).resolves.toMatchObject({ state: { phase: "AWAITING_COIN_TOSS", version: rally.version + 1 } });
+  });
+});
+
+describe("方案 B2 执裁记录：排班与实际执裁人并列；用共用账号就要登记姓名", () => {
+  it("逐场指派给共用账号的比赛也要填姓名，具名账号不用；看板、复核列表与内部名单并列显示排班与实际执裁（含交接、裁判长接管）", async () => {
+    const { slug, tournamentId, matches } = await roundRobin("b2", 3);
+    await expect(prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId }, select: { refereeMode: true } })).resolves.toEqual({ refereeMode: "PER_MATCH" });
+    await expect(prisma.user.findUniqueOrThrow({ where: { id: refereeId }, select: { platformReferee: true } })).resolves.toEqual({ platformReferee: true });
+    const [shared, named] = matches;
+
+    // 共用账号（逐场指派模式下手工指派）：不填姓名不能取得控制，工作台也提示必须填写。
+    await expect(acquireScoringSession(refereeId, shared.code, randomUUID())).rejects.toMatchObject({ status: 400, code: "officiating_name_required" });
+    await expect(getAuthoritativeMatchState(refereeId, shared.code)).resolves.toMatchObject({ access: { officiatingNameRequired: true } });
+
+    // 具名裁判账号：账号即身份，不要求填写姓名。
+    const email = `b2-${RUN}@example.test`;
+    createdEmails.push(email);
+    const namedId = (await prisma.user.create({ data: { email, name: `具名裁判${RUN}` } })).id;
+    await prisma.roleAssignment.create({ data: { userId: namedId, tournamentId, role: "REFEREE" } });
+    await prisma.officialAssignment.updateMany({ where: { matchId: named.id }, data: { active: false } });
+    await prisma.officialAssignment.create({ data: { matchId: named.id, userId: namedId } });
+    await expect(getAuthoritativeMatchState(namedId, named.code)).resolves.toMatchObject({ access: { officiatingNameRequired: false } });
+    const namedControl = await acquireScoringSession(namedId, named.code, randomUUID());
+    await expect(prisma.scoringSession.findUniqueOrThrow({ where: { id: namedControl.sessionId } })).resolves.toMatchObject({ officiatingName: null });
+
+    // 共用账号：张三取得控制并开局，同一设备换成李四（交接），之后裁判长接管。
+    const device = randomUUID();
+    const { control } = await startMatchWithControl(shared.code, device);
+    await expect(prisma.scoringSession.findUniqueOrThrow({ where: { id: control.sessionId } })).resolves.toMatchObject({ officiatingName: "演示裁判" });
+    await acquireScoringSession(refereeId, shared.code, device, "李四");
+    await acquireScoringSession(refereeId, shared.code, device, "李四");
+    await takeoverScoringSession(adminId, shared.code, randomUUID(), "设备失联");
+
+    const records = await loadOfficiatingRecords(prisma, [shared.id, named.id, matches[2].id]);
+    const admin = await prisma.user.findUniqueOrThrow({ where: { id: adminId }, select: { name: true } });
+    expect(records.get(shared.id)).toMatchObject({
+      scheduled: { name: "共用账号", shared: true },
+      actual: [
+        { name: "演示裁判", kind: "ACQUIRED" },
+        { name: "李四", kind: "HANDOVER" },
+        { name: `${admin.name}（裁判长接管）`, kind: "TAKEOVER" },
+      ],
+    });
+    expect(records.get(named.id)).toMatchObject({ scheduled: { name: `具名裁判${RUN}`, shared: false }, actual: [{ name: `具名裁判${RUN}` }] });
+    // 没人取得过控制的比赛只有排班。
+    expect(records.get(matches[2].id)).toMatchObject({ scheduled: { name: "共用账号" }, actual: [] });
+
+    // 后台 / 裁判长看板：已开打的比赛一行并列显示。
+    const workspace = await loadScheduleWorkspace(tournamentId, new Date());
+    const row = workspace.publishedRows.find((item) => item.code === shared.code)!;
+    expect(row.officiating?.scheduled).toBe("共用账号");
+    expect(row.officiating?.actual).toMatch(/^演示裁判 \d\d:\d\d → 李四 \d\d:\d\d（交接） → .+（裁判长接管） \d\d:\d\d$/);
+    expect(workspace.publishedRows.find((item) => item.code === matches[2].code)?.officiating).toBeNull();
+
+    // 复核列表：提交后的比赛带执裁记录。
+    await prisma.match.update({ where: { id: named.id }, data: { lifecycleStatus: "SUBMITTED" } });
+    const review = await loadOfficiatingTournament(adminId, slug);
+    expect(review.reviewMatches.find((item) => item.code === named.code)?.officiatingRecord).toMatch(new RegExp(`^排班：具名裁判${RUN} · 实际执裁：具名裁判${RUN} \\d\\d:\\d\\d$`));
+
+    // 内部名单（仅管理员/编排员可下载）多一张「执裁记录」表；对外数据表不含裁判姓名。
+    const internal = await generateReportExport(adminId, slug, { kind: "REGISTRATIONS_INTERNAL" });
+    const file = await prisma.reportExport.findUniqueOrThrow({ where: { id: internal.id }, select: { content: true } });
+    const sheet = readXlsx(Buffer.from(file.content)).find((item) => item.name === "执裁记录")!;
+    const rows = tableRows(sheet, "比赛编号").rows;
+    expect(rows.find((item) => item[0] === shared.code)).toEqual([shared.code, "男子单打", expect.any(String), expect.any(String), "进行中", "共用账号", expect.stringContaining("李四")]);
+    expect(rows.find((item) => item[0] === named.code)?.[5]).toBe(`具名裁判${RUN}`);
+    const workbook = await generateReportExport(adminId, slug, { kind: "DATA_WORKBOOK", edition: "DRAFT" });
+    const workbookFile = await prisma.reportExport.findUniqueOrThrow({ where: { id: workbook.id }, select: { content: true } });
+    const workbookXml = readXlsx(Buffer.from(workbookFile.content)).map((item) => item.xml).join("");
+    for (const secret of ["李四", `具名裁判${RUN}`]) expect(workbookXml).not.toContain(secret);
   });
 });

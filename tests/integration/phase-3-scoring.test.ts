@@ -80,7 +80,7 @@ describe("阶段 3 权威记分事务", () => {
   });
 
   it("同 ID 同内容只生效一次，异内容复用拒绝", async () => {
-    const control = await acquireScoringSession(refereeId, MATCH_CODE, "31111111-1111-4111-8111-111111111111");
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "31111111-1111-4111-8111-111111111111", "演示裁判");
     const envelope = command(control, 0, "RECORD_COIN_TOSS", {
       valid: true,
       winnerSide: "A",
@@ -106,7 +106,7 @@ describe("阶段 3 权威记分事务", () => {
   });
 
   it("系统抛币：同一版本只抽一次，记录的胜方必须一致；裁判长作废抛币后可重抽", async () => {
-    const control = await acquireScoringSession(refereeId, MATCH_CODE, "3bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "3bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "演示裁判");
     const request = { scoringSessionId: control.sessionId, takeoverGeneration: control.takeoverGeneration };
     const first = await drawCoinToss(refereeId, MATCH_CODE, request, control.controlToken);
     expect(first).toMatchObject({ status: "drawn", version: 0 });
@@ -127,7 +127,7 @@ describe("阶段 3 权威记分事务", () => {
   });
 
   it("两个同版本并发命令仅一个成功", async () => {
-    const control = await acquireScoringSession(refereeId, MATCH_CODE, "32222222-2222-4222-8222-222222222222");
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "32222222-2222-4222-8222-222222222222", "演示裁判");
     const commands = [
       command(control, 0, "RECORD_COIN_TOSS", { valid: false, reason: "硬币落地不清" }),
       command(control, 0, "RECORD_COIN_TOSS", { valid: false, reason: "硬币被遮挡" }),
@@ -139,7 +139,7 @@ describe("阶段 3 权威记分事务", () => {
   });
 
   it("心跳续租，裁判长接管后旧设备不能写入", async () => {
-    const control = await acquireScoringSession(refereeId, MATCH_CODE, "33333333-3333-4333-8333-333333333333");
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "33333333-3333-4333-8333-333333333333", "演示裁判");
     await expect(heartbeatScoringSession(
       refereeId,
       MATCH_CODE,
@@ -158,7 +158,7 @@ describe("阶段 3 权威记分事务", () => {
   });
 
   it("主裁判提交特殊结果后由不同裁判长锁定并记录双方角色", async () => {
-    const control = await acquireScoringSession(refereeId, MATCH_CODE, "35555555-5555-4555-8555-555555555555");
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "35555555-5555-4555-8555-555555555555", "演示裁判");
     let result = await submitScoringCommand(
       refereeId,
       MATCH_CODE,
@@ -195,7 +195,7 @@ describe("阶段 3 权威记分事务", () => {
   });
 
   it("服务端拒绝缺少弃赛方的退赛、带胜方的中止和裁判录入轮空，且不写入事件", async () => {
-    const control = await acquireScoringSession(refereeId, MATCH_CODE, "3c444444-4444-4444-8444-444444444444");
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "3c444444-4444-4444-8444-444444444444", "演示裁判");
     for (const payload of [
       { type: "RET", reason: "伤病退赛但未指明哪一方" },
       { type: "DSQ", reason: "未指明被取消资格方" },
@@ -213,7 +213,7 @@ describe("阶段 3 权威记分事务", () => {
   });
 
   it("S2-009 在数据库事务中作废特殊结果且保留两条事件", async () => {
-    const control = await acquireScoringSession(refereeId, MATCH_CODE, "37777777-7777-4777-8777-777777777777");
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "37777777-7777-4777-8777-777777777777", "演示裁判");
     let result = await submitScoringCommand(
       refereeId,
       MATCH_CODE,
@@ -233,7 +233,7 @@ describe("阶段 3 权威记分事务", () => {
   });
 
   it("S2-008 在数据库事务中区分保留与完成规则换边待办", async () => {
-    const control = await acquireScoringSession(refereeId, MATCH_CODE, "37aaaaaa-7777-4777-8777-777777777777");
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "37aaaaaa-7777-4777-8777-777777777777", "演示裁判");
     let result = await submitScoringCommand(
       refereeId,
       MATCH_CODE,
@@ -324,7 +324,7 @@ describe("阶段 3 权威记分事务", () => {
   });
 
   it("快照哈希被篡改时拒绝后续写入且不产生半事务", async () => {
-    const control = await acquireScoringSession(refereeId, MATCH_CODE, "38888888-8888-4888-8888-888888888888");
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "38888888-8888-4888-8888-888888888888", "演示裁判");
     const first = await submitScoringCommand(
       refereeId,
       MATCH_CODE,
@@ -344,7 +344,7 @@ describe("阶段 3 权威记分事务", () => {
   });
 
   it("轮询 unchanged 走快路径，但返回快照的读取仍完整重放并发现损坏", async () => {
-    const control = await acquireScoringSession(refereeId, MATCH_CODE, "3c111111-1111-4111-8111-111111111111");
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "3c111111-1111-4111-8111-111111111111", "演示裁判");
     const first = await submitScoringCommand(
       refereeId,
       MATCH_CODE,
@@ -370,7 +370,7 @@ describe("阶段 3 权威记分事务", () => {
   });
 
   it("复核修订缺失时整个确认事务回滚", async () => {
-    const control = await acquireScoringSession(refereeId, MATCH_CODE, "39999999-9999-4999-8999-999999999999");
+    const control = await acquireScoringSession(refereeId, MATCH_CODE, "39999999-9999-4999-8999-999999999999", "演示裁判");
     let result = await submitScoringCommand(
       refereeId,
       MATCH_CODE,
@@ -452,7 +452,7 @@ describe("阶段 3 权威记分事务", () => {
     it("10:00 结束、10:05 提交、10:10 复核后 endedAt 仍是 10:00", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(new Date("2026-09-21T09:30:00.000Z"));
-      const control = await acquireScoringSession(refereeId, MATCH_CODE, "3b111111-1111-4111-8111-111111111111");
+      const control = await acquireScoringSession(refereeId, MATCH_CODE, "3b111111-1111-4111-8111-111111111111", "演示裁判");
       let result = await submitScoringCommand(refereeId, MATCH_CODE, command(control, 0, "RECORD_COIN_TOSS", {
         valid: true,
         winnerSide: "A",
@@ -538,7 +538,7 @@ describe("阶段 3 权威记分事务", () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       const recordTime = new Date("2026-09-21T11:00:00.000Z");
       vi.setSystemTime(recordTime);
-      const control = await acquireScoringSession(refereeId, MATCH_CODE, "3b333333-3333-4333-8333-333333333333");
+      const control = await acquireScoringSession(refereeId, MATCH_CODE, "3b333333-3333-4333-8333-333333333333", "演示裁判");
       let result = await submitScoringCommand(refereeId, MATCH_CODE, command(control, 0, "RECORD_SPECIAL_OUTCOME", {
         type: "WO", winnerSide: "A", reason: "B 方未到场",
       }), control.controlToken);
