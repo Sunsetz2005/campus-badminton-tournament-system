@@ -192,7 +192,7 @@ async function assertPlayersNotOnCourt(transaction: Prisma.TransactionClient, ma
  * 已结束待提交（ENDED_PENDING_SUBMISSION）、待复核与已锁定（SUBMITTED）的比赛人已离场，不算占用。
  * 与转场的「空场地」判断一致。未排定场地的比赛不检查。
  */
-async function assertCourtFree(transaction: Prisma.TransactionClient, matchId: string) {
+async function assertCourtFree(transaction: Prisma.TransactionClient, matchId: string, action: "开始" | "继续" = "开始") {
   const match = await transaction.match.findUniqueOrThrow({ where: { id: matchId }, select: { courtId: true, awaitingCourtSince: true } });
   // 复判 RV-02：离场待续的比赛没有场地，不能借「未排场地不检查」直接开打。
   if (match.awaitingCourtSince) {
@@ -206,13 +206,31 @@ async function assertCourtFree(transaction: Prisma.TransactionClient, matchId: s
   });
   if (busy) {
     const state = busy.lifecycleStatus === "SUSPENDED" ? "暂停中" : "进行中";
+    const advice =
+      action === "开始"
+        ? "等那场结束或转到其他场地后再开始；如果那场实际已经结束或设备失联，请联系裁判长处理。"
+        : "本场已结束、场地已交给下一场：请等那场结束后再撤销或更正，或由裁判长按结果更正处理。";
     throw new AppError(
       409,
       "court_occupied",
-      `${busy.court?.name ?? "本场地"}被比赛 ${busy.code}（${state}）占用，本场暂不能开始。等那场结束或转到其他场地后再开始；如果那场实际已经结束或设备失联，请联系裁判长处理。`,
+      `${busy.court?.name ?? "本场地"}被比赛 ${busy.code}（${state}）占用，本场暂不能${action}。${advice}`,
       { busyMatchCode: busy.code, busyMatchStatus: busy.lifecycleStatus },
     );
   }
+}
+
+/**
+ * 复判第二轮 RV2-02：凡是让比赛从「不占场地」（未开打 / 结束待提交 / 已提交）回到「占场地」（进行中 / 暂停中）的命令，
+ * 都先做 S-8 检查，给出带比赛编号的提示；数据库触发器 `guard_court_single_occupancy` 只是兜底。
+ * 离场待续的比赛回到暂停中（例如作废特殊结果）不占场地，照常放行；回到进行中则必须先转场。
+ */
+async function assertCanReoccupyCourt(transaction: Prisma.TransactionClient, matchId: string, after: "IN_PROGRESS" | "SUSPENDED") {
+  const match = await transaction.match.findUniqueOrThrow({ where: { id: matchId }, select: { awaitingCourtSince: true } });
+  if (match.awaitingCourtSince) {
+    if (after === "SUSPENDED") return;
+    throw new AppError(409, "match_awaiting_court", "本场已离场待续，还没有分配场地。请联系裁判长先把比赛转到一块空场地。");
+  }
+  await assertCourtFree(transaction, matchId, "继续");
 }
 
 /** 赛务口径 S-9：离场待续的比赛没有场地，恢复前必须先由裁判长转到一块空场地（S-5）。 */
@@ -410,6 +428,13 @@ export async function submitScoringCommand(
     if (aggregate.state.phase === "AWAITING_OPENING_SETUP" && result.aggregate.state.phase === "IN_PROGRESS") {
       await assertCourtFree(transaction, access.id);
       await assertPlayersNotOnCourt(transaction, access.id);
+    } else {
+      const beforeLifecycle = lifecycleProjection(aggregate.state);
+      const afterLifecycle = lifecycleProjection(result.aggregate.state);
+      const occupies = (value: string) => value === "IN_PROGRESS" || value === "SUSPENDED";
+      if (!occupies(beforeLifecycle) && (afterLifecycle === "IN_PROGRESS" || afterLifecycle === "SUSPENDED")) {
+        await assertCanReoccupyCourt(transaction, access.id, afterLifecycle);
+      }
     }
     const event = result.events[0];
     const stateHash = hashMatchValue(result.aggregate.state);

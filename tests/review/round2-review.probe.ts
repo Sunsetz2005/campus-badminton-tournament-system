@@ -234,8 +234,9 @@ describe("复判第二轮 RV-02：离场待续时记录特殊结果（退赛）"
     }
     const after = await prisma.match.findUniqueOrThrow({ where: { id: m.id }, select: { lifecycleStatus: true, awaitingCourtSince: true, courtId: true, version: true } });
     note("RV02-RET outcome", JSON.stringify(outcome), "after", JSON.stringify(after));
-    // 记录观察到的行为（复判报告据此定级）：比赛不应在无场地状态下离开暂停中。
-    expect(after.lifecycleStatus === "SUSPENDED" || after.awaitingCourtSince === null).toBe(true);
+    // RV2-01 已修（迁移 20261109130000）：退赛照常记录，比赛转为结束待提交，离场标记保留、仍无场地。
+    expect(outcome).toMatchObject({ status: "accepted" });
+    expect(after).toMatchObject({ lifecycleStatus: "ENDED_PENDING_SUBMISSION", awaitingCourtSince: expect.any(Date), courtId: null });
   });
 
   it("离场待续时完整比分更正被引擎拒绝（暂停中不可更正）", async () => {
@@ -299,8 +300,8 @@ describe("复判第二轮 O-4：入口、时间线与公开边界", () => {
     const records = await loadOfficiatingRecords(prisma, [match.id]);
     const actual = records.get(match.id)!.actual.map((entry) => `${entry.kind}:${entry.name}`);
     note("O4-LEGACY", JSON.stringify(actual));
-    // 观察值，见报告 RV2-03：期望应是「共用账号（未登记姓名）→ 后来的人（交接）」。
-    expect(actual).toEqual(["ACQUIRED:后来的人"]);
+    // RV2-03 已修（开发会话 2026-11-09）：保留「未登记姓名」一段，再列交接后的人。
+    expect(actual).toEqual(["ACQUIRED:共用账号（未登记姓名）", "HANDOVER:后来的人"]);
   });
 
   it("裁判姓名不出现在公开赛程、公开比赛详情、对外快照与对外数据表", async () => {

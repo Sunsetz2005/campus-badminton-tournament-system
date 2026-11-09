@@ -33,7 +33,11 @@ export class AppError extends Error {
 export function rethrowCourtOccupied(error: unknown): never {
   const text = error instanceof Error ? `${error.message} ${String((error as { meta?: unknown }).meta ?? "")}` : String(error);
   if (/court_occupied: /.test(text)) {
-    throw new AppError(409, "court_occupied", "这块场地刚被另一场比赛占用，本次没有保存。请刷新后查看场地状态；如有疑问请联系裁判长。");
+    throw new AppError(409, "court_occupied", "这块场地已被另一场比赛占用，本次没有保存。请刷新后查看场地状态；如有疑问请联系裁判长。");
+  }
+  // 离场待续的约束（S-9）：应用层检查漏过时同样回答 409，不让工作台把它当作临时故障反复重试。
+  if (/matches_awaiting_court_not_playable/.test(text)) {
+    throw new AppError(409, "match_awaiting_court", "本场已离场待续，还没有分配场地。请联系裁判长先把比赛转到一块空场地。");
   }
   throw error;
 }

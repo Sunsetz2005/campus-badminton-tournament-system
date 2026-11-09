@@ -92,7 +92,8 @@ export async function loadOfficiatingRecords(client: Client, matchIds: readonly 
         handover.at >= session.createdAt &&
         (!nextStart || handover.at < nextStart),
     );
-    const registered = firstHandover?.from ?? session.officiatingName;
+    // 复判第二轮 RV2-03：交接审计的 from 为空（B2 上线前未登记姓名的旧会话），说明会话开始时没人登记，不能退回到已被改写的会话姓名。
+    const registered = firstHandover ? firstHandover.from : session.officiatingName;
     const name = registered ?? (session.user.platformReferee ? UNNAMED_SHARED : session.user.name);
     push(session.matchId, { name: takeover ? `${name}（裁判长接管）` : name, at: session.createdAt, kind: takeover ? "TAKEOVER" : "ACQUIRED" });
   }

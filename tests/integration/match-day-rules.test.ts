@@ -547,3 +547,104 @@ describe("独立复判 2026-11-09 RV-01 / RV-02 修复", () => {
     ).rejects.toThrow(/cannot change/);
   });
 });
+
+describe("独立复判第二轮 RV2-01 / RV2-02 / RV2-03 修复", () => {
+  async function onCourts(name: string) {
+    const ctx = await roundRobin(name, 4);
+    const [c1, c2] = await Promise.all(
+      ["C1", "C2"].map((code, index) => prisma.court.create({ data: { tournamentId: ctx.tournamentId, code, name: `场地 ${index + 1}`, active: true, sortOrder: index } })),
+    );
+    const [m, ...rest] = ctx.matches;
+    const n = rest.find((match) => ![match.sideAEntryId, match.sideBEntryId].some((id) => id === m.sideAEntryId || id === m.sideBEntryId))!;
+    await prisma.match.update({ where: { id: m.id }, data: { courtId: c1.id } });
+    await prisma.match.update({ where: { id: n.id }, data: { courtId: c1.id } });
+    return { ...ctx, c1, c2, m, n };
+  }
+
+  it("RV2-01 离场待续时记录退赛：照常结束并提交，标记保留；作废特殊结果回到暂停中后，恢复前仍须先转场", async () => {
+    const { slug, m } = await onCourts("rv201");
+    const { control, result } = await startMatchWithControl(m.code);
+    if (result.status !== "accepted") throw new Error("开局不应命中幂等分支。");
+    const paused = await submitScoringCommand(refereeId, m.code, command(control, result.version, "PAUSE_MATCH", { reason: "伤停" }), control.controlToken);
+    if (paused.status !== "accepted") throw new Error("暂停不应命中幂等分支。");
+    await releaseSuspendedMatchCourt(adminId, slug, m.code, { reason: "医疗处理、场地全满" });
+
+    const ret = await submitScoringCommand(
+      refereeId,
+      m.code,
+      command(control, paused.version, "RECORD_SPECIAL_OUTCOME", { type: "RET", winnerSide: "A", reason: "B 方伤退" } as MatchCommand["payload"]),
+      control.controlToken,
+    );
+    expect(ret).toMatchObject({ status: "accepted" });
+    if (ret.status !== "accepted") throw new Error("退赛不应命中幂等分支。");
+    await expect(prisma.match.findUniqueOrThrow({ where: { id: m.id }, select: { lifecycleStatus: true, awaitingCourtSince: true, courtId: true } })).resolves.toMatchObject({
+      lifecycleStatus: "ENDED_PENDING_SUBMISSION",
+      awaitingCourtSince: expect.any(Date),
+      courtId: null,
+    });
+
+    // 误记退赛：作废后回到暂停中，仍是离场待续，恢复前必须先转场。
+    const invalidated = await submitScoringCommand(refereeId, m.code, command(control, ret.version, "INVALIDATE_SPECIAL_OUTCOME", { reason: "误记" }), control.controlToken);
+    expect(invalidated).toMatchObject({ status: "accepted" });
+    if (invalidated.status !== "accepted") throw new Error("作废不应命中幂等分支。");
+    await expect(prisma.match.findUniqueOrThrow({ where: { id: m.id }, select: { lifecycleStatus: true, awaitingCourtSince: true } })).resolves.toMatchObject({
+      lifecycleStatus: "SUSPENDED",
+      awaitingCourtSince: expect.any(Date),
+    });
+    await expect(
+      submitScoringCommand(refereeId, m.code, command(control, invalidated.version, "RESUME_MATCH", { reason: "处理完毕" }), control.controlToken),
+    ).rejects.toMatchObject({ status: 409, code: "match_awaiting_court" });
+
+    // 再次记录退赛并提交复核：走完整个流程。
+    const again = await submitScoringCommand(
+      refereeId,
+      m.code,
+      command(control, invalidated.version, "RECORD_SPECIAL_OUTCOME", { type: "RET", winnerSide: "A", reason: "B 方伤退" } as MatchCommand["payload"]),
+      control.controlToken,
+    );
+    if (again.status !== "accepted") throw new Error("退赛不应命中幂等分支。");
+    await expect(
+      submitScoringCommand(refereeId, m.code, command(control, again.version, "SUBMIT_RESULT", { reason: "提交复核" }), control.controlToken),
+    ).resolves.toMatchObject({ status: "accepted" });
+    await expect(prisma.match.findUniqueOrThrow({ where: { id: m.id }, select: { lifecycleStatus: true } })).resolves.toEqual({ lifecycleStatus: "SUBMITTED" });
+    // 数据库兜底：离场待续的比赛不能回到未开打或进行中。
+    await expect(prisma.match.update({ where: { id: m.id }, data: { lifecycleStatus: "IN_PROGRESS" } })).rejects.toThrow();
+  });
+
+  it("RV2-02 结束后场地已被下一场占用：作废特殊结果回到进行中被拒，提示写明占用的比赛与状态", async () => {
+    const { m, n } = await onCourts("rv202");
+    const { control, result } = await startMatchWithControl(m.code);
+    if (result.status !== "accepted") throw new Error("开局不应命中幂等分支。");
+    const ret = await submitScoringCommand(
+      refereeId,
+      m.code,
+      command(control, result.version, "RECORD_SPECIAL_OUTCOME", { type: "RET", winnerSide: "A", reason: "B 方伤退" } as MatchCommand["payload"]),
+      control.controlToken,
+    );
+    if (ret.status !== "accepted") throw new Error("退赛不应命中幂等分支。");
+    // 已结束待提交不占场地：下一场开局。
+    await startMatch(n.code);
+    await expect(
+      submitScoringCommand(refereeId, m.code, command(control, ret.version, "INVALIDATE_SPECIAL_OUTCOME", { reason: "误记" }), control.controlToken),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "court_occupied",
+      details: { busyMatchCode: n.code, busyMatchStatus: "IN_PROGRESS" },
+      message: expect.stringContaining("本场暂不能继续"),
+    });
+  });
+
+  it("RV2-03 未登记姓名的旧会话补填姓名：时间线保留「未登记姓名」一段，再列交接后的人", async () => {
+    const { m } = await onCourts("rv203");
+    const device = randomUUID();
+    const { control } = await startMatchWithControl(m.code, device);
+    // 模拟 B2 上线前建立的会话：会话上没有姓名。
+    await prisma.scoringSession.update({ where: { id: control.sessionId }, data: { officiatingName: null } });
+    await acquireScoringSession(refereeId, m.code, device, "后来的人");
+    const record = (await loadOfficiatingRecords(prisma, [m.id])).get(m.id)!;
+    expect(record.actual.map((entry) => [entry.name, entry.kind])).toEqual([
+      ["共用账号（未登记姓名）", "ACQUIRED"],
+      ["后来的人", "HANDOVER"],
+    ]);
+  });
+});

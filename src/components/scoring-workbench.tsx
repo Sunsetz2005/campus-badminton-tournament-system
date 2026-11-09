@@ -1096,9 +1096,12 @@ export function ScoringWorkbench({ matchCode }: { matchCode: string }) {
                   autoComplete="name"
                   maxLength={40}
                   onChange={(event) => setOfficiatingName(event.target.value)}
+                  // 复判第二轮 RV2-04：共用设备会预填上一位登记的姓名；聚焦时整段选中，直接输入即可替换。
+                  onFocus={(event) => event.currentTarget.select()}
                   placeholder="共用裁判账号请填写本人姓名"
                   value={officiatingName}
                 />
+                <small className="officiating-name-hint">本机会记住上一位登记的姓名；如果不是你本人，请改成你的姓名。</small>
               </label>
             ) : null}
             {canAcquireControl ? (
