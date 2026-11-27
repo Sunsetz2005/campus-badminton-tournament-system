@@ -2,7 +2,7 @@
 title: API 与权限
 stage: 7
 status: current
-updated: 2026-10-23
+updated: 2026-11-10
 tags:
   - 羽毛球赛事管理系统
   - API
@@ -19,7 +19,7 @@ tags:
 |---|---|---|
 | `/api/auth/[...all]` | GET/POST | Better Auth；公开注册不受模拟种子开关影响并始终关闭，登录建立数据库会话 |
 | `/api/health` | GET | 只返回服务状态、数据库连通状态和服务端时间 |
-| `/api/public/tournaments/[slug]` | GET | 只读白名单 DTO，不返回账号、内部 ID 或审计字段 |
+| `/api/public/tournaments/[slug]` | GET | 只读白名单 DTO（现场看板共用同一份数据），不返回账号、内部 ID 或审计字段；只含已逐场发布的比赛，赛事不公开姓名时报名单位名称换成编号（2026-11-10 AR-01） |
 | `/api/matches/[matchCode]/control` | POST | 必须登录、账号启用、拥有赛事 `REFEREE` 角色，且被指派为该场主裁判（逐场指派模式）或该赛事为共用裁判账号模式；建立最小活动控制会话；已登录用户的 403 拒绝写入脱敏审计 |
 | `/api/matches/[matchCode]/state` | GET | 获指派主裁判或该赛事裁判长读取权威快照；`afterVersion` 未变时返回轻量 `unchanged` |
 | `/api/matches/[matchCode]/control` | POST/DELETE | 取得/同设备恢复或主动释放写租约 |
@@ -31,7 +31,7 @@ tags:
 | `/api/matches/[matchCode]/commands/[commandId]` | GET | 响应未知或刷新后查询原命令结果 |
 | `/api/admin/tournaments` | POST | 阶段 4-A：新建赛事，需平台级 `SYSTEM_ADMIN`；创建者自动获该赛事 `ADMIN` |
 | `/api/admin/tournaments/[slug]/settings` | PATCH | 赛事 `ADMIN`：报名窗口（按赛事时区）与规程说明；开赛后拒绝 |
-| `/api/admin/tournaments/[slug]/phase` | POST | 赛事 `ADMIN`：筹备→报名中→截止，截止→重开须原因；RUNNING/FINISHED 不在 4-A |
+| `/api/admin/tournaments/[slug]/phase` | POST | 赛事 `ADMIN`：筹备→报名中→截止→进行中→已结束；开赛要求报名审完、有报名单位的项目已发布抽签，结束要求无进行中的比赛；截止→重开、进行中→截止、已结束→进行中须原因（DR-01） |
 | `/api/admin/tournaments/[slug]/publish` | POST | 赛事 `ADMIN`：DRAFT→PUBLISHED，需日期与至少一个项目，不可撤回 |
 | `/api/admin/tournaments/[slug]/competitions` | POST | 赛事 `ADMIN`：新增项目或组别 |
 | `/api/admin/tournaments/[slug]/registrations` | POST | 赛事 `ADMIN`/`ORGANIZER`：手工录入，只生成待审核报名 |
