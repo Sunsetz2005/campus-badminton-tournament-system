@@ -24,6 +24,8 @@ import {
   renameParticipant,
   reviewRegistration,
 } from "@/server/services/registration-service";
+import { generateDrawDraft, publishDraw } from "@/server/services/draw-service";
+import { publishSchedule } from "@/server/services/schedule-service";
 import {
   addCompetition,
   createTournament,
@@ -101,6 +103,11 @@ afterAll(async () => {
   for (const slug of createdSlugs) {
     const tournament = await prisma.tournament.findUnique({ where: { slug }, select: { id: true } });
     if (!tournament) continue;
+    // 发布过抽签的赛事有比赛引用规则修订，先删本赛事的比赛。
+    const matchWhere = { stage: { competition: { tournamentId: tournament.id } } };
+    await prisma.matchEvent.deleteMany({ where: { match: matchWhere } });
+    await prisma.resultRevision.deleteMany({ where: { match: matchWhere } });
+    await prisma.match.deleteMany({ where: matchWhere });
     await prisma.tournament.update({ where: { id: tournament.id }, data: { defaultRuleRevisionId: null } });
     await prisma.ruleProfileRevision.deleteMany({ where: { ruleProfile: { tournamentId: tournament.id } } });
     await prisma.tournament.delete({ where: { id: tournament.id } });
@@ -193,6 +200,72 @@ describe("赛事创建", () => {
     });
     await publishTournament(adminId, slug);
     await expect(publishTournament(adminId, slug)).rejects.toMatchObject({ code: "already_published" });
+  });
+
+  it("DR-01：报名截止 → 开赛 → 结束；开赛要求报名审完、有报名单位的项目已发布抽签，结束要求没有进行中的比赛；回退必须写原因", async () => {
+    const { slug, ms } = await newTournament("run-finish");
+    await transitionTournamentPhase(adminId, slug, { to: "REGISTRATION_OPEN" });
+    const references: string[] = [];
+    for (const index of [1, 2, 3, 4]) {
+      const created = await createManualRegistration(adminId, slug, {
+        competitionId: ms,
+        members: [{ displayName: `开赛${index}`, studentId: `R${RUN}${index}` }],
+      });
+      references.push(created.referenceCode);
+    }
+    for (const reference of references.slice(0, 3)) await approve(slug, reference);
+    await transitionTournamentPhase(adminId, slug, { to: "REGISTRATION_CLOSED" });
+
+    await expect(transitionTournamentPhase(adminId, slug, { to: "RUNNING" })).rejects.toMatchObject({ status: 409, code: "registrations_pending" });
+    const pending = await registration(references[3]);
+    await reviewRegistration(adminId, slug, pending.id, { action: "REJECT", expectedVersion: pending.version, reason: "重复报名" });
+
+    // MS 已有报名单位但没发布抽签；MD 没有报名单位，不要求抽签。
+    const undrawn = transitionTournamentPhase(adminId, slug, { to: "RUNNING" });
+    await expect(undrawn).rejects.toMatchObject({ status: 409, code: "draws_not_published" });
+    await expect(undrawn).rejects.toThrow(/MS/);
+    await expect(undrawn).rejects.not.toThrow(/MD/);
+    const draft = await generateDrawDraft(adminId, slug, "MS", { format: "ROUND_ROBIN" });
+    await publishDraw(adminId, slug, "MS", draft.drawId, { confirm: true });
+
+    await expect(transitionTournamentPhase(refereeId, slug, { to: "RUNNING" })).rejects.toMatchObject({ status: 403 });
+    await expect(transitionTournamentPhase(adminId, slug, { to: "RUNNING" })).resolves.toEqual({ phase: "RUNNING" });
+    // 开赛后报名锁定，也不能直接重开报名。
+    await expect(
+      createManualRegistration(adminId, slug, { competitionId: ms, members: [{ displayName: "迟到", studentId: `R${RUN}9` }] }),
+    ).rejects.toMatchObject({ code: "tournament_locked" });
+    await expect(transitionTournamentPhase(adminId, slug, { to: "REGISTRATION_OPEN", reason: "补报" })).rejects.toMatchObject({
+      code: "phase_transition_not_allowed",
+    });
+
+    const match = await prisma.match.findFirstOrThrow({ where: { stage: { competitionId: ms } }, orderBy: { code: "asc" }, select: { id: true, code: true } });
+    await prisma.match.update({ where: { id: match.id }, data: { lifecycleStatus: "IN_PROGRESS" } });
+    const live = transitionTournamentPhase(adminId, slug, { to: "FINISHED" });
+    await expect(live).rejects.toMatchObject({ status: 409, code: "matches_in_progress" });
+    await expect(live).rejects.toThrow(match.code);
+    await prisma.match.update({ where: { id: match.id }, data: { lifecycleStatus: "SCHEDULED" } });
+    await transitionTournamentPhase(adminId, slug, { to: "FINISHED" });
+
+    // 结束后赛程保护生效。
+    await expect(publishSchedule(adminId, slug, { warningDigest: "x" })).rejects.toMatchObject({ code: "tournament_finished" });
+
+    await expect(transitionTournamentPhase(adminId, slug, { to: "RUNNING" })).rejects.toMatchObject({ code: "reason_required" });
+    await transitionTournamentPhase(adminId, slug, { to: "RUNNING", reason: "需要改期一场" });
+    await expect(transitionTournamentPhase(adminId, slug, { to: "REGISTRATION_CLOSED" })).rejects.toMatchObject({ code: "reason_required" });
+    await transitionTournamentPhase(adminId, slug, { to: "REGISTRATION_CLOSED", reason: "补抽漏掉的项目" });
+    const audits = await prisma.auditLog.findMany({
+      where: { action: "TOURNAMENT_PHASE_CHANGED", tournament: { slug } },
+      orderBy: { occurredAt: "asc" },
+      select: { metadata: true },
+    });
+    expect(audits.map((row) => (row.metadata as { to: string }).to)).toEqual([
+      "REGISTRATION_OPEN",
+      "REGISTRATION_CLOSED",
+      "RUNNING",
+      "FINISHED",
+      "RUNNING",
+      "REGISTRATION_CLOSED",
+    ]);
   });
 });
 
@@ -626,7 +699,18 @@ describe("批量导入", () => {
 describe("匿名邀请链接", () => {
   it("只保存令牌摘要；报名未开放时不接受提交；开放后生成待审核报名，不创建任何账号", async () => {
     const { slug, ms } = await newTournament("invite");
-    const usersBefore = await prisma.user.count();
+    // 只统计与本赛事或报名人有关的账号：全库用户数会被并行运行的其他测试文件改变，不能拿来断言。
+    const relatedAccounts = () =>
+      prisma.user.count({
+        where: {
+          OR: [
+            { provisionedForTournament: { slug } },
+            { name: { contains: "邀请甲" } },
+            { username: { in: ["I1", "i1"] } },
+          ],
+        },
+      });
+    const usersBefore = await relatedAccounts();
     const { token } = await createRegistrationInvite(adminId, slug, {
       label: "计算机学院",
       expiresAt: "2026-12-01T23:00",
@@ -656,11 +740,12 @@ describe("匿名邀请链接", () => {
     expect(await registration(receipt.referenceCode)).toMatchObject({ status: "PENDING", entryId: null });
     const row = await prisma.registration.findUniqueOrThrow({
       where: { referenceCode: receipt.referenceCode },
-      select: { source: true, submitterFingerprint: true },
+      select: { source: true, submitterFingerprint: true, submittedByUserId: true },
     });
     expect(row.source).toBe("INVITE");
     expect(row.submitterFingerprint).not.toContain("10.0.0.1");
-    await expect(prisma.user.count()).resolves.toBe(usersBefore);
+    expect(row.submittedByUserId).toBeNull();
+    await expect(relatedAccounts()).resolves.toBe(usersBefore);
 
     // 名额用尽后与无效令牌不可区分。
     await submitInviteRegistration(token, { ...body, members: [{ displayName: "邀请乙" }] }, "10.0.0.2", now);

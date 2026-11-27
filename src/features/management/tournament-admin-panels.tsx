@@ -66,28 +66,76 @@ export function PhaseControls({ slug, phase }: { slug: string; phase: Phase }) {
         </div>
       ) : null}
       {phase === "REGISTRATION_CLOSED" ? (
-        <form
-          className={styles.form}
-          onSubmit={(event: FormEvent) => {
-            event.preventDefault();
-            void run(() => sendJson(endpoint, "POST", { to: "REGISTRATION_OPEN", reason }), "已重新开放报名。");
-          }}
-        >
-          <label className={styles.field}>
-            <span>重新开放报名的原因</span>
-            <input maxLength={200} onChange={(event) => setReason(event.target.value)} required value={reason} />
-          </label>
+        <>
           <div className={styles.actions}>
-            <ActionButton loading={pending} type="submit" variant="secondary">重新开放报名</ActionButton>
-            <span className={styles.hint}>开赛属于后续阶段（抽签编排），这里不提供。</span>
+            <ActionButton loading={pending} onClick={() => run(() => sendJson(endpoint, "POST", { to: "RUNNING" }), "赛事已开赛。")}>
+              开赛
+            </ActionButton>
+            <span className={styles.hint}>要求报名全部审完、有报名单位的项目都已发布抽签。开赛后报名名单锁定。</span>
           </div>
-        </form>
+          <RollbackForm label="重新开放报名" onSubmit={(text) => run(() => sendJson(endpoint, "POST", { to: "REGISTRATION_OPEN", reason: text }), "已重新开放报名。")} pending={pending} reason={reason} setReason={setReason} />
+        </>
       ) : null}
-      {phase === "RUNNING" || phase === "FINISHED" ? (
-        <p className={styles.info}>赛事已开赛或结束，报名名单已锁定。</p>
+      {phase === "RUNNING" ? (
+        <>
+          <div className={styles.actions}>
+            <ActionButton
+              loading={pending}
+              onClick={() => {
+                if (window.confirm("结束赛事后不能再调整赛程。确定结束吗？")) void run(() => sendJson(endpoint, "POST", { to: "FINISHED" }), "赛事已结束。");
+              }}
+              variant="secondary"
+            >
+              结束赛事
+            </ActionButton>
+            <span className={styles.hint}>要求没有正在进行或待提交的比赛。报名名单已锁定。</span>
+          </div>
+          <RollbackForm label="撤回开赛" onSubmit={(text) => run(() => sendJson(endpoint, "POST", { to: "REGISTRATION_CLOSED", reason: text }), "已退回报名截止。")} pending={pending} reason={reason} setReason={setReason} />
+        </>
+      ) : null}
+      {phase === "FINISHED" ? (
+        <>
+          <p className={styles.info}>赛事已结束，报名与赛程都已锁定；成绩更正与名次发布不受影响。</p>
+          <RollbackForm label="重新开赛" onSubmit={(text) => run(() => sendJson(endpoint, "POST", { to: "RUNNING", reason: text }), "已重新开赛。")} pending={pending} reason={reason} setReason={setReason} />
+        </>
       ) : null}
       {feedback}
     </div>
+  );
+}
+
+/** 回退阶段：必须写原因，原因记入审计。 */
+function RollbackForm({
+  label,
+  onSubmit,
+  pending,
+  reason,
+  setReason,
+}: {
+  label: string;
+  onSubmit: (reason: string) => Promise<boolean>;
+  pending: boolean;
+  reason: string;
+  setReason: (value: string) => void;
+}) {
+  return (
+    <form
+      className={styles.form}
+      onSubmit={(event: FormEvent) => {
+        event.preventDefault();
+        void onSubmit(reason).then((ok) => {
+          if (ok) setReason("");
+        });
+      }}
+    >
+      <label className={styles.field}>
+        <span>{label}的原因</span>
+        <input maxLength={200} onChange={(event) => setReason(event.target.value)} required value={reason} />
+      </label>
+      <div className={styles.actions}>
+        <ActionButton loading={pending} type="submit" variant="ghost">{label}</ActionButton>
+      </div>
+    </form>
   );
 }
 

@@ -715,3 +715,59 @@ describe("S-4 团体小场的「在场上」只看出场名单", () => {
     await expect(start(doubles)).rejects.toMatchObject({ status: 409, code: "player_on_other_court", details: { busyMatchCode: singles.code } });
   });
 });
+
+describe("S-3 出场名单与个人项目时间重叠的提示", () => {
+  it("DR-02：只提示提交方自己的队员；对方先交且对方队员与个人比赛重叠时，后交一方看不到任何提示", async () => {
+    const { slug, tournamentId } = await publishedTournament("overlap-hint", 2, { format: "KNOCKOUT", thirdPlaceMatch: false });
+    const tie = await prisma.fixture.findFirstOrThrow({
+      where: { competition: { tournamentId }, sideAEntryId: { not: null }, sideBEntryId: { not: null } },
+      include: { matches: { orderBy: { rubberOrder: "asc" } } },
+    });
+    const entryB = tie.sideBEntryId as string;
+    const lineupA = await autoLineup(tie.sideAEntryId as string, tie.id);
+    const lineupB = await autoLineup(entryB, tie.id);
+
+    // 只给第 1 小场排时间；B 方第 1 小场的一名队员同时报了个人项目，且那场个人比赛与之重叠。
+    const start = new Date("2026-11-01T01:00:00.000Z");
+    const end = new Date("2026-11-01T01:40:00.000Z");
+    await prisma.match.update({ where: { id: tie.matches[0].id }, data: { scheduledAt: start, scheduledEndAt: end, publishedAt: start } });
+    const busy = lineupB[0].participantIds[0];
+    const usedInFirst = new Set([...lineupA[0].participantIds, ...lineupB[0].participantIds]);
+    const opponent = (await loadRosterForLineup(entryB)).find((member) => !usedInFirst.has(member.participantId));
+    expect(opponent).toBeDefined();
+
+    const singles = await prisma.competition.create({
+      data: { tournamentId, code: "MSX", name: "男子单打（重叠测试）", kind: "MS", entryType: "SINGLES" },
+      select: { id: true },
+    });
+    const stage = await prisma.stage.create({ data: { competitionId: singles.id, code: "MAIN", name: "正赛", type: "KNOCKOUT", order: 1 }, select: { id: true } });
+    const entryOf = (code: string, participantId: string) =>
+      prisma.entry.create({
+        data: { competitionId: singles.id, code, displayName: code, entryType: "SINGLES", members: { create: [{ competitionId: singles.id, participantId, slot: 1 }] } },
+        select: { id: true },
+      });
+    const [left, right] = [await entryOf("MSX-1", busy), await entryOf("MSX-2", opponent!.participantId)];
+    await prisma.match.create({
+      data: {
+        code: `MSX-${RUN}-1`,
+        stageId: stage.id,
+        sideAEntryId: left.id,
+        sideBEntryId: right.id,
+        scheduledAt: new Date("2026-11-01T01:20:00.000Z"),
+        scheduledEndAt: new Date("2026-11-01T02:00:00.000Z"),
+        publishedAt: start,
+      },
+    });
+
+    // B 方先交：自己的队员与个人比赛重叠，应当得到提示。
+    const first = await submitLineup({ userId: adminId, mode: "ADMIN" }, slug, tie.id, { side: "B", rubbers: lineupB });
+    expect(first.revealed).toBe(false);
+    expect(first.scheduleWarnings).toHaveLength(1);
+    expect(first.scheduleWarnings[0]).toContain("计划时间重叠");
+
+    // A 方后交：A 方自己没有重叠的队员，不得从提示里得知 B 方第 1 小场排了谁。
+    const second = await submitLineup({ userId: adminId, mode: "ADMIN" }, slug, tie.id, { side: "A", rubbers: lineupA });
+    expect(second.revealed).toBe(true);
+    expect(second.scheduleWarnings).toEqual([]);
+  });
+});

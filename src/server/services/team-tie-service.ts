@@ -386,7 +386,10 @@ export async function submitLineup(actor: LineupActor, slug: string, fixtureId: 
           })),
         ),
       });
-      const scheduleWarnings = await individualOverlapWarnings(transaction, tournamentId, fixture.matches.map((match) => match.id));
+      const ownPersons = new Map(
+        lineup.map((rubber) => [(matchByOrder.get(rubber.order) as TieMatchRow).id, new Set(rubber.participantIds)] as const),
+      );
+      const scheduleWarnings = await individualOverlapWarnings(transaction, tournamentId, ownPersons);
       const version = existing ? existing.version + 1 : 1;
       await transaction.fixtureLineup.upsert({
         where: { fixtureId_side: { fixtureId, side } },
@@ -426,11 +429,19 @@ export async function submitLineup(actor: LineupActor, slug: string, fixtureId: 
 /**
  * 赛务口径 S-3（2026-10-27，P-09）：出场名单里的队员如果有个人项目比赛与这场对抗的小场时间重叠，只提示、不拒绝。
  * 同一时刻真正上场由开赛检查（S-4）拦截；这里让负责人在提交时就知道，可以换人或请管理员改期。
- * 只看已发布的安排，只报「小场 × 个人比赛」的选手重叠；消息不含对方名单。
+ * 只看已发布的安排，只报「小场 × 个人比赛」的选手重叠。
+ *
+ * DR-02（2026-11-27）：只报**提交方自己**的队员。小场的上场名单含双方已写入的队员，
+ * 不加限制时，对方先交名单、其队员与个人比赛重叠，后交一方就能从提示推断对方的排兵。
+ * `ownPersons`：本场每个小场（比赛 ID）里提交方的上场队员。
  */
-async function individualOverlapWarnings(transaction: Prisma.TransactionClient, tournamentId: string, rubberIds: string[]) {
+async function individualOverlapWarnings(
+  transaction: Prisma.TransactionClient,
+  tournamentId: string,
+  ownPersons: ReadonlyMap<string, ReadonlySet<string>>,
+) {
   const facts = await loadScheduleFacts(transaction, tournamentId);
-  const rubbers = new Set(rubberIds);
+  const rubbers = new Set(ownPersons.keys());
   const check = checkSchedule({
     matches: facts.facts,
     placements: facts.published,
@@ -443,10 +454,14 @@ async function individualOverlapWarnings(transaction: Prisma.TransactionClient, 
   });
   return check.issues
     .filter((issue) => issue.code === "PERSON_OVERLAP" && issue.matchIds.some((id) => !rubbers.has(id) && !facts.factById.get(id)?.isTeam))
-    .map((issue) => {
-      const [rubberId, otherId] = rubbers.has(issue.matchIds[0]) ? issue.matchIds : [...issue.matchIds].reverse();
-      return `${facts.factById.get(rubberId)?.label ?? "本场小场"} 与个人项目 ${facts.factById.get(otherId)?.label ?? "另一场比赛"} 计划时间重叠，有队员同时出场；可以换人，或请管理员调整时间。`;
-    });
+    .map((issue) => (rubbers.has(issue.matchIds[0]) ? issue.matchIds : [...issue.matchIds].reverse()) as [string, string])
+    .filter(([rubberId, otherId]) => {
+      const own = ownPersons.get(rubberId);
+      return Boolean(own && facts.factById.get(otherId)?.confirmedPersons.some((person) => own.has(person)));
+    })
+    .map(([rubberId, otherId]) =>
+      `${facts.factById.get(rubberId)?.label ?? "本场小场"} 与个人项目 ${facts.factById.get(otherId)?.label ?? "另一场比赛"} 计划时间重叠，有队员同时出场；可以换人，或请管理员调整时间。`,
+    );
 }
 
 const amendSchema = z.object({

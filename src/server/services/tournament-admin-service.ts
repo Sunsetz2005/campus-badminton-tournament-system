@@ -20,6 +20,7 @@ import { DEFAULT_TEAM_FORMAT, validateTeamFormat, type TeamFormat } from "@/doma
 import { isCalendarDate, isValidTimeZone, zonedLocalToUtc } from "@/domain/time/zoned-time";
 import { requireManagedTournament, requireSystemAdmin } from "@/server/auth/authorization";
 import { AppError } from "@/server/services/errors";
+import { lockTournamentRow } from "@/server/services/registration-service";
 
 /**
  * 三个内置规则都只是演示配置（见 AGENTS.md），新建赛事时如实标注来源，不写成正式规程。
@@ -349,14 +350,54 @@ export async function updateTournamentProfile(actorUserId: string, slug: string,
 }
 
 /**
- * 阶段 4-A 只开放报名相关的三段推进。进入 RUNNING/FINISHED 属于后续阶段，这里如实拒绝。
  * phase 由组织者显式推进并审计，不按服务器当前时间自动推导。
+ *
+ * 报名流程：筹备 → 报名中 → 报名截止（截止可写原因重开）。
+ * 比赛流程（DR-01，2026-11-27）：报名截止 → 进行中 → 已结束。开赛要求报名全部审完、有报名单位的项目都已发布抽签；
+ * 结束要求没有正在进行或待提交的比赛。进行中可写原因退回报名截止（例如补抽漏掉的项目），已结束可写原因重新开赛（例如需要改期）。
+ * 已开始的比赛不受阶段影响；阶段只决定报名、抽签与赛程调整是否还开放。
  */
 const PHASE_TRANSITIONS: Partial<Record<TournamentPhase, TournamentPhase[]>> = {
   PREPARING: ["REGISTRATION_OPEN"],
   REGISTRATION_OPEN: ["REGISTRATION_CLOSED"],
-  REGISTRATION_CLOSED: ["REGISTRATION_OPEN"],
+  REGISTRATION_CLOSED: ["REGISTRATION_OPEN", "RUNNING"],
+  RUNNING: ["FINISHED", "REGISTRATION_CLOSED"],
+  FINISHED: ["RUNNING"],
 };
+
+/** 需要写原因的回退。 */
+const PHASE_ROLLBACKS: ReadonlySet<string> = new Set(["REGISTRATION_CLOSED>REGISTRATION_OPEN", "RUNNING>REGISTRATION_CLOSED", "FINISHED>RUNNING"]);
+
+const ROLLBACK_REASON_LABEL: Record<string, string> = {
+  REGISTRATION_OPEN: "重新开放报名",
+  REGISTRATION_CLOSED: "撤回开赛",
+  RUNNING: "重新开赛",
+};
+
+async function assertReadyToStart(transaction: Prisma.TransactionClient, tournamentId: string) {
+  const pending = await transaction.registration.count({ where: { tournamentId, status: "PENDING" } });
+  if (pending > 0) throw new AppError(409, "registrations_pending", `还有 ${pending} 份报名待审核，审核完才能开赛。`);
+  const undrawn = await transaction.competition.findMany({
+    where: { tournamentId, entries: { some: { withdrawnAt: null } }, draws: { none: { status: "PUBLISHED" } } },
+    orderBy: { code: "asc" },
+    select: { code: true },
+  });
+  if (undrawn.length) {
+    throw new AppError(409, "draws_not_published", `项目 ${undrawn.map((item) => item.code).join("、")} 已有报名单位但还没有发布抽签，发布后才能开赛。`);
+  }
+}
+
+async function assertReadyToFinish(transaction: Prisma.TransactionClient, tournamentId: string) {
+  const live = await transaction.match.findMany({
+    where: { stage: { competition: { tournamentId } }, notPlayedAt: null, lifecycleStatus: { in: ["IN_PROGRESS", "SUSPENDED", "ENDED_PENDING_SUBMISSION"] } },
+    orderBy: { code: "asc" },
+    take: 5,
+    select: { code: true },
+  });
+  if (live.length) {
+    throw new AppError(409, "matches_in_progress", `还有比赛正在进行或待提交（${live.map((item) => item.code).join("、")}${live.length === 5 ? " 等" : ""}），全部提交后才能结束赛事。`);
+  }
+}
 
 const phaseSchema = z.object({
   to: z.enum(["PREPARING", "REGISTRATION_OPEN", "REGISTRATION_CLOSED", "RUNNING", "FINISHED"]),
@@ -368,17 +409,21 @@ export async function transitionTournamentPhase(actorUserId: string, slug: strin
   const input = parseOrThrow(phaseSchema, rawInput);
   const allowed = PHASE_TRANSITIONS[tournament.phase] ?? [];
   if (!allowed.includes(input.to)) {
-    throw new AppError(409, "phase_transition_not_allowed", "当前阶段不能直接推进到目标阶段；开赛与结束属于后续阶段功能。");
+    throw new AppError(409, "phase_transition_not_allowed", "当前阶段不能直接推进到目标阶段。");
   }
-  const reopening = tournament.phase === "REGISTRATION_CLOSED" && input.to === "REGISTRATION_OPEN";
+  const rollback = PHASE_ROLLBACKS.has(`${tournament.phase}>${input.to}`);
   const reason = input.reason ? normalizeReason(input.reason) : null;
-  if (reopening && !reason) throw new AppError(400, "reason_required", "重新开放报名必须填写原因。");
+  if (rollback && !reason) throw new AppError(400, "reason_required", `${ROLLBACK_REASON_LABEL[input.to]}必须填写原因。`);
   if (input.to === "REGISTRATION_OPEN") {
     const competitions = await prisma.competition.count({ where: { tournamentId: tournament.id } });
     if (competitions === 0) throw new AppError(409, "no_competitions", "至少设置一个比赛项目后才能开放报名。");
   }
 
   await runTransaction(async (transaction) => {
+    // 与报名审核、抽签发布共用赛事行锁：开赛前的检查与阶段写入之间不会有报名被通过或抽签被撤销。
+    await lockTournamentRow(transaction, tournament.id);
+    if (tournament.phase === "REGISTRATION_CLOSED" && input.to === "RUNNING") await assertReadyToStart(transaction, tournament.id);
+    if (input.to === "FINISHED") await assertReadyToFinish(transaction, tournament.id);
     const updated = await transaction.tournament.updateMany({
       where: { id: tournament.id, phase: tournament.phase },
       data: { phase: input.to },
