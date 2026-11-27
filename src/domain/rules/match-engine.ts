@@ -243,11 +243,22 @@ function assertSide(side: unknown): asserts side is Side {
   if (side !== "A" && side !== "B") throw new RuleViolation("invalid_side", "比赛方必须是 A 或 B。");
 }
 
+/**
+ * 键的排序规则决定状态哈希，必须在任何机器上都一样。此前直接用 `localeCompare()`，结果取决于进程的语言环境
+ * （`LANG` / ICU 数据）：换一个语言环境不同的容器，键序可能变化，全部比赛都会被判为「权威状态损坏」。
+ * 这里固定用英语排序规则，与已入库哈希所用的顺序一致（`tests/domain/stable-stringify.test.ts` 钉住了这个顺序）。
+ */
+const KEY_COLLATOR = new Intl.Collator("en");
+
+function compareKeys(left: string, right: string) {
+  return KEY_COLLATOR.compare(left, right);
+}
+
 export function stableStringify(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   if (value && typeof value === "object") {
     return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareKeys(left, right))
       .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
       .join(",")}}`;
   }
@@ -1009,10 +1020,12 @@ function createEvent(
     stateAfter: clone(stateAfter),
     ...(metadata ? { metadata: clone(metadata) } : {}),
   };
+  // 历史事件写入后不再修改，新聚合直接沿用同一批事件对象。
+  // 此前每条命令都把全部历史事件深拷贝一遍，重放一场 n 条事件的比赛要做 n² 量级的拷贝。
   const nextAggregate = {
     initialState: clone(aggregate.initialState),
     state: clone(stateAfter),
-    events: [...aggregate.events.map(clone), event],
+    events: [...aggregate.events, event],
   };
   return { aggregate: nextAggregate, event };
 }

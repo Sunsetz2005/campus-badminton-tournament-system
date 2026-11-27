@@ -6,6 +6,7 @@ import { AppError } from "@/server/services/errors";
 import {
   getPublicMatchDetail,
   getPublicSchedule,
+  getPublicTournament,
   isPublicMatchCode,
   isPublicTournamentSlug,
   listPublicTournaments,
@@ -111,6 +112,58 @@ describe("公开赛事门户投影", () => {
       } finally {
         await prisma.match.update({ where: { id: match.id }, data: { publishedAt: match.publishedAt } });
       }
+    });
+
+    it("现场看板与旧公开接口同样排除未发布的比赛", async () => {
+      const codes = async () =>
+        (await getPublicTournament(SLUG)).competitions.flatMap((competition) => competition.stages.flatMap((stage) => stage.matches.map((item) => item.code)));
+      expect(await codes()).toContain("MS-DONE-001");
+      const match = await prisma.match.findUniqueOrThrow({
+        where: { code: "MS-DONE-001" },
+        select: { id: true, publishedAt: true },
+      });
+      await prisma.match.update({ where: { id: match.id }, data: { publishedAt: null } });
+      try {
+        expect(await codes()).not.toContain("MS-DONE-001");
+      } finally {
+        await prisma.match.update({ where: { id: match.id }, data: { publishedAt: match.publishedAt } });
+      }
+    });
+
+    it("现场看板与旧公开接口遵守姓名公开策略，且不下发策略本身", async () => {
+      const entries = async () =>
+        (await getPublicTournament(SLUG)).competitions
+          .flatMap((competition) => competition.stages.flatMap((stage) => stage.matches))
+          .flatMap((item) => [item.sideAEntry, item.sideBEntry])
+          .filter((entry) => entry !== null);
+      const tournament = await prisma.tournament.findUniqueOrThrow({ where: { slug: SLUG }, select: { id: true, namePolicy: true } });
+      expect(tournament.namePolicy).toBe("DISPLAY_NAMES");
+      const named = await entries();
+      expect(named.some((entry) => entry.displayName !== entry.code)).toBe(true);
+      await prisma.tournament.update({ where: { id: tournament.id }, data: { namePolicy: "CODES_ONLY" } });
+      try {
+        const coded = await entries();
+        expect(coded.length).toBe(named.length);
+        for (const entry of coded) expect(entry.displayName).toBe(entry.code);
+        expect(JSON.stringify(await getPublicTournament(SLUG))).not.toContain("namePolicy");
+      } finally {
+        await prisma.tournament.update({ where: { id: tournament.id }, data: { namePolicy: tournament.namePolicy } });
+      }
+    });
+
+    it("旧公开接口不返回账号、联系方式、内部 ID 或审计字段", async () => {
+      const payload = await getPublicTournament(SLUG);
+      const text = JSON.stringify(payload);
+      for (const forbidden of ["email", "password", "token", "userId", "participantId", "auditLogs"]) {
+        expect(text).not.toContain(forbidden);
+      }
+      expect(payload.competitions).toHaveLength(2);
+      const matches = payload.competitions.flatMap((competition) => competition.stages.flatMap((stage) => stage.matches));
+      expect(matches.length).toBeGreaterThanOrEqual(17);
+      expect(matches.find((item) => item.code === "MS-DONE-001")?.games).toEqual([
+        expect.objectContaining({ number: 1, scoreA: 21, scoreB: 14, completed: true }),
+        expect.objectContaining({ number: 2, scoreA: 21, scoreB: 17, completed: true }),
+      ]);
     });
 
     it("没有计划时间的比赛归入待排期，不硬塞进任何一天", async () => {

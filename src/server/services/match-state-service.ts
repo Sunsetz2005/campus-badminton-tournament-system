@@ -126,16 +126,23 @@ export async function ensureMatchSnapshot(transaction: Transaction, matchId: str
   const existing = await transaction.matchSnapshot.findUnique({ where: { matchId } });
   if (existing) return existing;
   const match = await loadMatchFacts(transaction, matchId);
-  const initial = createMatchAggregate({
-    matchId: match.id,
-    format: matchFormatOf(match.stage.competition.entryType, match.rubberKind),
-    players: {
-      A: match.lineup.A.map((item) => item.participantId),
-      B: match.lineup.B.map((item) => item.participantId),
-    },
-    ruleConfig: validateRuleConfig(match.ruleSnapshot.config),
-    ruleConfigHash: match.ruleSnapshot.configHash,
-  }).state;
+  let initial: MatchState;
+  try {
+    initial = createMatchAggregate({
+      matchId: match.id,
+      format: matchFormatOf(match.stage.competition.entryType, match.rubberKind),
+      players: {
+        A: match.lineup.A.map((item) => item.participantId),
+        B: match.lineup.B.map((item) => item.participantId),
+      },
+      ruleConfig: validateRuleConfig(match.ruleSnapshot.config),
+      ruleConfigHash: match.ruleSnapshot.configHash,
+    }).state;
+  } catch (error) {
+    // 名单人数与单/双打不符、冻结规则与哈希不一致等：属于比赛未就绪，不是程序错误。
+    if (error instanceof AppError) throw error;
+    throw new AppError(409, "match_not_ready", "比赛名单或冻结规则不完整，暂时不能计分。请联系管理员核查。");
+  }
   const stateHash = hashMatchValue(initial);
   const snapshot = await transaction.matchSnapshot.create({
     data: {
@@ -153,6 +160,20 @@ export async function ensureMatchSnapshot(transaction: Transaction, matchId: str
   }
   return snapshot;
 }
+
+const REPLAY_EVENT_SELECT = {
+  id: true,
+  domainEventId: true,
+  version: true,
+  commandId: true,
+  commandFingerprint: true,
+  occurredAt: true,
+  type: true,
+  payload: true,
+  stateBefore: true,
+  stateAfter: true,
+  metadata: true,
+} satisfies Prisma.MatchEventSelect;
 
 export function domainEventFromRecord(event: {
   id: string;
@@ -191,9 +212,24 @@ export async function loadVerifiedAggregate(transaction: Transaction, matchId: s
   if (hashMatchValue(initialState) !== snapshot.initialStateHash) {
     throw new AppError(409, "initial_state_corrupted", "比赛初始状态校验失败，已停止写入。");
   }
-  const records = await transaction.matchEvent.findMany({ where: { matchId }, orderBy: { version: "asc" } });
+  // 只取重放需要的列：每条事件另存的完整响应与哈希列不参与重放，读出来只是白占内存与传输。
+  const records = await transaction.matchEvent.findMany({
+    where: { matchId },
+    orderBy: { version: "asc" },
+    select: REPLAY_EVENT_SELECT,
+  });
   const events = records.map(domainEventFromRecord);
-  const replayed = replayMatch(initialState, events);
+  let replayed: MatchState;
+  try {
+    replayed = replayMatch(initialState, events);
+  } catch (error) {
+    // 引擎的规则异常不是 AppError；不转换的话，历史损坏在接口上只会表现为笼统的 500。
+    if (error instanceof AppError) throw error;
+    const code = (error as { code?: unknown }).code;
+    throw new AppError(409, "event_history_unreplayable", "比赛历史无法按规则重放，已停止写入。请联系管理员核查。", {
+      ...(typeof code === "string" ? { engineCode: code } : {}),
+    });
+  }
   const stored = asMatchState(snapshot.state);
   // 引擎 v1 写下的快照按 v1 形状核对；核对通过后聚合继续使用 v2 状态，历史事件不被改写。
   const legacySnapshot = snapshot.engineVersion < MATCH_ENGINE_VERSION;
@@ -210,14 +246,26 @@ export async function loadVerifiedAggregate(transaction: Transaction, matchId: s
 
 export async function getAuthoritativeMatchState(userId: string, matchCode: string, afterVersion?: number) {
   const access = await getMatchAccess(userId, matchCode);
-  return runTransaction(async (transaction) => {
-    await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${access.id}::uuid FOR UPDATE`;
+  /*
+   * 读取路径对比赛行只加共享锁（`FOR SHARE`），不再加 `FOR UPDATE`：裁判台与裁判长每隔几秒轮询一次，
+   * 排他锁让这些只读请求彼此排队。共享锁之间互不阻塞，但仍会等待正在提交的记分事务，
+   * 所以读到的一定是「已提交的最新版本」——工作台与端到端用例都依赖这一点（刚写完立刻读，不能读到上一版）。
+   * 唯一的例外是比赛还没有权威快照：首次读取会创建它（一次写入），这时改用排他锁重读一次，避免两个请求同时创建
+   * （未开赛的团体小场换人后快照会被删掉重建，所以「有没有快照」在拿到锁之后判断）。
+   */
+  const read = (exclusive: boolean) => runTransaction(async (transaction) => {
+    if (exclusive) {
+      await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${access.id}::uuid FOR UPDATE`;
+    } else {
+      await transaction.$queryRaw`SELECT "id" FROM "matches" WHERE "id" = ${access.id}::uuid FOR SHARE`;
+      if (!(await transaction.matchSnapshot.findUnique({ where: { matchId: access.id }, select: { matchId: true } }))) return null;
+    }
     const match = await loadMatchFacts(transaction, access.id);
     /*
      * 轮询路径的最小优化（R3 性能核验）：`matches.version` 与事件写入在同一事务里更新，
      * 在行锁内读到的版本就是权威版本。版本未变时不返回任何比赛状态，
      * 因此可以先回答 unchanged，再决定是否付出全量重放的代价。
-     * 写入路径与返回快照的读取路径仍然完整重放并校验哈希，行锁和完整性校验都没有被删除。
+     * 写入路径与返回快照的读取路径仍然完整重放并校验哈希，完整性校验没有被删除。
      */
     const unchanged = afterVersion !== undefined && afterVersion === match.version;
     const aggregate = unchanged ? null : await loadVerifiedAggregate(transaction, access.id);
@@ -289,4 +337,5 @@ export async function getAuthoritativeMatchState(userId: string, matchCode: stri
       })),
     };
   });
+  return (await read(false)) ?? (await read(true))!;
 }

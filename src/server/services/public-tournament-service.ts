@@ -42,14 +42,30 @@ export function isPublicMatchCode(value: string): boolean {
   return MATCH_CODE_PATTERN.test(value);
 }
 
-/** 阶段 1 的公开白名单端点，保留给 `GET /api/public/tournaments/[slug]`。 */
+/**
+ * 阶段 1 的公开白名单端点，供 `GET /api/public/tournaments/[slug]` 与现场看板使用。
+ * 与门户页面守同一条边界：只含已逐场发布的比赛；赛事不公开姓名时，报名单位名称换成编号。
+ * `namePolicy` 只在服务端读取，不下发。
+ */
 async function loadPublicTournament(slug: string) {
-  const tournament = await prisma.tournament.findFirst({
+  const found = await prisma.tournament.findFirst({
     where: { slug, status: "PUBLISHED" },
-    select: publicTournamentSelect,
+    select: { ...publicTournamentSelect, namePolicy: true },
   });
-  if (!tournament) throw new AppError(404, "tournament_not_found", "公开赛事不存在或尚未发布。");
-  return tournament;
+  if (!found) throw new AppError(404, "tournament_not_found", "公开赛事不存在或尚未发布。");
+  const { namePolicy, ...tournament } = found;
+  if (namePolicy === "DISPLAY_NAMES") return tournament;
+  const coded = <T extends { code: string; displayName: string }>(entry: T | null) => (entry ? { ...entry, displayName: entry.code } : null);
+  return {
+    ...tournament,
+    competitions: tournament.competitions.map((competition) => ({
+      ...competition,
+      stages: competition.stages.map((stage) => ({
+        ...stage,
+        matches: stage.matches.map((match) => ({ ...match, sideAEntry: coded(match.sideAEntry), sideBEntry: coded(match.sideBEntry) })),
+      })),
+    })),
+  };
 }
 
 /**

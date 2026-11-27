@@ -127,8 +127,8 @@ export const publicScheduleSelect = {
 } as const;
 
 /**
- * 阶段 1 的公开白名单，仍由 `GET /api/public/tournaments/[slug]` 使用。
- * 新的门户页面改用上面三个更完整的 select。
+ * 阶段 1 的公开白名单，仍由 `GET /api/public/tournaments/[slug]` 与现场看板使用。
+ * 只含已进入逐场发布边界的比赛；报名单位名称须经 `getPublicTournament` 按姓名公开策略处理后才能下发。
  */
 export const publicTournamentSelect = {
   slug: true,
@@ -145,6 +145,8 @@ export const publicTournamentSelect = {
           code: true,
           name: true,
           matches: {
+            // 与门户页面同一条逐场发布边界：赛事已发布不等于每场比赛都可公开。
+            where: publishedMatchWhere,
             select: {
               code: true,
               lifecycleStatus: true,

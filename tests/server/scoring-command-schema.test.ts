@@ -55,3 +55,77 @@ describe("计分命令请求解析", () => {
     });
   });
 });
+
+function request(type: string, payload: unknown, extra: Record<string, unknown> = {}) {
+  return new Request("http://localhost/api/matches/M-1/commands", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      commandId: "7b0d5d2e-6a3f-4c1e-9d55-0c5a1e1f0a01",
+      occurredAt: "2026-11-10T03:00:00.000Z",
+      expectedVersion: 3,
+      scoringSessionId: "7b0d5d2e-6a3f-4c1e-9d55-0c5a1e1f0a02",
+      takeoverGeneration: 1,
+      type,
+      payload,
+      ...extra,
+    }),
+  });
+}
+
+describe("记分命令载荷校验", () => {
+  it("接受工作台实际发送的形状", async () => {
+    await expect(parseScoringCommandRequest(request("RALLY_WON", { side: "A" }))).resolves.toMatchObject({ type: "RALLY_WON", payload: { side: "A" } });
+    await expect(
+      parseScoringCommandRequest(request("CONFIRM_OPENING_SETUP", { serverPlayerId: "p1", receiverPlayerId: "p2", logicalCourts: null })),
+    ).resolves.toMatchObject({ payload: { logicalCourts: null } });
+    await expect(
+      parseScoringCommandRequest(request("RECORD_SPECIAL_OUTCOME", { type: "ABANDONED", reason: "停电" })),
+    ).resolves.toMatchObject({ payload: { type: "ABANDONED", reason: "停电" } });
+    await expect(
+      parseScoringCommandRequest(
+        request("RECORD_COIN_TOSS", {
+          valid: true,
+          winnerSide: "B",
+          winnerChoice: { kind: "END", end: "END_2" },
+          loserChoice: { kind: "SERVICE", decision: "RECEIVE" },
+        }),
+      ),
+    ).resolves.toMatchObject({ payload: { winnerSide: "B" } });
+  });
+
+  it("拒绝不在枚举内的场地端、发球选择与比赛方", async () => {
+    const invalid: [string, unknown][] = [
+      ["CORRECT_PHYSICAL_ENDS", { reason: "核对", physicalEnds: { A: "foo", B: "bar" } }],
+      ["RALLY_WON", { side: "C" }],
+      ["RECORD_COIN_TOSS", { valid: true, winnerSide: "A", winnerChoice: { kind: "SERVICE", decision: "MAYBE" }, loserChoice: { kind: "END", end: "END_1" } }],
+      ["RECORD_COIN_TOSS", { valid: true, winnerSide: "A", winnerChoice: { kind: "SERVICE", decision: "SERVE" }, loserChoice: { kind: "END", end: "END_3" } }],
+      ["PAUSE_MATCH", { reason: "x".repeat(501) }],
+      ["CONFIRM_CHANGE_ENDS", {}],
+    ];
+    for (const [type, payload] of invalid) {
+      await expect(parseScoringCommandRequest(request(type, payload)), type).rejects.toMatchObject({ status: 400, code: "invalid_command_payload" });
+    }
+  });
+
+  it("未列出的字段不进入命令", async () => {
+    const parsed = await parseScoringCommandRequest(request("RALLY_WON", { side: "B", junk: "z".repeat(200), nested: { a: 1 } }));
+    expect(parsed.payload).toEqual({ side: "B" });
+  });
+
+  it("未知命令类型不携带载荷，交给引擎回答", async () => {
+    const parsed = await parseScoringCommandRequest(request("DROP_TABLE", { anything: "z".repeat(100) }));
+    expect(parsed.payload).toEqual({});
+  });
+
+  it("保留历史字段与更正版本的专用错误码", async () => {
+    await expect(
+      parseScoringCommandRequest(request("CORRECT_PHYSICAL_ENDS", { reason: "r", physicalEnds: { A: "END_1", B: "END_2" }, fulfillsObligationId: "x" })),
+    ).rejects.toMatchObject({ code: "legacy_command_field_not_allowed" });
+    await expect(parseScoringCommandRequest(request("CORRECT_SCORE_STATE", { reason: "r" }))).rejects.toMatchObject({ code: "score_correction_model_required" });
+  });
+
+  it("超过 16 KiB 的请求体直接拒绝", async () => {
+    await expect(parseScoringCommandRequest(request("PAUSE_MATCH", { reason: "r" }, { padding: "z".repeat(17 * 1024) }))).rejects.toMatchObject({ status: 413 });
+  });
+});
